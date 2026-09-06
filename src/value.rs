@@ -25,12 +25,11 @@ pub enum JValue {
 
     // Internal types (previously tagged objects)
     Undefined,
-    Lambda {
-        lambda_id: Rc<str>,
-        params: Rc<Vec<String>>,
-        name: Option<Rc<str>>,
-        signature: Option<Rc<str>>,
-    },
+    /// A function value carrying its closure directly (issue #157). The `Rc`
+    /// provides the closure's lifetime: a lambda escaping its defining scope
+    /// stays alive for as long as any value references it, with no side table
+    /// or escape analysis involved.
+    Lambda(Rc<crate::evaluator::StoredLambda>),
     Builtin {
         name: Rc<str>,
     },
@@ -258,21 +257,6 @@ impl JValue {
     }
 
     #[inline]
-    pub fn lambda(
-        lambda_id: impl Into<Rc<str>>,
-        params: Vec<String>,
-        name: Option<impl Into<Rc<str>>>,
-        signature: Option<impl Into<Rc<str>>>,
-    ) -> Self {
-        JValue::Lambda {
-            lambda_id: lambda_id.into(),
-            params: Rc::new(params),
-            name: name.map(|n| n.into()),
-            signature: signature.map(|s| s.into()),
-        }
-    }
-
-    #[inline]
     pub fn builtin(name: impl Into<Rc<str>>) -> Self {
         JValue::Builtin { name: name.into() }
     }
@@ -383,7 +367,9 @@ impl PartialEq for JValue {
             (JValue::String(a), JValue::String(b)) => a == b,
             (JValue::Array(a), JValue::Array(b)) => a == b,
             (JValue::Object(a), JValue::Object(b)) => a == b,
-            (JValue::Lambda { lambda_id: a, .. }, JValue::Lambda { lambda_id: b, .. }) => a == b,
+            // Function identity, like JS: two lambda values are equal only if
+            // they are the same closure instance.
+            (JValue::Lambda(a), JValue::Lambda(b)) => Rc::ptr_eq(a, b),
             (JValue::Builtin { name: a }, JValue::Builtin { name: b }) => a == b,
             (
                 JValue::Regex {
@@ -452,7 +438,7 @@ impl fmt::Display for JValue {
                 }
                 write!(f, "}}")
             }
-            JValue::Lambda { lambda_id, .. } => write!(f, "\"<lambda:{}>\"", lambda_id),
+            JValue::Lambda(_) => write!(f, "\"<lambda>\""),
             JValue::Builtin { name } => write!(f, "\"<builtin:{}>\"", name),
             JValue::Regex { pattern, flags } => write!(f, "\"<regex:/{}/{}>\"", pattern, flags),
             #[cfg(feature = "python")]
@@ -482,15 +468,41 @@ fn escape_json_string(s: &str) -> String {
     result
 }
 
+/// Print a finite f64 the way JavaScript's `String(number)` /
+/// `JSON.stringify(number)` does: shortest round-trip decimal, plain digits
+/// for magnitudes in [1e-6, 1e21), exponential (with an explicit `+` on
+/// positive exponents) outside that range, and `-0` printed as `0` (matching
+/// `JSON.stringify(-0)`).
+///
+/// This is the one definition of JS number printing; `$string` layers its
+/// non-integer `toPrecision(15)` rounding on top of it (see
+/// `functions::string`). Callers must handle non-finite values first.
+pub(crate) fn js_number_to_string(f: f64) -> String {
+    debug_assert!(f.is_finite());
+    if f == 0.0 {
+        return "0".to_string();
+    }
+    let abs = f.abs();
+    if (1e-6..1e21).contains(&abs) {
+        // Rust's Display is shortest-round-trip and never exponential,
+        // which matches JS exactly in this range.
+        format!("{}", f)
+    } else {
+        let exp_str = format!("{:e}", f);
+        if exp_str.contains('e') && !exp_str.contains("e-") && !exp_str.contains("e+") {
+            exp_str.replace('e', "e+")
+        } else {
+            exp_str
+        }
+    }
+}
+
 fn format_number(n: f64, f: &mut fmt::Formatter<'_>) -> fmt::Result {
     if !n.is_finite() {
         // NaN and +/-Infinity serialize as null (matching JSON spec)
         write!(f, "null")
-    } else if n.fract() == 0.0 && n.abs() < 1e20 {
-        write!(f, "{}", n as i64)
     } else {
-        // Use serde_json's number formatting for consistency
-        write!(f, "{}", n)
+        write!(f, "{}", js_number_to_string(n))
     }
 }
 
@@ -849,8 +861,9 @@ mod tests {
         assert!(JValue::string("hello").is_string());
         assert!(JValue::array(vec![]).is_array());
         assert!(JValue::object(IndexMap::new()).is_object());
-        assert!(JValue::lambda("id", vec![], None::<&str>, None::<&str>).is_lambda());
-        assert!(JValue::lambda("id", vec![], None::<&str>, None::<&str>).is_function());
+        let lambda = JValue::Lambda(Rc::new(crate::evaluator::StoredLambda::test_stub()));
+        assert!(lambda.is_lambda());
+        assert!(lambda.is_function());
         assert!(JValue::builtin("sum").is_builtin());
         assert!(JValue::builtin("sum").is_function());
         assert!(JValue::regex(".*", "i").is_regex());

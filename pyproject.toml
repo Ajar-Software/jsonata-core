@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "jsonatapy"
-version = "2.2.8"
+version = "2.2.9"
 description = "High-performance Python/Rust implementation of JSONata query and transformation language"
 authors = [
     {name = "txjmb", email = "txjmb@users.noreply.github.com"}
@@ -68,7 +68,7 @@ Repository = "https://github.com/txjmb/jsonata-core"
 [tool.maturin]
 python-source = "python"
 module-name = "jsonatapy._jsonatapy"
-features = ["pyo3/extension-module", "python"]
+features = ["pyo3/extension-module", "python", "mimalloc"]
 
 [dependency-groups]
 dev = [

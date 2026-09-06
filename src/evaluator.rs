@@ -192,10 +192,6 @@ pub(crate) enum CompiledExpr {
     // ── Leaves ──────────────────────────────────────────────────────────
     /// A literal value known at compile time.
     Literal(JValue),
-    /// Explicit `null` literal from `AstNode::Null`.
-    /// Distinct from field-lookup-produced null: triggers T2010/T2002 errors
-    /// in comparisons/arithmetic, matching the tree-walker's `explicit_null` semantics.
-    ExplicitNull,
     /// Single-level field lookup on the current object: `obj.get("field")`.
     FieldLookup(String),
     /// Two-level nested field lookup: `obj.get("a")?.get("b")`.
@@ -390,7 +386,6 @@ fn compiled_expr_node_count_exceeds(expr: &CompiledExpr, limit: usize) -> bool {
         match expr {
             // ── Leaves: no children ──────────────────────────────────
             CompiledExpr::Literal(_)
-            | CompiledExpr::ExplicitNull
             | CompiledExpr::FieldLookup(_)
             | CompiledExpr::NestedFieldLookup(_, _)
             | CompiledExpr::VariableLookup(_)
@@ -468,7 +463,7 @@ fn try_compile_expr_inner(node: &AstNode, allowed_vars: Option<&[&str]>) -> Opti
         AstNode::String(s) => Some(CompiledExpr::Literal(JValue::string(s.clone()))),
         AstNode::Number(n) => Some(CompiledExpr::Literal(JValue::Number(*n))),
         AstNode::Boolean(b) => Some(CompiledExpr::Literal(JValue::Bool(*b))),
-        AstNode::Null => Some(CompiledExpr::ExplicitNull),
+        AstNode::Null => Some(CompiledExpr::Literal(JValue::Null)),
 
         // ── Field access ────────────────────────────────────────────────
         AstNode::Name(field) => Some(CompiledExpr::FieldLookup(field.clone())),
@@ -803,38 +798,7 @@ fn try_compile_hof_expr(
 /// Returns true if the named builtin is pure (no side effects, no context dependency)
 /// and can be safely compiled into a BuiltinCall.
 fn is_compilable_builtin(name: &str) -> bool {
-    matches!(
-        name,
-        "string"
-            | "length"
-            | "substring"
-            | "substringBefore"
-            | "substringAfter"
-            | "uppercase"
-            | "lowercase"
-            | "trim"
-            | "contains"
-            | "split"
-            | "join"
-            | "number"
-            | "floor"
-            | "ceil"
-            | "round"
-            | "abs"
-            | "sqrt"
-            | "sum"
-            | "max"
-            | "min"
-            | "average"
-            | "count"
-            | "boolean"
-            | "not"
-            | "keys"
-            | "append"
-            | "reverse"
-            | "distinct"
-            | "merge"
-    )
+    crate::builtins::is_compilable_builtin(name)
 }
 
 /// Maximum number of explicit arguments accepted by each compilable builtin.
@@ -960,10 +924,6 @@ fn eval_compiled_inner(
         // ── Leaves ──────────────────────────────────────────────────────
         CompiledExpr::Literal(v) => Ok(v.clone()),
 
-        // ExplicitNull evaluates to Null, but is flagged at compile-time for
-        // comparison/arithmetic arms to trigger the correct T2010/T2002 errors.
-        CompiledExpr::ExplicitNull => Ok(JValue::Null),
-
         CompiledExpr::FieldLookup(field) => match data {
             JValue::Object(obj) => {
                 // Shape-accelerated: use positional index if available
@@ -1037,8 +997,6 @@ fn eval_compiled_inner(
 
         // ── Comparison ──────────────────────────────────────────────────
         CompiledExpr::Compare { op, lhs, rhs } => {
-            let lhs_explicit_null = is_compiled_explicit_null(lhs);
-            let rhs_explicit_null = is_compiled_explicit_null(rhs);
             let left = eval_compiled_inner(lhs, data, vars, ctx, shape, options, start_time)?;
             let right = eval_compiled_inner(rhs, data, vars, ctx, shape, options, start_time)?;
             match op {
@@ -1047,48 +1005,26 @@ fn eval_compiled_inner(
                 // silently comparing unequal.
                 CompiledCmp::Eq => compiled_equal(&left, &right),
                 CompiledCmp::Ne => compiled_not_equal(&left, &right),
-                CompiledCmp::Lt => compiled_ordered_cmp(
-                    &left,
-                    &right,
-                    lhs_explicit_null,
-                    rhs_explicit_null,
-                    |a, b| a < b,
-                    |a, b| a < b,
-                ),
-                CompiledCmp::Le => compiled_ordered_cmp(
-                    &left,
-                    &right,
-                    lhs_explicit_null,
-                    rhs_explicit_null,
-                    |a, b| a <= b,
-                    |a, b| a <= b,
-                ),
-                CompiledCmp::Gt => compiled_ordered_cmp(
-                    &left,
-                    &right,
-                    lhs_explicit_null,
-                    rhs_explicit_null,
-                    |a, b| a > b,
-                    |a, b| a > b,
-                ),
-                CompiledCmp::Ge => compiled_ordered_cmp(
-                    &left,
-                    &right,
-                    lhs_explicit_null,
-                    rhs_explicit_null,
-                    |a, b| a >= b,
-                    |a, b| a >= b,
-                ),
+                CompiledCmp::Lt => {
+                    compiled_ordered_cmp(&left, &right, "<", |a, b| a < b, |a, b| a < b)
+                }
+                CompiledCmp::Le => {
+                    compiled_ordered_cmp(&left, &right, "<=", |a, b| a <= b, |a, b| a <= b)
+                }
+                CompiledCmp::Gt => {
+                    compiled_ordered_cmp(&left, &right, ">", |a, b| a > b, |a, b| a > b)
+                }
+                CompiledCmp::Ge => {
+                    compiled_ordered_cmp(&left, &right, ">=", |a, b| a >= b, |a, b| a >= b)
+                }
             }
         }
 
         // ── Arithmetic ──────────────────────────────────────────────────
         CompiledExpr::Arithmetic { op, lhs, rhs } => {
-            let lhs_explicit_null = is_compiled_explicit_null(lhs);
-            let rhs_explicit_null = is_compiled_explicit_null(rhs);
             let left = eval_compiled_inner(lhs, data, vars, ctx, shape, options, start_time)?;
             let right = eval_compiled_inner(rhs, data, vars, ctx, shape, options, start_time)?;
-            compiled_arithmetic(*op, &left, &right, lhs_explicit_null, rhs_explicit_null)
+            compiled_arithmetic(*op, &left, &right)
         }
 
         // ── String concat ───────────────────────────────────────────────
@@ -1513,44 +1449,34 @@ pub(crate) fn predicate_index_match(pred: &JValue, index: usize, len: usize) -> 
     }
 }
 
-/// Returns true if the compiled expression is a literal `null` (from `AstNode::Null`).
-/// Used to replicate the tree-walker's `explicit_null` flag in comparisons/arithmetic.
-#[inline]
-fn is_compiled_explicit_null(expr: &CompiledExpr) -> bool {
-    matches!(expr, CompiledExpr::ExplicitNull)
-}
-
-/// Ordered comparison for compiled expressions.
-/// Mirrors the tree-walker's `ordered_compare` including explicit-null semantics.
+/// Ordered comparison shared by the tree-walker, the compiled path, and the
+/// bytecode VM, so all three report identical errors.
+///
+/// jsonata-js's rule: only numbers, strings and *undefined* are comparable,
+/// so anything else -- null, boolean, object, array -- raises T2010; an
+/// undefined operand then makes the result undefined; and only after that
+/// does a differing type raise T2009 (with `op_symbol` in the message).
 #[inline]
 pub(crate) fn compiled_ordered_cmp(
     left: &JValue,
     right: &JValue,
-    _left_is_explicit_null: bool,
-    _right_is_explicit_null: bool,
+    op_symbol: &str,
     cmp_num: fn(f64, f64) -> bool,
     cmp_str: fn(&str, &str) -> bool,
 ) -> Result<JValue, EvaluatorError> {
-    // Compiled twin of `Evaluator::ordered_compare`; keep the two in step.
-    // jsonata-js's rule: only numbers, strings and *undefined* are comparable,
-    // so anything else -- null, boolean, object, array -- raises T2010; an
-    // undefined operand then makes the result undefined; and only after that
-    // does a differing type raise T2009.
-    //
-    // The `*_is_explicit_null` flags are vestigial. They told a literal `null`
-    // from a missing value back when both were `JValue::Null`; since the
-    // null/undefined split (#32) the variant carries that itself, and every
-    // `JValue::Null` reaching here is an explicit null and uncomparable.
     fn comparable(v: &JValue) -> bool {
         matches!(v, JValue::Number(_) | JValue::String(_) | JValue::Undefined)
     }
 
     if !comparable(left) || !comparable(right) {
-        return Err(EvaluatorError::EvaluationError(
-            "T2010: Type mismatch in comparison".to_string(),
-        ));
+        return Err(EvaluatorError::EvaluationError(format!(
+            "T2010: Cannot compare {} and {}",
+            Evaluator::type_name(left),
+            Evaluator::type_name(right)
+        )));
     }
 
+    // An undefined operand makes the comparison undefined, not an error.
     if matches!(left, JValue::Undefined) || matches!(right, JValue::Undefined) {
         return Ok(JValue::Undefined);
     }
@@ -1558,10 +1484,10 @@ pub(crate) fn compiled_ordered_cmp(
     match (left, right) {
         (JValue::Number(a), JValue::Number(b)) => Ok(JValue::Bool(cmp_num(*a, *b))),
         (JValue::String(a), JValue::String(b)) => Ok(JValue::Bool(cmp_str(a, b))),
-        _ => Err(EvaluatorError::EvaluationError(
-            "T2009: The expressions on either side of operator must be of the same data type"
-                .to_string(),
-        )),
+        _ => Err(EvaluatorError::EvaluationError(format!(
+            "T2009: The expressions on either side of operator \"{}\" must be of the same data type",
+            op_symbol
+        ))),
     }
 }
 
@@ -1572,8 +1498,6 @@ pub(crate) fn compiled_arithmetic(
     op: CompiledArithOp,
     left: &JValue,
     right: &JValue,
-    _left_is_explicit_null: bool,
-    _right_is_explicit_null: bool,
 ) -> Result<JValue, EvaluatorError> {
     let op_sym = match op {
         CompiledArithOp::Add => "+",
@@ -1615,10 +1539,8 @@ pub(crate) fn compiled_arithmetic(
         //
         // Only undefined propagates. An explicit null -- like any other
         // non-number -- is a type error, whether written as a literal or
-        // arriving at runtime from data or a lambda parameter. The
-        // `*_is_explicit_null` flags are vestigial: they told a literal `null`
-        // from a missing value back when both were `JValue::Null`, and since
-        // the null/undefined split (#32) the variant carries that itself.
+        // arriving at runtime from data or a lambda parameter (the
+        // null/undefined split, #32, made runtime nulls unambiguous).
         _ if !matches!(left, JValue::Number(n) if !n.is_nan())
             && !matches!(left, JValue::Undefined) =>
         {
@@ -1706,7 +1628,78 @@ pub(crate) fn compiled_not_equal(lhs: &JValue, rhs: &JValue) -> Result<JValue, E
     }
 }
 
-/// String concatenation for the bytecode VM.
+/// jsonata-js's `hofFuncArgs` argument shaping, shared by the array HOFs
+/// ($map/$filter/$single): the element is always passed regardless of the
+/// callback's declared arity (a 0-arity callback still gets 1 argument, not
+/// 0, matching JS); the index is added at arity 2, and the whole array at
+/// arity >= 3 (the caller pre-builds `arr_value` exactly when needed).
+fn hof_array_call_args(
+    item: &JValue,
+    index: usize,
+    arr_value: Option<&JValue>,
+    param_count: usize,
+) -> Vec<JValue> {
+    match param_count {
+        0 | 1 => vec![item.clone()],
+        2 => vec![item.clone(), JValue::Number(index as f64)],
+        _ => vec![
+            item.clone(),
+            JValue::Number(index as f64),
+            arr_value
+                .expect("caller builds arr_value when param_count >= 3")
+                .clone(),
+        ],
+    }
+}
+
+/// `hofFuncArgs` shaping for the object HOFs ($sift/$each): the value always,
+/// the key at arity 2, and the whole object at arity >= 3.
+fn hof_object_call_args(
+    value: &JValue,
+    key: &str,
+    obj_value: Option<&JValue>,
+    param_count: usize,
+) -> Vec<JValue> {
+    match param_count {
+        0 | 1 => vec![value.clone()],
+        2 => vec![value.clone(), JValue::string(key)],
+        _ => vec![
+            value.clone(),
+            JValue::string(key),
+            obj_value
+                .expect("caller builds obj_value when param_count >= 3")
+                .clone(),
+        ],
+    }
+}
+
+/// Parse a lambda's declared signature and validate/coerce `values` against
+/// it, translating `SignatureError` into the reference's T0410/T0411/T0412
+/// error codes. Shared by the direct (`invoke_lambda_with_env`) and TCO
+/// (`invoke_lambda_body_for_tco`) invocation paths so the two cannot drift.
+fn coerce_lambda_args(
+    sig_str: &str,
+    values: &[JValue],
+    data: &JValue,
+) -> Result<Vec<JValue>, EvaluatorError> {
+    use crate::signature::SignatureError;
+    let sig = crate::signature::Signature::parse(sig_str)
+        .map_err(|e| EvaluatorError::EvaluationError(format!("Invalid signature: {}", e)))?;
+    sig.validate_and_coerce(values, data).map_err(|e| match e {
+        SignatureError::ArgumentTypeMismatch { index, expected } => EvaluatorError::TypeError(
+            format!("T0410: Argument {} of function does not match function signature (expected {})", index, expected),
+        ),
+        SignatureError::ArrayTypeMismatch { index, expected } => EvaluatorError::TypeError(
+            format!("T0412: Argument {} of function must be an array of {}", index, expected),
+        ),
+        SignatureError::ContextTypeMismatch { index, expected } => EvaluatorError::TypeError(
+            format!("T0411: Context value at argument {} does not match function signature (expected {})", index, expected),
+        ),
+        other => EvaluatorError::TypeError(format!("Signature validation failed: {}", other)),
+    })
+}
+
+/// String concatenation for the bytecode VM (its only caller is `vm.rs`).
 #[inline]
 pub(crate) fn compiled_concat(lhs: JValue, rhs: JValue) -> Result<JValue, EvaluatorError> {
     let l = compiled_to_concat_string(&lhs)?;
@@ -2305,7 +2298,20 @@ impl From<crate::functions::FunctionError> for EvaluatorError {
         if let crate::functions::FunctionError::PyConversionError(m) = &e {
             return EvaluatorError::PyConversionError(m.clone());
         }
-        EvaluatorError::EvaluationError(e.to_string())
+        // Pass the inner message through rather than thiserror's Display,
+        // which prepends "Runtime error: "/"Argument error: "/"Type error: "
+        // — burying the JSONata spec code ("Runtime error: D3030: ...") so
+        // no prefix-anchored classifier (the CLIs, `EvaluatorError::code`)
+        // could see it, and double-stacking with EvaluatorError's own
+        // Display prefix ("Evaluation error: Runtime error: ...").
+        use crate::functions::FunctionError as FE;
+        let msg = match e {
+            FE::ArgumentError(m) | FE::TypeError(m) | FE::RuntimeError(m) => m,
+            // Handled by the early return above; kept for exhaustiveness.
+            #[cfg(feature = "python")]
+            FE::PyConversionError(m) => m,
+        };
+        EvaluatorError::EvaluationError(msg)
     }
 }
 
@@ -2331,6 +2337,30 @@ impl EvaluatorError {
             #[cfg(feature = "python")]
             EvaluatorError::PyConversionError(m) => m,
         }
+    }
+
+    /// The JSONata spec code ("T2010", "D3030", ...) this error carries, if
+    /// any: the message's leading `X####:` prefix. This is THE definition of
+    /// "is this a coded error" — the C ABI's `jsonata_last_error_code` and
+    /// the CLI's error formatting both classify with it (the Python CLI
+    /// mirrors it with an equivalent anchored regex), so the same failure
+    /// presents the same way in every binary.
+    pub fn code(&self) -> Option<&str> {
+        error_code_prefix(self.message())
+    }
+}
+
+/// The leading JSONata spec code of `msg` (`X####:` at offset 0), if any.
+pub fn error_code_prefix(msg: &str) -> Option<&str> {
+    let b = msg.as_bytes();
+    if b.len() >= 6
+        && b[0].is_ascii_uppercase()
+        && b[1..5].iter().all(u8::is_ascii_digit)
+        && b[5] == b':'
+    {
+        Some(&msg[..5])
+    } else {
+        None
     }
 }
 
@@ -2382,8 +2412,8 @@ enum LambdaResult {
     JValue(JValue),
     /// Tail call - need to continue with another lambda invocation
     TailCall {
-        /// The lambda to call (boxed to reduce enum size)
-        lambda: Box<StoredLambda>,
+        /// The lambda to call (shared handle; cloning is a refcount bump)
+        lambda: Rc<StoredLambda>,
         /// Arguments for the call
         args: Vec<JValue>,
         /// Data context for the call
@@ -2391,9 +2421,88 @@ enum LambdaResult {
     },
 }
 
+thread_local! {
+    static LIVE_LAMBDAS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Number of `StoredLambda` instances currently alive on this thread.
+///
+/// The snapshot-capture closure design cannot form `Rc` cycles (a closure can
+/// only capture values that existed before it did, and self-reference is
+/// late-bound at invocation rather than stored), so this count must return to
+/// its prior level once evaluation results are dropped. Exposed so tests can
+/// assert that repeated evaluation does not leak closures.
+pub fn live_lambda_count() -> usize {
+    LIVE_LAMBDAS.with(|c| c.get())
+}
+
+/// Marker owned by every `StoredLambda`, maintaining `live_lambda_count`.
+#[derive(Debug)]
+pub struct LiveLambdaToken(());
+
+impl LiveLambdaToken {
+    fn new() -> Self {
+        LIVE_LAMBDAS.with(|c| c.set(c.get() + 1));
+        LiveLambdaToken(())
+    }
+}
+
+impl Default for LiveLambdaToken {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Clone for LiveLambdaToken {
+    fn clone(&self) -> Self {
+        Self::new()
+    }
+}
+
+impl Drop for LiveLambdaToken {
+    fn drop(&mut self) {
+        LIVE_LAMBDAS.with(|c| c.set(c.get() - 1));
+    }
+}
+
+/// How a partial application (`$f(1, ?)`) reaches the function it applies.
+#[derive(Clone, Debug)]
+pub(crate) enum PartialTarget {
+    /// A user-defined function, captured as a closure value at creation time —
+    /// this is what lets the partial outlive the scope that defined its target.
+    Lambda(Rc<StoredLambda>),
+    /// A builtin or host function, resolved BY NAME at each invocation.
+    /// These are global and cannot dangle, and name resolution preserves
+    /// call-time shadowing (`$up := $uppercase(?); $uppercase := ...` — the
+    /// later user binding wins, matching jsonata-js's environment chain).
+    Named { name: String, is_builtin: bool },
+}
+
+/// A partial application, carried inside a `StoredLambda` in place of a body.
+///
+/// `$add(10, ?)` becomes params `["__p0"]` plus this struct: at invocation the
+/// full argument list is rebuilt — bound values in their original positions,
+/// call arguments filling the placeholder positions in order — and the target
+/// is applied to it.
+#[derive(Clone, Debug)]
+pub(crate) struct PartialApplication {
+    pub target: PartialTarget,
+    /// `(position, value)` for arguments fixed at creation time (values, not
+    /// expressions: `$add($x, ?)` snapshots `$x` when the partial is built).
+    pub bound_args: Vec<(usize, JValue)>,
+    /// Positions of the `?` placeholders, filled from call arguments in order.
+    pub placeholder_positions: Vec<usize>,
+    /// Argument count of the underlying call (bound + placeholders).
+    pub total_args: usize,
+}
+
 /// Lambda storage
 /// Stores the AST of a lambda function along with its parameters, optional signature,
-/// and captured environment for closures
+/// and captured environment for closures.
+///
+/// Carried directly inside `JValue::Lambda(Rc<StoredLambda>)` (issue #157):
+/// the value IS the closure, so its lifetime is the `Rc`'s and no side table,
+/// escape analysis, or scope-pop migration is needed.
 #[derive(Clone, Debug)]
 pub struct StoredLambda {
     pub params: Vec<String>,
@@ -2402,25 +2511,56 @@ pub struct StoredLambda {
     /// `None` if the body is not compilable (transform, partial-app, thunk, etc.).
     pub(crate) compiled_body: Option<CompiledExpr>,
     pub signature: Option<String>,
-    /// Captured environment bindings for closures
+    /// Captured environment bindings for closures: a by-value snapshot of the
+    /// free variables at definition time (this engine's long-standing capture
+    /// semantics — NOT jsonata-js's live frames).
     pub captured_env: HashMap<String, JValue>,
     /// Captured data context for lexical scoping of bare field names
     pub captured_data: Option<JValue>,
     /// Whether this lambda's body contains tail calls that can be optimized
     pub thunk: bool,
+    /// The variable name this lambda was bound to at definition time
+    /// (`$f := function ...`). Bound to the closure itself at every
+    /// invocation, so recursion works after the defining scope has popped
+    /// (classic letrec, late-bound instead of stored — no `Rc` cycle).
+    pub self_name: Option<String>,
+    /// `Some` iff this lambda is a partial application: invocation applies the
+    /// carried target instead of evaluating `body` (which is inert).
+    /// `Rc` so invocation can detach a handle from the borrowed closure with a
+    /// refcount bump.
+    pub(crate) partial: Option<Rc<PartialApplication>>,
+    /// Keeps `live_lambda_count` accurate; see that function.
+    pub live_token: LiveLambdaToken,
+}
+
+impl StoredLambda {
+    /// Minimal instance for tests that need a lambda-shaped `JValue`.
+    #[cfg(test)]
+    pub(crate) fn test_stub() -> Self {
+        StoredLambda {
+            params: Vec::new(),
+            body: AstNode::Null,
+            compiled_body: None,
+            signature: None,
+            captured_env: HashMap::new(),
+            captured_data: None,
+            thunk: false,
+            self_name: None,
+            partial: None,
+            live_token: LiveLambdaToken::new(),
+        }
+    }
 }
 
 /// A single scope in the scope stack
 struct Scope {
     bindings: HashMap<String, JValue>,
-    lambdas: HashMap<String, StoredLambda>,
 }
 
 impl Scope {
     fn new() -> Self {
         Scope {
             bindings: HashMap::new(),
-            lambdas: HashMap::new(),
         }
     }
 }
@@ -2454,26 +2594,10 @@ impl Context {
         }
     }
 
-    /// Pop scope but preserve specified lambdas by moving them to the current top scope
-    fn pop_scope_preserving_lambdas(&mut self, lambda_ids: &[String]) {
-        if self.scope_stack.len() > 1 {
-            let popped = self.scope_stack.pop().unwrap();
-            if !lambda_ids.is_empty() {
-                let top = self.scope_stack.last_mut().unwrap();
-                for id in lambda_ids {
-                    if let Some(stored) = popped.lambdas.get(id) {
-                        top.lambdas.insert(id.clone(), stored.clone());
-                    }
-                }
-            }
-        }
-    }
-
-    /// Clear all bindings and lambdas in the top scope without deallocating
+    /// Clear all bindings in the top scope without deallocating
     fn clear_current_scope(&mut self) {
         let top = self.scope_stack.last_mut().unwrap();
         top.bindings.clear();
-        top.lambdas.clear();
     }
 
     pub fn bind(&mut self, name: String, value: JValue) {
@@ -2484,19 +2608,10 @@ impl Context {
             .insert(name, value);
     }
 
-    pub fn bind_lambda(&mut self, name: String, lambda: StoredLambda) {
-        self.scope_stack
-            .last_mut()
-            .unwrap()
-            .lambdas
-            .insert(name, lambda);
-    }
-
     pub fn unbind(&mut self, name: &str) {
         // Remove from top scope only
         let top = self.scope_stack.last_mut().unwrap();
         top.bindings.remove(name);
-        top.lambdas.remove(name);
     }
 
     pub fn lookup(&self, name: &str) -> Option<&JValue> {
@@ -2509,14 +2624,13 @@ impl Context {
         None
     }
 
-    pub fn lookup_lambda(&self, name: &str) -> Option<&StoredLambda> {
-        // Walk scope stack from top to bottom
-        for scope in self.scope_stack.iter().rev() {
-            if let Some(lambda) = scope.lambdas.get(name) {
-                return Some(lambda);
-            }
+    /// Look up `name` and, if it is bound to a lambda value, hand out the
+    /// shared closure handle (an Rc clone is a refcount bump).
+    fn lookup_lambda_value(&self, name: &str) -> Option<&Rc<StoredLambda>> {
+        match self.lookup(name) {
+            Some(JValue::Lambda(rc)) => Some(rc),
+            _ => None,
         }
-        None
     }
 
     pub fn set_parent(&mut self, data: JValue) {
@@ -2782,12 +2896,6 @@ pub struct Evaluator {
     context: Context,
     recursion_depth: usize,
     max_recursion_depth: usize,
-    /// Monotonic counter for generating unique lambda IDs. Each evaluation of a
-    /// Lambda AST node creates a new closure *instance* and must get a fresh ID -
-    /// using the AST node's pointer address (as before) collided whenever the same
-    /// lambda expression was evaluated more than once (e.g. each level of Y-combinator
-    /// or other repeated recursion), aliasing unrelated closures that shared an id.
-    next_lambda_id: u64,
     /// Set whenever `create_tuple_stream` builds a `{"@":.., "__tuple__":true}`
     /// wrapper during this top-level `evaluate()` call. Reset at the start of
     /// `evaluate()` and checked at the end to decide whether the (recursive,
@@ -2822,7 +2930,6 @@ impl Evaluator {
             // Limit recursion depth to prevent stack overflow
             // True TCO would allow deeper recursion but requires parser-level thunk marking
             max_recursion_depth: 302,
-            next_lambda_id: 0,
             tuple_stream_created: false,
             keep_tuple_stream: false,
             options: EvaluatorOptions::default(),
@@ -2836,7 +2943,6 @@ impl Evaluator {
             context,
             recursion_depth: 0,
             max_recursion_depth: 302,
-            next_lambda_id: 0,
             tuple_stream_created: false,
             keep_tuple_stream: false,
             options: EvaluatorOptions::default(),
@@ -2852,7 +2958,6 @@ impl Evaluator {
             context,
             recursion_depth: 0,
             max_recursion_depth: 302,
-            next_lambda_id: 0,
             tuple_stream_created: false,
             keep_tuple_stream: false,
             options,
@@ -2932,22 +3037,27 @@ impl Evaluator {
         Ok(())
     }
 
-    /// Allocate a fresh, process-unique-per-Evaluator id for a new lambda instance.
-    fn fresh_lambda_id(&mut self) -> u64 {
-        let id = self.next_lambda_id;
-        self.next_lambda_id += 1;
-        id
-    }
-
     /// Invoke a stored lambda with its captured environment and data.
     /// This is the standard way to call a StoredLambda, handling the
     /// captured_env and captured_data extraction boilerplate.
+    ///
+    /// Takes the shared handle so the closure's `self_name` (if any) can be
+    /// bound to the closure itself for the duration of the call — that is
+    /// what makes `$f := function(){ ...$f()... }` work after `$f` has
+    /// escaped its defining scope (late-bound letrec, no stored self-`Rc`).
     fn invoke_stored_lambda(
         &mut self,
-        stored: &StoredLambda,
+        stored: &Rc<StoredLambda>,
         args: &[JValue],
         data: &JValue,
     ) -> Result<JValue, EvaluatorError> {
+        // A partial application carries its own invocation recipe; no scope,
+        // signature, or body evaluation of its own.
+        if let Some(partial) = &stored.partial {
+            let partial = Rc::clone(partial);
+            return self.invoke_partial(&partial, args, data);
+        }
+
         // Compiled fast path: skip scope push/pop and tree-walking for simple lambdas.
         // Conditions: has compiled body, no signature (can't skip validation), no thunk,
         // and no captured lambda/builtin values (those require Context for runtime lookup).
@@ -2986,15 +3096,14 @@ impl Evaluator {
             captured_env,
             captured_data,
             stored.thunk,
+            Some(stored),
         )
     }
 
-    /// Look up a StoredLambda from a JValue that may be a lambda marker.
-    /// Returns the cloned StoredLambda if the value is a JValue::Lambda variant
-    /// with a valid lambda_id that references a stored lambda.
-    fn lookup_lambda_from_value(&self, value: &JValue) -> Option<StoredLambda> {
-        if let JValue::Lambda { lambda_id, .. } = value {
-            return self.context.lookup_lambda(lambda_id).cloned();
+    /// Extract the shared closure handle from a JValue, if it is a lambda.
+    fn lookup_lambda_from_value(&self, value: &JValue) -> Option<Rc<StoredLambda>> {
+        if let JValue::Lambda(rc) = value {
+            return Some(Rc::clone(rc));
         }
         None
     }
@@ -3006,13 +3115,10 @@ impl Evaluator {
         match func_node {
             AstNode::Lambda { params, .. } => params.len(),
             AstNode::Variable(var_name) => {
-                // Check if this variable holds a stored lambda
-                if let Some(stored_lambda) = self.context.lookup_lambda(var_name) {
-                    return stored_lambda.params.len();
-                }
-                // Also check if it's a lambda value in bindings (e.g., from partial application)
+                // Check if this variable holds a lambda value (user-defined
+                // function, closure, or partial application)
                 if let Some(value) = self.context.lookup(var_name) {
-                    if let Some(stored_lambda) = self.lookup_lambda_from_value(value) {
+                    if let JValue::Lambda(stored_lambda) = value {
                         return stored_lambda.params.len();
                     }
                     // `$f := $uppercase` stores a `JValue::Builtin`, so the
@@ -3444,33 +3550,16 @@ impl Evaluator {
             AstNode::String(s) => Ok(JValue::string(s.clone())),
             AstNode::KeepArray => Ok(Self::keep_array(data)),
 
-            // Name nodes represent field access on the current data
-            AstNode::Name(field_name) => {
-                match data {
-                    JValue::Object(obj) => {
-                        Ok(obj.get(field_name).cloned().unwrap_or(JValue::Undefined))
-                    }
-                    JValue::Array(arr) => {
-                        // Map over array
-                        let mut result = Vec::new();
-                        for item in arr.iter() {
-                            if let JValue::Object(obj) = item {
-                                if let Some(val) = obj.get(field_name) {
-                                    result.push(val.clone());
-                                }
-                            }
-                        }
-                        if result.is_empty() {
-                            Ok(JValue::Undefined)
-                        } else if result.len() == 1 {
-                            Ok(result.into_iter().next().unwrap())
-                        } else {
-                            Ok(JValue::array(result))
-                        }
-                    }
-                    _ => Ok(JValue::Undefined),
-                }
-            }
+            // Bare Name outside a Path: field access on the current data.
+            // `evaluate_leaf` already intercepts the Object/LazyPyDict cases,
+            // so only array and scalar data reach here — and no expression in
+            // the reference suite, the differential corpus, or the Python
+            // suite does even that (verified by instrumentation). Delegate to
+            // `compiled_field_step`, the semantics owner for a single field
+            // step, instead of keeping a private copy that had drifted (it
+            // kept nulls, never flattened nested arrays, and knew nothing of
+            // tuples or lazy dicts).
+            AstNode::Name(field_name) => compiled_field_step(field_name, data, &self.options),
 
             AstNode::Number(n) => {
                 // Preserve integer-ness: if the number is a whole number, create an integer JValue
@@ -3533,20 +3622,6 @@ impl Evaluator {
                             return Ok(binding_value.clone());
                         }
                     }
-                }
-
-                // Then check if this is a stored lambda (user-defined functions)
-                if let Some(stored_lambda) = self.context.lookup_lambda(name) {
-                    // Return a lambda representation that can be passed to higher-order functions
-                    // Include _lambda_id pointing to the stored lambda so it can be found
-                    // when captured in closures
-                    let lambda_repr = JValue::lambda(
-                        name.as_str(),
-                        stored_lambda.params.clone(),
-                        Some(name.to_string()),
-                        stored_lambda.signature.clone(),
-                    );
-                    return Ok(lambda_repr);
                 }
 
                 // Check if this is a built-in function reference (only if not shadowed)
@@ -3953,10 +4028,9 @@ impl Evaluator {
                     result = self.evaluate_internal(expr, data)?;
                 }
 
-                // Before popping, preserve any lambdas referenced by the result
-                // This is essential for closures returned from blocks (IIFE pattern)
-                let lambdas_to_keep = self.extract_lambda_ids(&result);
-                self.context.pop_scope_preserving_lambdas(&lambdas_to_keep);
+                // Closures escaping the block (IIFE pattern) carry their own
+                // storage inside the value, so popping is unconditional.
+                self.context.pop_scope();
 
                 Ok(result)
             }
@@ -3968,8 +4042,6 @@ impl Evaluator {
                 signature,
                 thunk,
             } => {
-                let lambda_id = format!("__lambda_{}_{}", params.len(), self.fresh_lambda_id());
-
                 let compiled_body = if !thunk {
                     let var_refs: Vec<&str> = params.iter().map(|s| s.as_str()).collect();
                     try_compile_expr_with_allowed_vars(body, &var_refs)
@@ -3984,17 +4056,11 @@ impl Evaluator {
                     captured_env: self.capture_environment_for(body, params),
                     captured_data: Some(data.clone()),
                     thunk: *thunk,
+                    self_name: None,
+                    partial: None,
+                    live_token: LiveLambdaToken::new(),
                 };
-                self.context.bind_lambda(lambda_id.clone(), stored_lambda);
-
-                let lambda_obj = JValue::lambda(
-                    lambda_id.as_str(),
-                    params.clone(),
-                    None::<String>,
-                    signature.clone(),
-                );
-
-                Ok(lambda_obj)
+                Ok(JValue::Lambda(Rc::new(stored_lambda)))
             }
 
             // Wildcard: collect all values from current object
@@ -4043,10 +4109,14 @@ impl Evaluator {
 
             // Array grouping: same as Array but prevents flattening in path contexts
             AstNode::ArrayGroup(elements) => {
+                // Undefined elements are dropped like in every array constructor;
+                // explicit null is a value and stays.
                 let mut result = Vec::new();
                 for element in elements {
                     let value = self.evaluate_internal(element, data)?;
-                    result.push(value);
+                    if !value.is_undefined() {
+                        result.push(value);
+                    }
                 }
                 Ok(JValue::array(result))
             }
@@ -4076,8 +4146,10 @@ impl Evaluator {
                     // Execute the transformation
                     self.execute_transform(location, update, delete.as_deref(), data)
                 } else {
-                    // Return a lambda representation
-                    // The transform will be executed when the lambda is invoked
+                    // Return a function value; the transform executes when the
+                    // lambda is invoked (with $ bound to its argument). Being an
+                    // ordinary value, it can be bound to a variable, passed
+                    // around, and applied via `~>` like in jsonata-js.
                     let transform_lambda = StoredLambda {
                         params: vec!["$".to_string()],
                         body: AstNode::Transform {
@@ -4090,14 +4162,11 @@ impl Evaluator {
                         captured_env: HashMap::new(),
                         captured_data: None, // Transform takes $ as parameter
                         thunk: false,
+                        self_name: None,
+                        partial: None,
+                        live_token: LiveLambdaToken::new(),
                     };
-
-                    // Store with a generated unique name
-                    let lambda_name = format!("__transform_{}", self.fresh_lambda_id());
-                    self.context.bind_lambda(lambda_name, transform_lambda);
-
-                    // Return lambda marker
-                    Ok(JValue::string("<lambda>"))
+                    Ok(JValue::Lambda(Rc::new(transform_lambda)))
                 }
             }
 
@@ -4438,189 +4507,49 @@ impl Evaluator {
         // creation handled below.
         if steps.len() == 1 && !Self::step_creates_tuple(&steps[0]) {
             if let AstNode::Name(field_name) = &steps[0].node {
-                return match data {
-                    JValue::Object(obj) => {
-                        // Check if this is a tuple - extract '@' value
-                        if obj.get("__tuple__") == Some(&JValue::Bool(true)) {
-                            match obj.get("@") {
-                                Some(JValue::Object(inner)) => {
-                                    Ok(inner.get(field_name).cloned().unwrap_or(JValue::Undefined))
-                                }
-                                #[cfg(feature = "python")]
-                                Some(JValue::LazyPyDict(lazy)) => Ok(lazy.get_field(field_name)?),
-                                _ => Ok(JValue::Undefined),
-                            }
-                        } else {
-                            Ok(obj.get(field_name).cloned().unwrap_or(JValue::Undefined))
-                        }
-                    }
-                    #[cfg(feature = "python")]
-                    JValue::LazyPyDict(lazy) => Ok(lazy.get_field(field_name)?),
-                    JValue::Array(arr) => {
-                        // Array mapping: extract field from each element
-                        // Optimized: use references to access fields without cloning entire objects
-                        // Check first element for tuple-ness (tuples are all-or-nothing)
-                        let has_tuples = arr.first().is_some_and(|item| {
-                            matches!(item, JValue::Object(obj) if obj.get("__tuple__") == Some(&JValue::Bool(true)))
-                        });
-
-                        if !has_tuples {
-                            // Fast path: no tuples, just direct field lookups
-                            let mut result = Vec::with_capacity(arr.len());
-                            for item in arr.iter() {
-                                if let JValue::Object(obj) = item {
-                                    if let Some(val) = obj.get(field_name) {
-                                        if !val.is_null() {
-                                            match val {
-                                                JValue::Array(arr_val) => {
-                                                    result.extend(arr_val.iter().cloned());
-                                                }
-                                                other => result.push(other.clone()),
-                                            }
-                                        }
-                                    }
-                                } else if let JValue::Array(inner_arr) = item {
-                                    let nested_result = self.evaluate_path(
-                                        &[PathStep::new(AstNode::Name(field_name.clone()))],
-                                        &JValue::Array(inner_arr.clone()),
-                                    )?;
-                                    match nested_result {
-                                        JValue::Array(nested) => {
-                                            result.extend(nested.iter().cloned());
-                                        }
-                                        JValue::Null => {}
-                                        other => result.push(other),
-                                    }
-                                } else {
+                // A tuple stream falls through to the general step loop below —
+                // its tuple arm is the single implementation of tuple-aware
+                // field extraction (the fast path used to carry a drifted copy
+                // that skipped nulls and returned Null on empty).
+                let is_tuple_stream = matches!(data, JValue::Array(arr) if arr.first().is_some_and(
+                    |item| matches!(item, JValue::Object(obj) if obj.get("__tuple__") == Some(&JValue::Bool(true)))
+                ));
+                if !is_tuple_stream {
+                    return match data {
+                        JValue::Object(obj) => {
+                            // Check if this is a tuple - extract '@' value
+                            if obj.get("__tuple__") == Some(&JValue::Bool(true)) {
+                                match obj.get("@") {
+                                    Some(JValue::Object(inner)) => Ok(inner
+                                        .get(field_name)
+                                        .cloned()
+                                        .unwrap_or(JValue::Undefined)),
                                     #[cfg(feature = "python")]
-                                    if let JValue::LazyPyDict(lazy) = item {
-                                        let val = lazy.get_field(field_name)?;
-                                        if !val.is_null() && !val.is_undefined() {
-                                            match val {
-                                                JValue::Array(arr_val) => {
-                                                    result.extend(arr_val.iter().cloned());
-                                                }
-                                                other => result.push(other),
-                                            }
-                                        }
+                                    Some(JValue::LazyPyDict(lazy)) => {
+                                        Ok(lazy.get_field(field_name)?)
                                     }
+                                    _ => Ok(JValue::Undefined),
                                 }
-                            }
-
-                            if result.is_empty() {
-                                Ok(JValue::Null)
-                            } else if result.len() == 1 {
-                                Ok(result.into_iter().next().unwrap())
                             } else {
-                                check_sequence_length(result.len(), &self.options)?;
-                                Ok(JValue::array(result))
+                                Ok(obj.get(field_name).cloned().unwrap_or(JValue::Undefined))
                             }
-                        } else {
-                            // Tuple path: per-element tuple handling
-                            let mut result = Vec::new();
-                            for item in arr.iter() {
-                                match item {
-                                    JValue::Object(obj) => {
-                                        let is_tuple =
-                                            obj.get("__tuple__") == Some(&JValue::Bool(true));
-
-                                        if is_tuple {
-                                            let field_val: Option<JValue> = match obj.get("@") {
-                                                Some(JValue::Object(inner)) => {
-                                                    inner.get(field_name).cloned()
-                                                }
-                                                #[cfg(feature = "python")]
-                                                Some(JValue::LazyPyDict(lazy)) => {
-                                                    let v = lazy.get_field(field_name)?;
-                                                    if v.is_undefined() {
-                                                        None
-                                                    } else {
-                                                        Some(v)
-                                                    }
-                                                }
-                                                _ => continue,
-                                            };
-
-                                            if let Some(val) = field_val.as_ref() {
-                                                if !val.is_null() {
-                                                    // Build tuple wrapper - only clone bindings when needed
-                                                    let wrap = |v: JValue| -> JValue {
-                                                        let mut wrapper = IndexMap::new();
-                                                        wrapper.insert("@".to_string(), v);
-                                                        wrapper.insert(
-                                                            "__tuple__".to_string(),
-                                                            JValue::Bool(true),
-                                                        );
-                                                        for (k, v) in obj.iter() {
-                                                            if k.starts_with('$') {
-                                                                wrapper
-                                                                    .insert(k.clone(), v.clone());
-                                                            }
-                                                        }
-                                                        JValue::object(wrapper)
-                                                    };
-
-                                                    match val {
-                                                        JValue::Array(arr_val) => {
-                                                            for item in arr_val.iter() {
-                                                                result.push(wrap(item.clone()));
-                                                            }
-                                                        }
-                                                        other => result.push(wrap(other.clone())),
-                                                    }
-                                                }
-                                            }
-                                        } else {
-                                            // Non-tuple: access field directly by reference, only clone the field value
-                                            if let Some(val) = obj.get(field_name) {
-                                                if !val.is_null() {
-                                                    match val {
-                                                        JValue::Array(arr_val) => {
-                                                            for item in arr_val.iter() {
-                                                                result.push(item.clone());
-                                                            }
-                                                        }
-                                                        other => result.push(other.clone()),
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                    JValue::Array(inner_arr) => {
-                                        // Recursively map over nested array
-                                        let nested_result = self.evaluate_path(
-                                            &[PathStep::new(AstNode::Name(field_name.clone()))],
-                                            &JValue::Array(inner_arr.clone()),
-                                        )?;
-                                        // Add nested result to our results
-                                        match nested_result {
-                                            JValue::Array(nested) => {
-                                                // Flatten nested arrays from recursive mapping
-                                                result.extend(nested.iter().cloned());
-                                            }
-                                            JValue::Null => {}
-                                            other => result.push(other),
-                                        }
-                                    }
-                                    _ => {} // Skip non-object items
-                                }
+                        }
+                        #[cfg(feature = "python")]
+                        JValue::LazyPyDict(lazy) => Ok(lazy.get_field(field_name)?),
+                        JValue::Array(_) => {
+                            // Delegate to the shared field step (skip undefined,
+                            // KEEP nulls, flatten one level, empty -> undefined)
+                            // plus the end-of-path singleton unwrap — the same
+                            // policy as the VM's get_field_cached and jsonata-js.
+                            let extracted = compiled_field_step(field_name, data, &self.options)?;
+                            match extracted {
+                                JValue::Array(arr) if arr.len() == 1 => Ok(arr[0].clone()),
+                                other => Ok(other),
                             }
-
-                            // Return array result
-                            // JSONata singleton unwrapping: if we have exactly one result,
-                            // unwrap it (even if it's an array)
-                            if result.is_empty() {
-                                Ok(JValue::Null)
-                            } else if result.len() == 1 {
-                                Ok(result.into_iter().next().unwrap())
-                            } else {
-                                check_sequence_length(result.len(), &self.options)?;
-                                Ok(JValue::array(result))
-                            }
-                        } // end else (tuple path)
-                    }
-                    _ => Ok(JValue::Undefined),
-                };
+                        }
+                        _ => Ok(JValue::Undefined),
+                    };
+                }
             }
         }
 
@@ -4646,44 +4575,21 @@ impl Evaluator {
                             JValue::LazyPyDict(lazy) => {
                                 return lazy.get_field(field_name).map_err(Into::into);
                             }
-                            JValue::Array(arr) => {
-                                // Map field extraction over array (same as single-step Name on Array)
-                                let mut result = Vec::with_capacity(arr.len());
-                                for item in arr.iter() {
-                                    if let JValue::Object(obj) = item {
-                                        if let Some(val) = obj.get(field_name) {
-                                            if !val.is_undefined() {
-                                                match val {
-                                                    JValue::Array(inner) => {
-                                                        result.extend(inner.iter().cloned());
-                                                    }
-                                                    other => result.push(other.clone()),
-                                                }
-                                            }
-                                        }
-                                    } else {
-                                        #[cfg(feature = "python")]
-                                        if let JValue::LazyPyDict(lazy) = item {
-                                            let val = lazy.get_field(field_name)?;
-                                            if !val.is_undefined() {
-                                                match val {
-                                                    JValue::Array(inner) => {
-                                                        result.extend(inner.iter().cloned());
-                                                    }
-                                                    other => result.push(other),
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                                return match result.len() {
-                                    0 => Ok(JValue::Undefined),
-                                    1 => Ok(result.pop().unwrap()),
-                                    _ => {
-                                        check_sequence_length(result.len(), &self.options)?;
-                                        Ok(JValue::array(result))
-                                    }
-                                };
+                            JValue::Array(_) => {
+                                // Delegate to the shared field step. Its loop
+                                // recurses into nested-array elements the way
+                                // jsonata-js's `lookup` does — the hand-rolled
+                                // loop this replaces skipped them, so
+                                // `($v := [[{"p":1}],{"p":2}]; $v.p)` returned
+                                // 2 where the reference returns [1,2] — then
+                                // apply the end-of-path singleton unwrap the
+                                // general walker performs after array mapping.
+                                let extracted =
+                                    compiled_field_step(field_name, value, &self.options)?;
+                                return Ok(match extracted {
+                                    JValue::Array(arr) if arr.len() == 1 => arr[0].clone(),
+                                    other => other,
+                                });
                             }
                             _ => {} // Fall through to general path evaluation
                         }
@@ -5259,51 +5165,16 @@ impl Evaluator {
                             });
 
                             if !has_tuples && stages.is_empty() {
-                                let mut result = Vec::with_capacity(arr.len());
-                                for item in arr.iter() {
-                                    match item {
-                                        JValue::Object(obj) => {
-                                            // `None` is an absent field (undefined -> drops out);
-                                            // `Some(Null)` is a present null, which is a value and
-                                            // stays in the sequence. Mirrors compiled_field_step.
-                                            if let Some(val) = obj.get(field_name) {
-                                                match val {
-                                                    JValue::Undefined => {}
-                                                    JValue::Array(arr_val) => {
-                                                        result.extend(arr_val.iter().cloned())
-                                                    }
-                                                    other => result.push(other.clone()),
-                                                }
-                                            }
-                                        }
-                                        JValue::Array(_) => {
-                                            let nested_result =
-                                                self.evaluate_path(&[step.clone()], item)?;
-                                            match nested_result {
-                                                JValue::Array(nested) => {
-                                                    result.extend(nested.iter().cloned())
-                                                }
-                                                JValue::Null => {}
-                                                other => result.push(other),
-                                            }
-                                        }
-                                        #[cfg(feature = "python")]
-                                        JValue::LazyPyDict(lazy) => {
-                                            let val = lazy.get_field(field_name)?;
-                                            // A present null is a value; only an absent field (Undefined) drops out.
-                                            if !val.is_undefined() {
-                                                match val {
-                                                    JValue::Array(arr_val) => {
-                                                        result.extend(arr_val.iter().cloned())
-                                                    }
-                                                    other => result.push(other),
-                                                }
-                                            }
-                                        }
-                                        _ => {}
-                                    }
+                                // Delegate to the shared field step (skip undefined,
+                                // keep nulls, flatten one level, recurse into nested
+                                // arrays). Mid-path wants the raw sequence: no
+                                // singleton unwrap, and an empty result stays an
+                                // empty array so the remaining steps map over
+                                // nothing exactly as before.
+                                match compiled_field_step(field_name, &current, &self.options)? {
+                                    JValue::Undefined => JValue::array(Vec::new()),
+                                    other => other,
                                 }
-                                JValue::array(result)
                             } else {
                                 // Full path with tuple support and stages
                                 let mut result = Vec::new();
@@ -5553,11 +5424,16 @@ impl Evaluator {
                                         // Keep the array as a single element to preserve nesting
                                         group_values.push(value);
                                     } else {
-                                        // Flatten the value into group_values
+                                        // Flatten the value into group_values. Undefined is
+                                        // dropped like in every array constructor (jsonata-js:
+                                        // `foo.blah.[baz]` over an element without `baz` is
+                                        // `[]`, not `[null]`); explicit null is a value and
+                                        // stays.
                                         match value {
                                             JValue::Array(arr) => {
                                                 group_values.extend(arr.iter().cloned())
                                             }
+                                            JValue::Undefined => {}
                                             other => group_values.push(other),
                                         }
                                     }
@@ -5571,18 +5447,29 @@ impl Evaluator {
                             // (not wrapped in an outer singleton array) — e.g.
                             // `$.[value,epochSeconds]` over a 1-element array yields
                             // `[3, 1578381600]`, not `[[3, 1578381600]]`.
-                            if is_last_step && result.len() == 1 {
+                            if result.is_empty() {
+                                // Mapping over an EMPTY array produced nothing at
+                                // all — undefined, like any step mapped over an
+                                // empty sequence (`emptyarr.[b]`), NOT a kept empty
+                                // array (that is the single-value construction
+                                // case, handled in finalize_path_result).
+                                JValue::Undefined
+                            } else if is_last_step && result.len() == 1 {
                                 result.into_iter().next().unwrap()
                             } else {
                                 JValue::array(result)
                             }
                         }
                         _ => {
-                            // For non-arrays, just evaluate the array constructor normally
+                            // For non-arrays, just evaluate the array constructor
+                            // normally; undefined elements are dropped like in every
+                            // array constructor (`{"a":1}.[b]` is `[]`).
                             let mut result = Vec::new();
                             for element in elements {
                                 let value = self.evaluate_internal(element, &current)?;
-                                result.push(value);
+                                if !value.is_undefined() {
+                                    result.push(value);
+                                }
                             }
                             JValue::array(result)
                         }
@@ -5707,6 +5594,22 @@ impl Evaluator {
             };
         }
 
+        self.finalize_path_result(steps, current, did_array_mapping)
+    }
+
+    /// End-of-path result policy, applied once after the step loop: project a
+    /// tuple stream down to its visible `@` values (unless a consumer asked to
+    /// keep the wrappers), decide singleton unwrapping vs `[]` keep-array,
+    /// collapse an empty result sequence to undefined, and enforce D2015.
+    ///
+    /// Extracted from `evaluate_path` verbatim so the policy has a name; the
+    /// inline comments below are the rule.
+    fn finalize_path_result(
+        &mut self,
+        steps: &[PathStep],
+        mut current: JValue,
+        did_array_mapping: bool,
+    ) -> Result<JValue, EvaluatorError> {
         // End-of-path tuple projection, mirroring jsonata-js evaluatePath
         // (jsonata.js ~L202-212): once the path is a tuple stream, its VISIBLE
         // result is each tuple's `@` value; the `{@, $var, !label, __tuple__}`
@@ -5804,8 +5707,18 @@ impl Evaluator {
             // path that found nothing never even reaches the predicate,
             // because the step loop returns undefined first, which is why
             // `nope[]` needs no special case here.
+            // ...and a trailing `.[...]` group over a SINGLE value is a
+            // constructed array, not a result sequence: `{"a":1}.[b]` is `[]`
+            // in jsonata-js, while `emptyarr.[b]` (mapped over nothing) is
+            // undefined — `did_array_mapping` is again what tells them apart.
             JValue::Array(arr)
-                if arr.is_empty() && (did_array_mapping || !has_explicit_array_keep) =>
+                if arr.is_empty()
+                    && (did_array_mapping || !has_explicit_array_keep)
+                    && (did_array_mapping
+                        || !matches!(
+                            steps.last().map(|s| &s.node),
+                            Some(AstNode::ArrayGroup(_))
+                        )) =>
             {
                 JValue::Undefined
             }
@@ -6402,14 +6315,12 @@ impl Evaluator {
                 // Do regex match inline
                 return match lhs_value {
                     JValue::String(s) => {
-                        // Build the regex
-                        let case_insensitive = flags.contains('i');
-                        let regex_pattern = if case_insensitive {
-                            format!("(?i){}", pattern)
-                        } else {
-                            pattern.clone()
-                        };
-                        match regex::Regex::new(&regex_pattern) {
+                        // Build the regex via the shared flag translation
+                        // ($split/$replace use the same helper, so i/m/s
+                        // behave identically on every entry point).
+                        match crate::functions::string::build_regex(pattern, flags)
+                            .map_err(|e| EvaluatorError::EvaluationError(e.to_string()))
+                        {
                             Ok(re) => {
                                 if let Some(m) = re.find(&s) {
                                     // Return match object
@@ -6751,19 +6662,16 @@ impl Evaluator {
                     captured_env,
                     captured_data: Some(data.clone()),
                     thunk: *thunk,
+                    // Named definition: the closure knows its own name so the
+                    // body's recursive `$f(...)` resolves to THIS closure at
+                    // every invocation, wherever the value has traveled.
+                    self_name: Some(var_name.clone()),
+                    partial: None,
+                    live_token: LiveLambdaToken::new(),
                 };
-                let lambda_params = stored_lambda.params.clone();
-                let lambda_sig = stored_lambda.signature.clone();
-                self.context.bind_lambda(var_name.clone(), stored_lambda);
-
-                // Return a lambda marker value (include _lambda_id so it can be found later)
-                let lambda_repr = JValue::lambda(
-                    var_name.as_str(),
-                    lambda_params,
-                    Some(var_name.clone()),
-                    lambda_sig,
-                );
-                return Ok(lambda_repr);
+                let lambda_value = JValue::Lambda(Rc::new(stored_lambda));
+                self.context.bind(var_name, lambda_value.clone());
+                return Ok(lambda_value);
             }
 
             // Check if RHS is a pure function composition (ChainPipe between function references)
@@ -6783,7 +6691,7 @@ impl Evaluator {
                     // LHS is a function reference like $trim or $sum
                     AstNode::Variable(name)
                         if self.is_builtin_function(name)
-                            || self.context.lookup_lambda(name).is_some() =>
+                            || self.context.lookup_lambda_value(name).is_some() =>
                     {
                         true
                     }
@@ -6831,28 +6739,20 @@ impl Evaluator {
                         captured_env: self.capture_current_environment(),
                         captured_data: Some(data.clone()),
                         thunk: false,
+                        self_name: Some(var_name.clone()),
+                        partial: None,
+                        live_token: LiveLambdaToken::new(),
                     };
-                    self.context.bind_lambda(var_name.clone(), stored_lambda);
-
-                    // Return a lambda marker value (include _lambda_id for later lookup)
-                    let lambda_repr = JValue::lambda(
-                        var_name.as_str(),
-                        vec!["$".to_string()],
-                        Some(var_name.clone()),
-                        None::<String>,
-                    );
-                    return Ok(lambda_repr);
+                    let lambda_value = JValue::Lambda(Rc::new(stored_lambda));
+                    self.context.bind(var_name, lambda_value.clone());
+                    return Ok(lambda_value);
                 }
                 // If not function composition, fall through to normal evaluation below
             }
 
-            // Evaluate the RHS
+            // Evaluate the RHS. A lambda value carries its own closure, so
+            // aliasing (`$g := $f`) is just binding the value.
             let value = self.evaluate_internal(rhs, data)?;
-
-            // If the value is a lambda, copy the stored lambda to the new variable name
-            if let Some(stored) = self.lookup_lambda_from_value(&value) {
-                self.context.bind_lambda(var_name.clone(), stored);
-            }
 
             // Bind even if undefined (null) so inner scopes can shadow outer variables
             self.context.bind(var_name, value.clone());
@@ -6880,28 +6780,18 @@ impl Evaluator {
             return Ok(JValue::Bool(self.is_truthy(&right)));
         }
 
-        // Check if operands are explicit null literals (vs undefined from variables)
-        let left_is_explicit_null = matches!(lhs, AstNode::Null);
-        let right_is_explicit_null = matches!(rhs, AstNode::Null);
-
-        // Standard evaluation: evaluate both operands
+        // Standard evaluation: evaluate both operands, then dispatch to the
+        // shared arithmetic/comparison implementations (one definition for the
+        // tree-walker, the compiled path, and the VM).
         let left = self.evaluate_internal(lhs, data)?;
         let right = self.evaluate_internal(rhs, data)?;
 
         match op {
-            BinaryOp::Add => self.add(&left, &right, left_is_explicit_null, right_is_explicit_null),
-            BinaryOp::Subtract => {
-                self.subtract(&left, &right, left_is_explicit_null, right_is_explicit_null)
-            }
-            BinaryOp::Multiply => {
-                self.multiply(&left, &right, left_is_explicit_null, right_is_explicit_null)
-            }
-            BinaryOp::Divide => {
-                self.divide(&left, &right, left_is_explicit_null, right_is_explicit_null)
-            }
-            BinaryOp::Modulo => {
-                self.modulo(&left, &right, left_is_explicit_null, right_is_explicit_null)
-            }
+            BinaryOp::Add => compiled_arithmetic(CompiledArithOp::Add, &left, &right),
+            BinaryOp::Subtract => compiled_arithmetic(CompiledArithOp::Sub, &left, &right),
+            BinaryOp::Multiply => compiled_arithmetic(CompiledArithOp::Mul, &left, &right),
+            BinaryOp::Divide => compiled_arithmetic(CompiledArithOp::Div, &left, &right),
+            BinaryOp::Modulo => compiled_arithmetic(CompiledArithOp::Mod, &left, &right),
 
             // compiled_equal normalizes lazy operands (guarded, zero-cost when neither
             // side is lazy) so conversion failures raise instead of silently comparing
@@ -6909,23 +6799,17 @@ impl Evaluator {
             BinaryOp::Equal => compiled_equal(&left, &right),
             BinaryOp::NotEqual => compiled_not_equal(&left, &right),
             BinaryOp::LessThan => {
-                self.less_than(&left, &right, left_is_explicit_null, right_is_explicit_null)
+                compiled_ordered_cmp(&left, &right, "<", |a, b| a < b, |a, b| a < b)
             }
-            BinaryOp::LessThanOrEqual => self.less_than_or_equal(
-                &left,
-                &right,
-                left_is_explicit_null,
-                right_is_explicit_null,
-            ),
+            BinaryOp::LessThanOrEqual => {
+                compiled_ordered_cmp(&left, &right, "<=", |a, b| a <= b, |a, b| a <= b)
+            }
             BinaryOp::GreaterThan => {
-                self.greater_than(&left, &right, left_is_explicit_null, right_is_explicit_null)
+                compiled_ordered_cmp(&left, &right, ">", |a, b| a > b, |a, b| a > b)
             }
-            BinaryOp::GreaterThanOrEqual => self.greater_than_or_equal(
-                &left,
-                &right,
-                left_is_explicit_null,
-                right_is_explicit_null,
-            ),
+            BinaryOp::GreaterThanOrEqual => {
+                compiled_ordered_cmp(&left, &right, ">=", |a, b| a >= b, |a, b| a >= b)
+            }
 
             // And/Or handled above with short-circuit evaluation
             BinaryOp::And | BinaryOp::Or => unreachable!(),
@@ -7124,19 +7008,18 @@ impl Evaluator {
             return self.create_partial_application(name, args, is_builtin, data);
         }
 
-        // FIRST check if this variable holds a function value (lambda or builtin reference)
-        // This is critical for:
-        // 1. Allowing function parameters to shadow stored lambdas
-        //    (e.g., Y-combinator pattern: function($g){$g($g)} where parameter $g shadows outer $g)
-        // 2. Calling built-in functions passed as parameters
-        //    (e.g., λ($f){$f(5)}($sum) where $f is bound to $sum reference)
+        // FIRST check if this variable holds a function value (lambda or builtin
+        // reference). User-defined functions, closures, partial applications and
+        // parameters holding function values are all ordinary bindings now, so
+        // one lookup covers them — and parameter shadowing (Y-combinator's
+        // function($g){$g($g)}) falls out of plain scope order.
         if let Some(value) = self.context.lookup(name).cloned() {
-            if let Some(stored_lambda) = self.lookup_lambda_from_value(&value) {
+            if let JValue::Lambda(stored_lambda) = &value {
                 let mut evaluated_args = Vec::with_capacity(args.len());
                 for arg in args {
                     evaluated_args.push(self.evaluate_internal(arg, data)?);
                 }
-                return self.invoke_stored_lambda(&stored_lambda, &evaluated_args, data);
+                return self.invoke_stored_lambda(stored_lambda, &evaluated_args, data);
             }
             if let JValue::Builtin { name: builtin_name } = &value {
                 // This is a built-in function reference (e.g., $f bound to $sum),
@@ -7149,16 +7032,6 @@ impl Evaluator {
                 }
                 return self.call_builtin_with_values(builtin_name, &evaluated_args, data, false);
             }
-        }
-
-        // THEN check if this is a stored lambda (user-defined function by name)
-        // This only applies if not shadowed by a binding above
-        if let Some(stored_lambda) = self.context.lookup_lambda(name).cloned() {
-            let mut evaluated_args = Vec::with_capacity(args.len());
-            for arg in args {
-                evaluated_args.push(self.evaluate_internal(arg, data)?);
-            }
-            return self.invoke_stored_lambda(&stored_lambda, &evaluated_args, data);
         }
 
         // THEN a host-registered custom function (register_fn / register_fn_override).
@@ -7213,12 +7086,8 @@ impl Evaluator {
                     return Ok(JValue::Bool(true)); // Built-in function exists
                 }
 
-                // Check if it's a stored lambda
-                if self.context.lookup_lambda(var_name).is_some() {
-                    return Ok(JValue::Bool(true)); // Lambda exists
-                }
-
-                // Check if the variable is defined
+                // Check if the variable is defined (lambda values are ordinary
+                // bindings, so this covers user-defined functions too)
                 if let Some(val) = self.context.lookup(var_name) {
                     // A variable bound to the undefined marker doesn't "exist"
                     if val.is_undefined() {
@@ -7542,17 +7411,11 @@ impl Evaluator {
                     None => (".*".to_string(), "".to_string()),
                 };
 
-                // Build regex
+                // Build regex via the shared flag translation ($split/$replace
+                // use the same helper, so i/m/s behave identically everywhere)
                 let is_global = flags.contains('g');
-                let regex_pattern = if flags.contains('i') {
-                    format!("(?i){}", pattern)
-                } else {
-                    pattern.clone()
-                };
-
-                let re = regex::Regex::new(&regex_pattern).map_err(|e| {
-                    EvaluatorError::EvaluationError(format!("Invalid regex pattern: {}", e))
-                })?;
+                let re = crate::functions::string::build_regex(&pattern, &flags)
+                    .map_err(|e| EvaluatorError::EvaluationError(e.to_string()))?;
 
                 let mut results = Vec::new();
                 let mut count = 0;
@@ -7640,21 +7503,9 @@ impl Evaluator {
 
                     let mut result = IndexMap::new();
                     for (key, value) in obj.iter() {
-                        // Build argument list based on what callback expects.
-                        // Mirrors jsonata-js's hofFuncArgs: the value is
-                        // always passed regardless of declared arity (JS
-                        // ignores extra parameters a function didn't
-                        // declare) -- a 0-arity callback still gets 1 here,
-                        // not 0.
-                        let call_args = match param_count {
-                            0 | 1 => vec![value.clone()],
-                            2 => vec![value.clone(), JValue::string(key.clone())],
-                            _ => vec![
-                                value.clone(),
-                                JValue::string(key.clone()),
-                                obj_value.as_ref().unwrap().clone(),
-                            ],
-                        };
+                        // hofFuncArgs shaping (see hof_object_call_args)
+                        let call_args =
+                            hof_object_call_args(value, key, obj_value.as_ref(), param_count);
 
                         let pred_result =
                             evaluator.apply_function(func_node, &call_args, context_data)?;
@@ -7817,7 +7668,7 @@ impl Evaluator {
                             }
                             // Stored lambda variable fast path: $var with pre-compiled body
                             if let AstNode::Variable(var_name) = &args[1] {
-                                if let Some(stored) = self.context.lookup_lambda(var_name) {
+                                if let Some(stored) = self.context.lookup_lambda_value(var_name) {
                                     if let Some(ref ce) = stored.compiled_body.clone() {
                                         let param_name = stored.params[0].clone();
                                         let captured_data = stored.captured_data.clone();
@@ -7865,20 +7716,9 @@ impl Evaluator {
 
                         let mut result = Vec::with_capacity(arr.len());
                         for (index, item) in arr.iter().enumerate() {
-                            // Build argument list based on what callback expects.
-                            // Mirrors jsonata-js's hofFuncArgs: the value is
-                            // always passed regardless of declared arity -- a
-                            // 0-arity callback still gets 1 argument here,
-                            // not 0.
-                            let call_args = match param_count {
-                                0 | 1 => vec![item.clone()],
-                                2 => vec![item.clone(), JValue::Number(index as f64)],
-                                _ => vec![
-                                    item.clone(),
-                                    JValue::Number(index as f64),
-                                    arr_value.as_ref().unwrap().clone(),
-                                ],
-                            };
+                            // hofFuncArgs shaping (see hof_array_call_args)
+                            let call_args =
+                                hof_array_call_args(item, index, arr_value.as_ref(), param_count);
 
                             let mapped = self.apply_function(&args[1], &call_args, data)?;
                             // Filter out undefined results but keep explicit null (JSONata map semantics)
@@ -7972,7 +7812,7 @@ impl Evaluator {
                     }
                     // Stored lambda variable fast path: $var with pre-compiled body
                     if let AstNode::Variable(var_name) = &args[1] {
-                        if let Some(stored) = self.context.lookup_lambda(var_name) {
+                        if let Some(stored) = self.context.lookup_lambda_value(var_name) {
                             if let Some(ref ce) = stored.compiled_body.clone() {
                                 let param_name = stored.params[0].clone();
                                 let captured_data = stored.captured_data.clone();
@@ -8024,19 +7864,9 @@ impl Evaluator {
                 let mut result = Vec::with_capacity(items.len() / 2);
 
                 for (index, item) in items.iter().enumerate() {
-                    // Build argument list based on what callback expects.
-                    // Mirrors jsonata-js's hofFuncArgs: the value is always
-                    // passed regardless of declared arity -- a 0-arity
-                    // callback still gets 1 argument here, not 0.
-                    let call_args = match param_count {
-                        0 | 1 => vec![item.clone()],
-                        2 => vec![item.clone(), JValue::Number(index as f64)],
-                        _ => vec![
-                            item.clone(),
-                            JValue::Number(index as f64),
-                            arr_value.as_ref().unwrap().clone(),
-                        ],
-                    };
+                    // hofFuncArgs shaping (see hof_array_call_args)
+                    let call_args =
+                        hof_array_call_args(item, index, arr_value.as_ref(), param_count);
 
                     let predicate_result = self.apply_function(&args[1], &call_args, data)?;
                     if self.is_truthy(&predicate_result) {
@@ -8143,7 +7973,7 @@ impl Evaluator {
                     }
                     // Stored lambda variable fast path: $var with pre-compiled body
                     if let AstNode::Variable(var_name) = &args[1] {
-                        if let Some(stored) = self.context.lookup_lambda(var_name) {
+                        if let Some(stored) = self.context.lookup_lambda_value(var_name) {
                             if stored.params.len() == 2 {
                                 if let Some(ref ce) = stored.compiled_body.clone() {
                                     let acc_param = stored.params[0].clone();
@@ -8269,19 +8099,9 @@ impl Evaluator {
                     };
                     let mut matches = Vec::new();
                     for (index, item) in arr.into_iter().enumerate() {
-                        // Build argument list based on what callback expects.
-                        // Mirrors jsonata-js's hofFuncArgs: the value is
-                        // always passed regardless of declared arity -- a
-                        // 0-arity callback still gets 1 argument here, not 0.
-                        let call_args = match param_count {
-                            0 | 1 => vec![item.clone()],
-                            2 => vec![item.clone(), JValue::Number(index as f64)],
-                            _ => vec![
-                                item.clone(),
-                                JValue::Number(index as f64),
-                                arr_value.as_ref().unwrap().clone(),
-                            ],
-                        };
+                        // hofFuncArgs shaping (see hof_array_call_args)
+                        let call_args =
+                            hof_array_call_args(&item, index, arr_value.as_ref(), param_count);
                         let predicate_result = self.apply_function(&args[1], &call_args, data)?;
                         if self.is_truthy(&predicate_result) {
                             matches.push(item);
@@ -8329,21 +8149,10 @@ impl Evaluator {
                     JValue::Object(obj) => {
                         let mut result = Vec::new();
                         for (key, value) in obj.iter() {
-                            // Build argument list based on what callback expects.
-                            // Mirrors jsonata-js's hofFuncArgs: the value is
-                            // always passed regardless of declared arity (a
-                            // 0-arity callback still gets 1 argument, not 0);
-                            // the key is added only at arity >= 2, and the
-                            // whole object only at arity >= 3.
-                            let call_args = match param_count {
-                                0 | 1 => vec![value.clone()],
-                                2 => vec![value.clone(), JValue::string(key.clone())],
-                                _ => vec![
-                                    value.clone(),
-                                    JValue::string(key.clone()),
-                                    JValue::Object(obj.clone()),
-                                ],
-                            };
+                            // hofFuncArgs shaping (see hof_object_call_args)
+                            let obj_whole = (param_count >= 3).then(|| JValue::Object(obj.clone()));
+                            let call_args =
+                                hof_object_call_args(value, key, obj_whole.as_ref(), param_count);
 
                             let fn_result = self.apply_function(func_arg, &call_args, data)?;
                             // Skip undefined results only. jsonata-js guards
@@ -8436,14 +8245,11 @@ impl Evaluator {
                 }
             }
             AstNode::Variable(var_name) => {
-                // Check if this variable holds a stored lambda
-                if let Some(stored_lambda) = self.context.lookup_lambda(var_name).cloned() {
-                    self.invoke_stored_lambda(&stored_lambda, values, data)
-                } else if let Some(value) = self.context.lookup(var_name).cloned() {
-                    // Check if this variable holds a lambda value
-                    // This handles lambdas passed as bound arguments in partial applications
-                    if let Some(stored) = self.lookup_lambda_from_value(&value) {
-                        return self.invoke_stored_lambda(&stored, values, data);
+                if let Some(value) = self.context.lookup(var_name).cloned() {
+                    // A lambda value covers user-defined functions, closures and
+                    // partial applications alike
+                    if let JValue::Lambda(stored) = &value {
+                        return self.invoke_stored_lambda(stored, values, data);
                     }
                     // `$f := $uppercase` binds a `JValue::Builtin`, which is
                     // not a lambda and so fell through to "evaluate as a plain
@@ -8635,10 +8441,17 @@ impl Evaluator {
         data: &JValue,
         thunk: bool,
     ) -> Result<JValue, EvaluatorError> {
-        self.invoke_lambda_with_env(params, body, signature, values, data, None, None, thunk)
+        self.invoke_lambda_with_env(
+            params, body, signature, values, data, None, None, thunk, None,
+        )
     }
 
-    /// Invoke a lambda with optional captured environment (for closures)
+    /// Invoke a lambda with optional captured environment (for closures).
+    ///
+    /// `self_rc` is the shared closure handle when the caller is invoking a
+    /// `StoredLambda` value; if that closure has a `self_name`, the name is
+    /// bound to the closure itself for the call (late-bound letrec).
+    #[allow(clippy::too_many_arguments)]
     fn invoke_lambda_with_env(
         &mut self,
         params: &[String],
@@ -8649,17 +8462,24 @@ impl Evaluator {
         captured_env: Option<&HashMap<String, JValue>>,
         captured_data: Option<&JValue>,
         thunk: bool,
+        self_rc: Option<&Rc<StoredLambda>>,
     ) -> Result<JValue, EvaluatorError> {
         // If this is a thunk (has tail calls), use TCO trampoline
         if thunk {
-            let stored = StoredLambda {
-                params: params.to_vec(),
-                body: body.clone(),
-                compiled_body: None, // Thunks use TCO, not the compiled fast path
-                signature: signature.cloned(),
-                captured_env: captured_env.cloned().unwrap_or_default(),
-                captured_data: captured_data.cloned(),
-                thunk,
+            let stored = match self_rc {
+                Some(rc) => Rc::clone(rc),
+                None => Rc::new(StoredLambda {
+                    params: params.to_vec(),
+                    body: body.clone(),
+                    compiled_body: None, // Thunks use TCO, not the compiled fast path
+                    signature: signature.cloned(),
+                    captured_env: captured_env.cloned().unwrap_or_default(),
+                    captured_data: captured_data.cloned(),
+                    thunk,
+                    self_name: None,
+                    partial: None,
+                    live_token: LiveLambdaToken::new(),
+                }),
             };
             return self.invoke_lambda_with_tco(&stored, values, data);
         }
@@ -8675,55 +8495,24 @@ impl Evaluator {
             }
         }
 
+        // Late-bound self-reference: shadows any captured binding of the same
+        // name (a rebinding `$f := function(){ ...$f()... }` must recurse into
+        // itself, not the captured previous $f); parameters bind after this
+        // and shadow it in turn.
+        if let Some(rc) = self_rc {
+            if let Some(self_name) = &rc.self_name {
+                self.context
+                    .bind(self_name.clone(), JValue::Lambda(Rc::clone(rc)));
+            }
+        }
+
         if let Some(sig_str) = signature {
             // Validate and coerce arguments with signature
-            let coerced_values = match crate::signature::Signature::parse(sig_str) {
-                Ok(sig) => match sig.validate_and_coerce(values, data) {
-                    Ok(coerced) => coerced,
-                    Err(e) => {
-                        self.context.pop_scope();
-                        match e {
-                            crate::signature::SignatureError::ArgumentTypeMismatch {
-                                index,
-                                expected,
-                            } => {
-                                return Err(EvaluatorError::TypeError(
-                                        format!("T0410: Argument {} of function does not match function signature (expected {})", index, expected)
-                                    ));
-                            }
-                            crate::signature::SignatureError::ArrayTypeMismatch {
-                                index,
-                                expected,
-                            } => {
-                                return Err(EvaluatorError::TypeError(format!(
-                                    "T0412: Argument {} of function must be an array of {}",
-                                    index, expected
-                                )));
-                            }
-                            crate::signature::SignatureError::ContextTypeMismatch {
-                                index,
-                                expected,
-                            } => {
-                                return Err(EvaluatorError::TypeError(format!(
-                                    "T0411: Context value at argument {} does not match function signature (expected {})",
-                                    index, expected
-                                )));
-                            }
-                            _ => {
-                                return Err(EvaluatorError::TypeError(format!(
-                                    "Signature validation failed: {}",
-                                    e
-                                )));
-                            }
-                        }
-                    }
-                },
+            let coerced_values = match coerce_lambda_args(sig_str, values, data) {
+                Ok(v) => v,
                 Err(e) => {
                     self.context.pop_scope();
-                    return Err(EvaluatorError::EvaluationError(format!(
-                        "Invalid signature: {}",
-                        e
-                    )));
+                    return Err(e);
                 }
             };
             // Bind coerced values to params
@@ -8739,101 +8528,13 @@ impl Evaluator {
             }
         }
 
-        // Check if this is a partial application (body is a special marker string)
-        if let AstNode::String(body_str) = body {
-            if body_str.starts_with("__partial_call:") {
-                // Parse the partial call info
-                let parts: Vec<&str> = body_str.split(':').collect();
-                if parts.len() >= 4 {
-                    let func_name = parts[1];
-                    let is_builtin = parts[2] == "true";
-                    let total_args: usize = parts[3].parse().unwrap_or(0);
-
-                    // Get placeholder positions from captured env
-                    let placeholder_positions: Vec<usize> = if let Some(env) = captured_env {
-                        if let Some(JValue::Array(positions)) = env.get("__placeholder_positions") {
-                            positions
-                                .iter()
-                                .filter_map(|v| v.as_f64().map(|n| n as usize))
-                                .collect()
-                        } else {
-                            vec![]
-                        }
-                    } else {
-                        vec![]
-                    };
-
-                    // Reconstruct the full argument list
-                    let mut full_args: Vec<JValue> = vec![JValue::Null; total_args];
-
-                    // Fill in bound arguments from captured environment
-                    if let Some(env) = captured_env {
-                        for (key, value) in env {
-                            if key.starts_with("__bound_arg_") {
-                                if let Ok(pos) = key[12..].parse::<usize>() {
-                                    if pos < total_args {
-                                        full_args[pos] = value.clone();
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    // Fill in placeholder positions with provided values
-                    for (i, &pos) in placeholder_positions.iter().enumerate() {
-                        if pos < total_args {
-                            let value = values.get(i).cloned().unwrap_or(JValue::Null);
-                            full_args[pos] = value;
-                        }
-                    }
-
-                    // Pop lambda scope, then push a new scope for temp args
-                    self.context.pop_scope();
-                    self.context.push_scope();
-
-                    // Build AST nodes for the function call arguments
-                    let mut temp_args: Vec<AstNode> = Vec::new();
-                    for (i, value) in full_args.iter().enumerate() {
-                        let temp_name = format!("__temp_arg_{}", i);
-                        self.context.bind(temp_name.clone(), value.clone());
-                        temp_args.push(AstNode::Variable(temp_name));
-                    }
-
-                    // Call the original function
-                    let result =
-                        self.evaluate_function_call(func_name, &temp_args, is_builtin, data);
-
-                    // Pop temp scope
-                    self.context.pop_scope();
-
-                    return result;
-                }
-            }
-        }
-
         // Evaluate lambda body (normal case)
         // Use captured_data for lexical scoping if available, otherwise use call-site data
         let body_data = captured_data.unwrap_or(data);
-        let result = self.evaluate_internal(body, body_data)?;
-
-        // Pop lambda scope, preserving any lambdas referenced by the return value
-        // Fast path: scalar results can never contain lambda references
-        let is_scalar = matches!(
-            &result,
-            JValue::Number(_)
-                | JValue::Bool(_)
-                | JValue::String(_)
-                | JValue::Null
-                | JValue::Undefined
-        );
-        if is_scalar {
-            self.context.pop_scope();
-        } else {
-            let lambdas_to_keep = self.extract_lambda_ids(&result);
-            self.context.pop_scope_preserving_lambdas(&lambdas_to_keep);
-        }
-
-        Ok(result)
+        let result = self.evaluate_internal(body, body_data);
+        // A returned closure carries its own storage; popping is unconditional.
+        self.context.pop_scope();
+        result
     }
 
     /// Invoke a lambda with tail call optimization using a trampoline
@@ -8841,11 +8542,11 @@ impl Evaluator {
     /// growing the stack, enabling deep recursion for tail-recursive functions.
     fn invoke_lambda_with_tco(
         &mut self,
-        stored_lambda: &StoredLambda,
+        stored_lambda: &Rc<StoredLambda>,
         initial_args: &[JValue],
         data: &JValue,
     ) -> Result<JValue, EvaluatorError> {
-        let mut current_lambda = stored_lambda.clone();
+        let mut current_lambda = Rc::clone(stored_lambda);
         let mut current_args = initial_args.to_vec();
         let mut current_data = data.clone();
 
@@ -8892,16 +8593,15 @@ impl Evaluator {
                 LambdaResult::JValue(v) => break v,
                 LambdaResult::TailCall { lambda, args, data } => {
                     // Continue with the tail call - no stack growth
-                    current_lambda = *lambda;
+                    current_lambda = lambda;
                     current_args = args;
                     current_data = data;
                 }
             }
         };
 
-        // Pop the persistent TCO scope, preserving lambdas referenced by the result
-        let lambdas_to_keep = self.extract_lambda_ids(&result);
-        self.context.pop_scope_preserving_lambdas(&lambdas_to_keep);
+        // Pop the persistent TCO scope; escaping closures carry their own storage.
+        self.context.pop_scope();
 
         Ok(result)
     }
@@ -8912,54 +8612,13 @@ impl Evaluator {
     /// manages the persistent scope for the trampoline loop.
     fn invoke_lambda_body_for_tco(
         &mut self,
-        lambda: &StoredLambda,
+        lambda: &Rc<StoredLambda>,
         values: &[JValue],
         data: &JValue,
     ) -> Result<LambdaResult, EvaluatorError> {
         // Validate signature if present
         let coerced_values = if let Some(sig_str) = &lambda.signature {
-            match crate::signature::Signature::parse(sig_str) {
-                Ok(sig) => match sig.validate_and_coerce(values, data) {
-                    Ok(coerced) => coerced,
-                    Err(e) => match e {
-                        crate::signature::SignatureError::ArgumentTypeMismatch {
-                            index,
-                            expected,
-                        } => {
-                            return Err(EvaluatorError::TypeError(
-                                        format!("T0410: Argument {} of function does not match function signature (expected {})", index, expected)
-                                    ));
-                        }
-                        crate::signature::SignatureError::ArrayTypeMismatch { index, expected } => {
-                            return Err(EvaluatorError::TypeError(format!(
-                                "T0412: Argument {} of function must be an array of {}",
-                                index, expected
-                            )));
-                        }
-                        crate::signature::SignatureError::ContextTypeMismatch {
-                            index,
-                            expected,
-                        } => {
-                            return Err(EvaluatorError::TypeError(format!(
-                                "T0411: Context value at argument {} does not match function signature (expected {})",
-                                index, expected
-                            )));
-                        }
-                        _ => {
-                            return Err(EvaluatorError::TypeError(format!(
-                                "Signature validation failed: {}",
-                                e
-                            )));
-                        }
-                    },
-                },
-                Err(e) => {
-                    return Err(EvaluatorError::EvaluationError(format!(
-                        "Invalid signature: {}",
-                        e
-                    )));
-                }
-            }
+            coerce_lambda_args(sig_str, values, data)?
         } else {
             values.to_vec()
         };
@@ -8968,6 +8627,13 @@ impl Evaluator {
         // Apply captured environment
         for (name, value) in &lambda.captured_env {
             self.context.bind(name.clone(), value.clone());
+        }
+
+        // Late-bound self-reference (shadows a captured binding of the same
+        // name; parameters shadow it in turn)
+        if let Some(self_name) = &lambda.self_name {
+            self.context
+                .bind(self_name.clone(), JValue::Lambda(Rc::clone(lambda)));
         }
 
         // Bind parameters
@@ -9065,11 +8731,13 @@ impl Evaluator {
                         captured_env,
                         captured_data: Some(data.clone()),
                         thunk: *thunk,
+                        self_name: Some(var_name.clone()),
+                        partial: None,
+                        live_token: LiveLambdaToken::new(),
                     };
-                    self.context.bind_lambda(var_name, stored_lambda);
-                    let lambda_repr =
-                        JValue::lambda("anon", params.clone(), None::<String>, None::<String>);
-                    return Ok(LambdaResult::JValue(lambda_repr));
+                    let lambda_value = JValue::Lambda(Rc::new(stored_lambda));
+                    self.context.bind(var_name, lambda_value.clone());
+                    return Ok(LambdaResult::JValue(lambda_value));
                 }
 
                 // Evaluate the RHS
@@ -9080,15 +8748,15 @@ impl Evaluator {
 
             // Function call - this is where TCO happens
             AstNode::Function { name, args, .. } => {
-                // Check if this is a call to a stored lambda (user function)
-                if let Some(stored_lambda) = self.context.lookup_lambda(name).cloned() {
+                // Check if this is a call to a lambda value (user function)
+                if let Some(stored_lambda) = self.context.lookup_lambda_value(name).cloned() {
                     if stored_lambda.thunk {
                         let mut evaluated_args = Vec::with_capacity(args.len());
                         for arg in args {
                             evaluated_args.push(self.evaluate_internal(arg, data)?);
                         }
                         return Ok(LambdaResult::TailCall {
-                            lambda: Box::new(stored_lambda),
+                            lambda: stored_lambda,
                             args: evaluated_args,
                             data: data.clone(),
                         });
@@ -9105,19 +8773,18 @@ impl Evaluator {
                 let callable = self.evaluate_internal(procedure, data)?;
 
                 // Check if it's a lambda with TCO
-                if let JValue::Lambda { lambda_id, .. } = &callable {
-                    if let Some(stored_lambda) = self.context.lookup_lambda(lambda_id).cloned() {
-                        if stored_lambda.thunk {
-                            let mut evaluated_args = Vec::with_capacity(args.len());
-                            for arg in args {
-                                evaluated_args.push(self.evaluate_internal(arg, data)?);
-                            }
-                            return Ok(LambdaResult::TailCall {
-                                lambda: Box::new(stored_lambda),
-                                args: evaluated_args,
-                                data: data.clone(),
-                            });
+                if let JValue::Lambda(stored_lambda) = &callable {
+                    if stored_lambda.thunk {
+                        let stored_lambda = Rc::clone(stored_lambda);
+                        let mut evaluated_args = Vec::with_capacity(args.len());
+                        for arg in args {
+                            evaluated_args.push(self.evaluate_internal(arg, data)?);
                         }
+                        return Ok(LambdaResult::TailCall {
+                            lambda: stored_lambda,
+                            args: evaluated_args,
+                            data: data.clone(),
+                        });
                     }
                 }
                 // Not a thunk - evaluate normally
@@ -10208,27 +9875,9 @@ impl Evaluator {
 
     /// Check if a value is truthy (JSONata semantics).
     fn is_truthy(&self, value: &JValue) -> bool {
-        match value {
-            JValue::Null | JValue::Undefined => false,
-            JValue::Bool(b) => *b,
-            JValue::Number(n) => *n != 0.0,
-            JValue::String(s) => !s.is_empty(),
-            // JSONata has ONE truthiness rule and applies it recursively: a
-            // container is truthy only if some element is truthy, checked all
-            // the way down. `[0]`, `[[0]]` and `[0,0]` are all falsy. This arm
-            // used to ask only whether the array was non-empty, which made
-            // `$not([0])` false where `$boolean([0])` -- already correct -- is
-            // false and so `$not` must be true (#111).
-            JValue::Array(arr) => match arr.len() {
-                0 => false,
-                1 => self.is_truthy(&arr[0]),
-                _ => arr.iter().any(|v| self.is_truthy(v)),
-            },
-            JValue::Object(obj) => !obj.is_empty(),
-            #[cfg(feature = "python")]
-            JValue::LazyPyDict(lazy) => !lazy.is_empty(),
-            _ => false,
-        }
+        // One definition of truthiness for both engines (see
+        // `compiled_is_truthy` for the recursive-container rule, #111).
+        compiled_is_truthy(value)
     }
 
     /// Unwrap singleton arrays to scalar values
@@ -10240,166 +9889,7 @@ impl Evaluator {
         }
     }
 
-    /// Extract lambda IDs from a value (used for closure preservation)
-    /// Finds any lambda_id references in the value so they can be preserved
-    /// when exiting a block scope
-    fn extract_lambda_ids(&self, value: &JValue) -> Vec<String> {
-        // Fast path: scalars can never contain lambda references
-        match value {
-            JValue::Number(_)
-            | JValue::Bool(_)
-            | JValue::String(_)
-            | JValue::Null
-            | JValue::Undefined
-            | JValue::Regex { .. }
-            | JValue::Builtin { .. } => return Vec::new(),
-            _ => {}
-        }
-        let mut ids = Vec::new();
-        self.collect_lambda_ids(value, &mut ids);
-        ids
-    }
-
-    fn collect_lambda_ids(&self, value: &JValue, ids: &mut Vec<String>) {
-        match value {
-            JValue::Lambda { lambda_id, .. } => {
-                let id_str = lambda_id.to_string();
-                if !ids.contains(&id_str) {
-                    ids.push(id_str);
-                    // Transitively follow the stored lambda's captured_env
-                    // to find all referenced lambdas. This is critical for
-                    // closures like the Y-combinator where returned lambdas
-                    // capture other lambdas in their environment.
-                    if let Some(stored) = self.context.lookup_lambda(lambda_id) {
-                        let env_values: Vec<JValue> =
-                            stored.captured_env.values().cloned().collect();
-                        for env_value in &env_values {
-                            self.collect_lambda_ids(env_value, ids);
-                        }
-                    }
-                }
-            }
-            JValue::Object(map) => {
-                // Recurse into object values
-                for v in map.values() {
-                    self.collect_lambda_ids(v, ids);
-                }
-            }
-            JValue::Array(arr) => {
-                // Recurse into array elements
-                for v in arr.iter() {
-                    self.collect_lambda_ids(v, ids);
-                }
-            }
-            _ => {}
-        }
-    }
-
     /// Addition
-    /// Add — delegates to the shared `compiled_arithmetic` so the
-    /// tree-walker and the compiled/VM paths cannot drift apart. Each operator
-    /// used to carry its own copy of the null/undefined handling, which is how
-    /// a runtime null came to be treated as "missing" here (#98).
-    fn add(
-        &self,
-        left: &JValue,
-        right: &JValue,
-        left_is_explicit_null: bool,
-        right_is_explicit_null: bool,
-    ) -> Result<JValue, EvaluatorError> {
-        compiled_arithmetic(
-            CompiledArithOp::Add,
-            left,
-            right,
-            left_is_explicit_null,
-            right_is_explicit_null,
-        )
-    }
-
-    /// Subtraction
-    /// Subtract — delegates to the shared `compiled_arithmetic` so the
-    /// tree-walker and the compiled/VM paths cannot drift apart. Each operator
-    /// used to carry its own copy of the null/undefined handling, which is how
-    /// a runtime null came to be treated as "missing" here (#98).
-    fn subtract(
-        &self,
-        left: &JValue,
-        right: &JValue,
-        left_is_explicit_null: bool,
-        right_is_explicit_null: bool,
-    ) -> Result<JValue, EvaluatorError> {
-        compiled_arithmetic(
-            CompiledArithOp::Sub,
-            left,
-            right,
-            left_is_explicit_null,
-            right_is_explicit_null,
-        )
-    }
-
-    /// Multiplication
-    /// Multiply — delegates to the shared `compiled_arithmetic` so the
-    /// tree-walker and the compiled/VM paths cannot drift apart. Each operator
-    /// used to carry its own copy of the null/undefined handling, which is how
-    /// a runtime null came to be treated as "missing" here (#98).
-    fn multiply(
-        &self,
-        left: &JValue,
-        right: &JValue,
-        left_is_explicit_null: bool,
-        right_is_explicit_null: bool,
-    ) -> Result<JValue, EvaluatorError> {
-        compiled_arithmetic(
-            CompiledArithOp::Mul,
-            left,
-            right,
-            left_is_explicit_null,
-            right_is_explicit_null,
-        )
-    }
-
-    /// Division
-    /// Divide — delegates to the shared `compiled_arithmetic` so the
-    /// tree-walker and the compiled/VM paths cannot drift apart. Each operator
-    /// used to carry its own copy of the null/undefined handling, which is how
-    /// a runtime null came to be treated as "missing" here (#98).
-    fn divide(
-        &self,
-        left: &JValue,
-        right: &JValue,
-        left_is_explicit_null: bool,
-        right_is_explicit_null: bool,
-    ) -> Result<JValue, EvaluatorError> {
-        compiled_arithmetic(
-            CompiledArithOp::Div,
-            left,
-            right,
-            left_is_explicit_null,
-            right_is_explicit_null,
-        )
-    }
-
-    /// Modulo
-    /// Modulo — delegates to the shared `compiled_arithmetic` so the
-    /// tree-walker and the compiled/VM paths cannot drift apart. Each operator
-    /// used to carry its own copy of the null/undefined handling, which is how
-    /// a runtime null came to be treated as "missing" here (#98).
-    fn modulo(
-        &self,
-        left: &JValue,
-        right: &JValue,
-        left_is_explicit_null: bool,
-        right_is_explicit_null: bool,
-    ) -> Result<JValue, EvaluatorError> {
-        compiled_arithmetic(
-            CompiledArithOp::Mod,
-            left,
-            right,
-            left_is_explicit_null,
-            right_is_explicit_null,
-        )
-    }
-
     /// Get human-readable type name for error messages
     fn type_name(value: &JValue) -> &'static str {
         match value {
@@ -10413,137 +9903,6 @@ impl Evaluator {
             JValue::LazyPyDict(_) => "object",
             _ => "unknown",
         }
-    }
-
-    /// Ordered comparison shared across <, <=, >, >=.
-    ///
-    /// Follows jsonata-js's `evaluateComparisonExpression`:
-    /// 1. Only numbers, strings and *undefined* are comparable. Anything else
-    ///    -- null, boolean, object, array -- raises T2010.
-    /// 2. If either side is undefined the result is undefined.
-    /// 3. Otherwise both are comparable and present, so differing types raise
-    ///    T2009.
-    ///
-    /// The `*_is_explicit_null` flags are vestigial. They existed to tell a
-    /// literal `null` in the source apart from a "missing" value back when both
-    /// were `JValue::Null`. Since the null/undefined split (#32) a missing value
-    /// is `JValue::Undefined`, so every `JValue::Null` reaching here is an
-    /// explicit null and is uncomparable either way.
-    ///
-    /// `compare_nums` receives (left_f64, right_f64) for numeric operands.
-    /// `compare_strs` receives (left_str, right_str) for string operands.
-    /// `op_symbol` is used in the T2009 error message (e.g. "<", ">=").
-    fn ordered_compare(
-        &self,
-        left: &JValue,
-        right: &JValue,
-        _left_is_explicit_null: bool,
-        _right_is_explicit_null: bool,
-        op_symbol: &str,
-        compare_nums: fn(f64, f64) -> bool,
-        compare_strs: fn(&str, &str) -> bool,
-    ) -> Result<JValue, EvaluatorError> {
-        fn comparable(v: &JValue) -> bool {
-            matches!(v, JValue::Number(_) | JValue::String(_) | JValue::Undefined)
-        }
-
-        if !comparable(left) || !comparable(right) {
-            return Err(EvaluatorError::EvaluationError(format!(
-                "T2010: Cannot compare {} and {}",
-                Self::type_name(left),
-                Self::type_name(right)
-            )));
-        }
-
-        // An undefined operand makes the comparison undefined, not an error.
-        if matches!(left, JValue::Undefined) || matches!(right, JValue::Undefined) {
-            return Ok(JValue::Undefined);
-        }
-
-        match (left, right) {
-            (JValue::Number(a), JValue::Number(b)) => Ok(JValue::Bool(compare_nums(*a, *b))),
-            (JValue::String(a), JValue::String(b)) => Ok(JValue::Bool(compare_strs(a, b))),
-            _ => Err(EvaluatorError::EvaluationError(format!(
-                "T2009: The expressions on either side of operator \"{}\" must be of the same data type",
-                op_symbol
-            ))),
-        }
-    }
-
-    /// Less than comparison
-    fn less_than(
-        &self,
-        left: &JValue,
-        right: &JValue,
-        left_is_explicit_null: bool,
-        right_is_explicit_null: bool,
-    ) -> Result<JValue, EvaluatorError> {
-        self.ordered_compare(
-            left,
-            right,
-            left_is_explicit_null,
-            right_is_explicit_null,
-            "<",
-            |a, b| a < b,
-            |a, b| a < b,
-        )
-    }
-
-    /// Less than or equal comparison
-    fn less_than_or_equal(
-        &self,
-        left: &JValue,
-        right: &JValue,
-        left_is_explicit_null: bool,
-        right_is_explicit_null: bool,
-    ) -> Result<JValue, EvaluatorError> {
-        self.ordered_compare(
-            left,
-            right,
-            left_is_explicit_null,
-            right_is_explicit_null,
-            "<=",
-            |a, b| a <= b,
-            |a, b| a <= b,
-        )
-    }
-
-    /// Greater than comparison
-    fn greater_than(
-        &self,
-        left: &JValue,
-        right: &JValue,
-        left_is_explicit_null: bool,
-        right_is_explicit_null: bool,
-    ) -> Result<JValue, EvaluatorError> {
-        self.ordered_compare(
-            left,
-            right,
-            left_is_explicit_null,
-            right_is_explicit_null,
-            ">",
-            |a, b| a > b,
-            |a, b| a > b,
-        )
-    }
-
-    /// Greater than or equal comparison
-    fn greater_than_or_equal(
-        &self,
-        left: &JValue,
-        right: &JValue,
-        left_is_explicit_null: bool,
-        right_is_explicit_null: bool,
-    ) -> Result<JValue, EvaluatorError> {
-        self.ordered_compare(
-            left,
-            right,
-            left_is_explicit_null,
-            right_is_explicit_null,
-            ">=",
-            |a, b| a >= b,
-            |a, b| a >= b,
-        )
     }
 
     /// Convert a value to a string for concatenation
@@ -10736,12 +10095,11 @@ impl Evaluator {
         data: &JValue,
     ) -> Result<JValue, EvaluatorError> {
         // First, look up the function to ensure it exists
-        let is_lambda = self.context.lookup_lambda(name).is_some()
-            || (self
-                .context
-                .lookup(name)
-                .map(|v| matches!(v, JValue::Lambda { .. }))
-                .unwrap_or(false));
+        let is_lambda = self
+            .context
+            .lookup(name)
+            .map(|v| matches!(v, JValue::Lambda { .. }))
+            .unwrap_or(false);
 
         // Built-in functions must be called with $ prefix for partial application
         // Without $, it's an error (T1007) suggesting the user forgot the $
@@ -10778,65 +10136,83 @@ impl Evaluator {
             .map(|(i, _)| format!("__p{}", i))
             .collect();
 
-        // Store the partial application info as a special lambda
-        // When invoked, it will call the original function with bound + placeholder args
-        let partial_id = format!(
-            "__partial_{}_{}_{}",
-            name,
-            placeholder_positions.len(),
-            bound_args.len()
-        );
-
-        // Create a stored lambda that represents this partial application
-        // The body is a marker that we'll interpret specially during invocation
-        let stored_lambda = StoredLambda {
-            params: param_names.clone(),
-            body: AstNode::String(format!(
-                "__partial_call:{}:{}:{}",
-                name,
+        // A user-defined target is captured as a closure value so the partial
+        // still works after the target's defining scope pops; builtins and
+        // host fns stay name-resolved (they are global and cannot dangle, and
+        // by-name resolution preserves call-time shadowing).
+        let target = match self.context.lookup_lambda_value(name) {
+            Some(rc) => PartialTarget::Lambda(Rc::clone(rc)),
+            None => PartialTarget::Named {
+                name: name.to_string(),
                 is_builtin,
-                args.len()
-            )),
-            compiled_body: None, // Partial application uses a special body marker
-            signature: None,
-            captured_env: {
-                let mut env = self.capture_current_environment();
-                // Store the bound arguments in the captured environment
-                for (pos, value) in &bound_args {
-                    env.insert(format!("__bound_arg_{}", pos), value.clone());
-                }
-                // Store placeholder positions
-                env.insert(
-                    "__placeholder_positions".to_string(),
-                    JValue::array(
-                        placeholder_positions
-                            .iter()
-                            .map(|p| JValue::Number(*p as f64))
-                            .collect::<Vec<_>>(),
-                    ),
-                );
-                // Store total argument count
-                env.insert(
-                    "__total_args".to_string(),
-                    JValue::Number(args.len() as f64),
-                );
-                env
             },
-            captured_data: Some(data.clone()),
-            thunk: false,
         };
 
-        self.context.bind_lambda(partial_id.clone(), stored_lambda);
+        let stored_lambda = StoredLambda {
+            params: param_names,
+            body: AstNode::Null, // Inert: invocation dispatches on `partial`
+            compiled_body: None,
+            signature: None,
+            captured_env: HashMap::new(),
+            captured_data: None, // Targets evaluate against the call-site data
+            thunk: false,
+            self_name: None,
+            partial: Some(Rc::new(PartialApplication {
+                target,
+                bound_args,
+                placeholder_positions,
+                total_args: args.len(),
+            })),
+            live_token: LiveLambdaToken::new(),
+        };
 
-        // Return a lambda object that can be invoked
-        let lambda_obj = JValue::lambda(
-            partial_id.as_str(),
-            param_names,
-            Some(name.to_string()),
-            None::<String>,
-        );
+        Ok(JValue::Lambda(Rc::new(stored_lambda)))
+    }
 
-        Ok(lambda_obj)
+    /// Invoke a partial application: rebuild the full argument list (bound
+    /// values in their creation-time positions, call arguments filling the
+    /// placeholder positions in order, anything else Null) and apply the
+    /// target.
+    fn invoke_partial(
+        &mut self,
+        partial: &PartialApplication,
+        values: &[JValue],
+        data: &JValue,
+    ) -> Result<JValue, EvaluatorError> {
+        let mut full_args: Vec<JValue> = vec![JValue::Null; partial.total_args];
+        for (pos, value) in &partial.bound_args {
+            if *pos < partial.total_args {
+                full_args[*pos] = value.clone();
+            }
+        }
+        for (i, &pos) in partial.placeholder_positions.iter().enumerate() {
+            if pos < partial.total_args {
+                full_args[pos] = values.get(i).cloned().unwrap_or(JValue::Null);
+            }
+        }
+
+        match &partial.target {
+            PartialTarget::Lambda(stored) => {
+                let stored = Rc::clone(stored);
+                self.invoke_stored_lambda(&stored, &full_args, data)
+            }
+            PartialTarget::Named { name, is_builtin } => {
+                // Route through evaluate_function_call so builtins, host fns,
+                // late shadowing bindings and per-function special cases all
+                // behave exactly as a direct call would. It takes AST
+                // arguments, so pass the values via temporary bindings.
+                self.context.push_scope();
+                let mut temp_args: Vec<AstNode> = Vec::with_capacity(full_args.len());
+                for (i, value) in full_args.iter().enumerate() {
+                    let temp_name = format!("__temp_arg_{}", i);
+                    self.context.bind(temp_name.clone(), value.clone());
+                    temp_args.push(AstNode::Variable(temp_name));
+                }
+                let result = self.evaluate_function_call(name, &temp_args, *is_builtin, data);
+                self.context.pop_scope();
+                result
+            }
+        }
     }
 }
 

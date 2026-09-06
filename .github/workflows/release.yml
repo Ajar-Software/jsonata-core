@@ -7,6 +7,11 @@ on:
         description: 'Version to release (semver format, e.g., 2.1.0 for JSONata 2.1.0)'
         required: true
         type: string
+      release_name:
+        description: 'Optional release name (e.g. Conform-ata); appears in the release title and the changelog heading'
+        required: false
+        type: string
+        default: ''
       dry_run:
         description: 'Dry run (skip publishing)'
         required: false
@@ -157,7 +162,7 @@ jobs:
           if grep -q "^## \[$VERSION\]" CHANGELOG.md; then
             echo "CHANGELOG.md already has a [$VERSION] entry - skipping (re-run case)"
           else
-            ./scripts/bump-changelog.sh "$VERSION"
+            RELEASE_NAME="${{ github.event.inputs.release_name }}" ./scripts/bump-changelog.sh "$VERSION"
           fi
 
           echo "Updated CHANGELOG.md:"
@@ -223,12 +228,18 @@ jobs:
       matrix:
         platform:
           # Linux
-          - { os: 'Linux', runner: ubuntu-latest, target: x86_64-unknown-linux-gnu }
-          - { os: 'Linux', runner: ubuntu-latest, target: aarch64-unknown-linux-gnu }
+          - { os: 'Linux', runner: ubuntu-latest, target: x86_64-unknown-linux-gnu, manylinux: auto }
+          # aarch64 needs the manylinux_2_28 cross image: `auto` resolves to the
+          # manylinux2014 image, whose gcc 4.8 cross-toolchain cannot compile
+          # libmimalloc-sys's C sources (rejects -Wno-error=date-time, a gcc 4.9+
+          # flag family) — this broke the first 2.2.9 dispatch, the first release
+          # to carry the mimalloc feature. Trade-off: aarch64 wheels require
+          # glibc >= 2.28 (Ubuntu 18.10+/Debian 10+/RHEL 8+).
+          - { os: 'Linux', runner: ubuntu-latest, target: aarch64-unknown-linux-gnu, manylinux: 2_28 }
           # Windows
-          - { os: 'Windows', runner: windows-latest, target: x86_64-pc-windows-msvc }
+          - { os: 'Windows', runner: windows-latest, target: x86_64-pc-windows-msvc, manylinux: auto }
           # macOS (self-hosted Mac Mini, native ARM64 build)
-          - { os: 'macOS', runner: [self-hosted, macOS, ARM64], target: aarch64-apple-darwin }
+          - { os: 'macOS', runner: [self-hosted, macOS, ARM64], target: aarch64-apple-darwin, manylinux: auto }
 
     steps:
       - name: Checkout
@@ -280,7 +291,7 @@ jobs:
           target: ${{ matrix.platform.target }}
           args: --release --out dist --interpreter 3.10 3.11 3.12 3.13
           sccache: 'true'
-          manylinux: auto
+          manylinux: ${{ matrix.platform.manylinux }}
 
       - name: Build wheels (macOS)
         if: matrix.platform.os == 'macOS'
@@ -667,7 +678,7 @@ jobs:
         uses: softprops/action-gh-release@v3
         with:
           tag_name: v${{ needs.validate-version.outputs.version }}
-          name: Release v${{ needs.validate-version.outputs.version }}
+          name: ${{ github.event.inputs.release_name != '' && format('Release v{0} - "{1}"', needs.validate-version.outputs.version, github.event.inputs.release_name) || format('Release v{0}', needs.validate-version.outputs.version) }}
           body_path: changelog.md
           draft: false
           prerelease: false
@@ -843,13 +854,15 @@ jobs:
           echo "results_file=$RESULTS_FILE" >> $GITHUB_OUTPUT
           echo "Benchmark results saved to: $RESULTS_FILE"
 
-      - name: Update docs/performance.md
+      - name: Update docs/performance.md and the README chart
         run: |
           python benchmarks/python/generate_performance_doc.py \
             "benchmarks/${{ steps.run_benchmark.outputs.results_file }}" \
             docs/performance.md
+          python benchmarks/python/generate_readme_chart.py \
+            "benchmarks/${{ steps.run_benchmark.outputs.results_file }}"
 
-      - name: Commit updated docs/performance.md
+      - name: Commit updated performance docs
         run: |
           # This job runs on the self-hosted Mac Mini specifically because
           # its measurements are far more consistent than a shared cloud
@@ -882,12 +895,22 @@ jobs:
 
           cp docs/performance.md /tmp/performance-doc-commit/docs/performance.md
 
+          # The README performance chart is generated straight INTO the
+          # worktree rather than copied from this checkout: this job's own
+          # checkout is a detached HEAD at the release tag, so copying its
+          # whole README to main would revert anything that landed on main
+          # after the tag was cut. The generator only rewrites the marked
+          # block, leaving the rest of main's README alone.
+          python "$(pwd)/benchmarks/python/generate_readme_chart.py" \
+            "$(pwd)/benchmarks/${{ steps.run_benchmark.outputs.results_file }}" \
+            /tmp/performance-doc-commit
+
           cd /tmp/performance-doc-commit
-          if git diff --quiet -- docs/performance.md; then
-            echo "docs/performance.md unchanged - skipping commit"
+          if git diff --quiet -- docs/performance.md README.md docs/assets; then
+            echo "performance docs unchanged - skipping commit"
           else
-            git add docs/performance.md
-            git commit -m "docs(benchmarks): update performance.md for v${{ needs.validate-version.outputs.version }}"
+            git add docs/performance.md README.md docs/assets
+            git commit -m "docs(benchmarks): update performance.md and README chart for v${{ needs.validate-version.outputs.version }}"
             git push origin HEAD:main
           fi
 
@@ -1012,8 +1035,15 @@ jobs:
   deploy-release-docs:
     name: Deploy Release Documentation
     runs-on: ubuntu-latest
-    needs: [validate-version, create-github-release]
-    if: needs.create-github-release.result == 'success' && github.event.inputs.dry_run != 'true'
+    # Waits for benchmark-and-record: that job regenerates
+    # docs/performance.md with THIS release's numbers and commits it to
+    # main, which necessarily happens after the tag exists. Running the two
+    # in parallel (as before) meant the docs deploy could only ever see the
+    # pre-benchmark tag content. `!cancelled()` keeps a failed or skipped
+    # benchmark from blocking the docs publish - docs still go out, just
+    # with whatever performance page main currently has.
+    needs: [validate-version, create-github-release, benchmark-and-record]
+    if: ${{ !cancelled() && needs.create-github-release.result == 'success' && github.event.inputs.dry_run != 'true' }}
     timeout-minutes: 10
 
     permissions:
@@ -1025,6 +1055,22 @@ jobs:
         with:
           ref: refs/tags/v${{ needs.validate-version.outputs.version }}
           fetch-depth: 0
+
+      # The tag can never contain this release's own performance numbers:
+      # benchmark-and-record generates them from the tagged build and
+      # commits docs/performance.md to main afterwards. Deploying the tag
+      # verbatim therefore published the PREVIOUS release's performance
+      # page under the new version, permanently. Take just that one file
+      # from main; every other page stays at the exact tagged content.
+      - name: Take the regenerated performance page from main
+        run: |
+          git fetch origin main
+          if git checkout FETCH_HEAD -- docs/performance.md; then
+            echo "docs/performance.md taken from main:"
+            git --no-pager diff --stat HEAD -- docs/performance.md || true
+          else
+            echo "::warning::could not take docs/performance.md from main - deploying the tagged copy"
+          fi
 
       - name: Set up Python
         uses: actions/setup-python@v7

@@ -72,24 +72,26 @@ pub mod string {
 
     /// Helper to build a Regex from pattern and flags
     pub fn build_regex(pattern: &str, flags: &str) -> Result<Regex, FunctionError> {
-        // Convert JSONata flags to Rust regex flags
-        let mut regex_pattern = String::new();
-
-        // Add inline flags
-        if !flags.is_empty() {
-            regex_pattern.push_str("(?");
-            if flags.contains('i') {
-                regex_pattern.push('i'); // case-insensitive
-            }
-            if flags.contains('m') {
-                regex_pattern.push('m'); // multi-line
-            }
-            if flags.contains('s') {
-                regex_pattern.push('s'); // dot matches newline
-            }
-            regex_pattern.push(')');
+        // Convert JSONata flags to Rust inline regex flags. Only emit the
+        // group for flags Rust regex knows; a bare "(?)" (e.g. from the
+        // internal-only `g` flag alone) is a syntax error.
+        let mut inline = String::new();
+        if flags.contains('i') {
+            inline.push('i'); // case-insensitive
+        }
+        if flags.contains('m') {
+            inline.push('m'); // multi-line
+        }
+        if flags.contains('s') {
+            inline.push('s'); // dot matches newline
         }
 
+        let mut regex_pattern = String::new();
+        if !inline.is_empty() {
+            regex_pattern.push_str("(?");
+            regex_pattern.push_str(&inline);
+            regex_pattern.push(')');
+        }
         regex_pattern.push_str(pattern);
 
         Regex::new(&regex_pattern)
@@ -125,14 +127,11 @@ pub mod string {
                     )));
                 }
 
-                // Format numbers like JavaScript does
-                if f.fract() == 0.0 && f.abs() < (i64::MAX as f64) {
-                    (f as i64).to_string()
-                } else {
-                    // Non-integer - use precision formatting
-                    // JavaScript uses toPrecision(15) for non-integers in JSON.stringify
-                    format_number_with_precision(f)
-                }
+                // Format numbers like JavaScript does: integers print as
+                // the shortest round-trip decimal; non-integers are rounded
+                // to 15 significant digits first (jsonata-js's replacer:
+                // `Number.isInteger(val) ? val : Number(val.toPrecision(15))`)
+                format_stringified_number(f)
             }
             JValue::Bool(b) => b.to_string(),
             JValue::Null => {
@@ -164,64 +163,25 @@ pub mod string {
         Ok(JValue::string(result))
     }
 
-    /// Helper to format a number with precision like JavaScript's toPrecision(15)
-    ///
-    /// JavaScript uses `toPrecision(15)` which formats with 15 significant figures.
-    /// This matches that behavior by:
-    /// 1. Formatting with 15 significant figures
-    /// 2. Removing trailing zeros
-    /// 3. Converting back to number to normalize format
-    fn format_number_with_precision(f: f64) -> String {
-        // Format with 15 significant figures like JavaScript's toPrecision(15)
-        // The format uses scientific notation to ensure precision
-        let formatted = format!("{:.14e}", f);
+    /// Round to 15 significant digits, the way jsonata-js's `$string`
+    /// replacer treats every non-integer number
+    /// (`Number(val.toPrecision(15))`). `{:.14e}` (1 leading digit + 14
+    /// decimals) is exactly `toPrecision(15)`; the round-trip parse yields
+    /// the normalized rounded value.
+    fn round_to_precision_15(f: f64) -> f64 {
+        format!("{:.14e}", f).parse().unwrap_or(f)
+    }
 
-        // Parse back to f64 and format normally to get the canonical representation
-        // This mimics JavaScript's behavior of normalizing the result
-        if let Ok(parsed) = formatted.parse::<f64>() {
-            // Convert to string without exponential notation unless necessary
-            if parsed.abs() >= 1e-6 && parsed.abs() < 1e21 {
-                // Regular notation
-                let s = format!("{}", parsed);
-                // Ensure we don't have excessive precision
-                if s.contains('.') {
-                    let parts: Vec<&str> = s.split('.').collect();
-                    if parts.len() == 2 {
-                        let int_part = parts[0];
-                        let frac_part = parts[1];
-                        let total_digits = int_part.trim_start_matches('-').len() + frac_part.len();
-
-                        if total_digits > 15 {
-                            // Truncate to 15 significant figures
-                            let sig_figs = 15 - int_part.trim_start_matches('-').len();
-                            if sig_figs > 0 && sig_figs <= frac_part.len() {
-                                let truncated_frac = &frac_part[..sig_figs];
-                                // Remove trailing zeros
-                                let trimmed = truncated_frac.trim_end_matches('0');
-                                if trimmed.is_empty() {
-                                    return int_part.to_string();
-                                } else {
-                                    return format!("{}.{}", int_part, trimmed);
-                                }
-                            }
-                        }
-                    }
-                }
-                s
-            } else {
-                // Use exponential notation for very small or large numbers
-                // Format matches JavaScript: always include sign in exponent
-                let exp_str = format!("{:e}", parsed);
-                // Ensure exponent has + sign: "1e100" -> "1e+100"
-                if exp_str.contains('e') && !exp_str.contains("e-") && !exp_str.contains("e+") {
-                    exp_str.replace('e', "e+")
-                } else {
-                    exp_str
-                }
-            }
+    /// Print one finite number for `$string`/stringification: integers keep
+    /// full (shortest round-trip) precision, non-integers are rounded to 15
+    /// significant digits first, and both print via the shared JS number
+    /// printer (exponential outside [1e-6, 1e21), `+` on positive exponents,
+    /// `-0` as `0`).
+    fn format_stringified_number(f: f64) -> String {
+        if f.fract() == 0.0 {
+            crate::value::js_number_to_string(f)
         } else {
-            // Fallback
-            format!("{}", f)
+            crate::value::js_number_to_string(round_to_precision_15(f))
         }
     }
 
@@ -243,95 +203,110 @@ pub mod string {
         }
     }
 
-    /// Helper to stringify a value as JSON with custom replacer logic
-    ///
-    /// Mimics JavaScript's JSON.stringify with a replacer function that:
-    /// - Converts non-integer numbers to 15 significant figures
-    /// - Keeps integers without decimal point
-    /// - Converts functions to empty string
+    /// Stringify a value the way jsonata-js's `$string` does
+    /// (`JSON.stringify` with the function-to-"" / non-integer-toPrecision(15)
+    /// replacer). Hand-rolled rather than routed through serde so numbers
+    /// print with JavaScript's exact rules — integers above 2^53 print as the
+    /// float's shortest round-trip decimal, not the exact i64 digits serde
+    /// would emit.
     fn stringify_value_custom(
         value: &JValue,
         indent: Option<usize>,
     ) -> Result<String, FunctionError> {
         reject_non_finite(value)?;
-        // Transform the value recursively before stringifying
-        let transformed = transform_for_stringify(value);
-
-        let result = if indent.is_some() {
-            serde_json::to_string_pretty(&transformed)
-                .map_err(|e| FunctionError::RuntimeError(format!("JSON stringify error: {}", e)))?
-        } else {
-            serde_json::to_string(&transformed)
-                .map_err(|e| FunctionError::RuntimeError(format!("JSON stringify error: {}", e)))?
-        };
-        Ok(result)
+        let mut out = String::new();
+        write_stringified(value, indent, 0, &mut out);
+        Ok(out)
     }
 
-    /// Transform a value for JSON.stringify, applying the replacer logic
-    fn transform_for_stringify(value: &JValue) -> JValue {
+    /// Recursive writer for `stringify_value_custom`. `indent` = Some(width)
+    /// pretty-prints exactly like `JSON.stringify(v, replacer, width)` (and
+    /// serde_json's pretty printer): items one per line, `": "` after keys,
+    /// empty containers stay `{}`/`[]`.
+    fn write_stringified(value: &JValue, indent: Option<usize>, depth: usize, out: &mut String) {
+        let (open_sep, close_sep, item_sep, key_sep): (String, String, &str, &str) = match indent {
+            Some(w) => (
+                format!("\n{}", " ".repeat(w * (depth + 1))),
+                format!("\n{}", " ".repeat(w * depth)),
+                ",",
+                ": ",
+            ),
+            None => (String::new(), String::new(), ",", ":"),
+        };
         match value {
-            JValue::Number(n) => {
-                let f = *n;
-                // Check if it's an integer first
-                if f.fract() == 0.0 && f.is_finite() && f.abs() < (1i64 << 53) as f64 {
-                    // Keep as integer
-                    value.clone()
-                } else {
-                    // Non-integer: apply toPrecision(15) and keep as f64
-                    let formatted = format_number_with_precision(f);
-                    if let Ok(parsed) = formatted.parse::<f64>() {
-                        JValue::Number(parsed)
-                    } else {
-                        value.clone()
-                    }
-                }
+            // JSON.stringify turns undefined into null in array position; an
+            // undefined-valued object key never gets here (construction drops
+            // it), so mapping the whole variant to null preserves both.
+            JValue::Null | JValue::Undefined => out.push_str("null"),
+            JValue::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
+            JValue::Number(n) => out.push_str(&format_stringified_number(*n)),
+            JValue::String(s) => write_json_escaped(s, out),
+            // The replacer maps functions to "" wherever they appear.
+            JValue::Lambda { .. } | JValue::Builtin { .. } => out.push_str("\"\""),
+            JValue::Regex { pattern, flags } => {
+                // Mirrors the serde Serialize impl: a regex value renders as
+                // {"pattern": ..., "flags": ...}.
+                out.push('{');
+                out.push_str(&open_sep);
+                write_json_escaped("pattern", out);
+                out.push_str(key_sep);
+                write_json_escaped(pattern, out);
+                out.push_str(item_sep);
+                out.push_str(&open_sep);
+                write_json_escaped("flags", out);
+                out.push_str(key_sep);
+                write_json_escaped(flags, out);
+                out.push_str(&close_sep);
+                out.push('}');
             }
             JValue::Array(arr) => {
-                let transformed: Vec<JValue> = arr
-                    .iter()
-                    .map(|v| {
-                        if v.is_function() {
-                            return JValue::string("");
-                        }
-                        transform_for_stringify(v)
-                    })
-                    .collect();
-                JValue::array(transformed)
+                if arr.is_empty() {
+                    out.push_str("[]");
+                    return;
+                }
+                out.push('[');
+                for (i, v) in arr.iter().enumerate() {
+                    if i > 0 {
+                        out.push_str(item_sep);
+                    }
+                    out.push_str(&open_sep);
+                    write_stringified(v, indent, depth + 1, out);
+                }
+                out.push_str(&close_sep);
+                out.push(']');
             }
             JValue::Object(obj) => {
-                if value.is_function() {
-                    return JValue::string("");
+                if obj.is_empty() {
+                    out.push_str("{}");
+                    return;
                 }
-
-                let transformed: IndexMap<String, JValue> = obj
-                    .iter()
-                    .map(|(k, v)| {
-                        if v.is_function() {
-                            return (k.clone(), JValue::string(""));
-                        }
-                        (k.clone(), transform_for_stringify(v))
-                    })
-                    .collect();
-                JValue::object(transformed)
+                out.push('{');
+                for (i, (k, v)) in obj.iter().enumerate() {
+                    if i > 0 {
+                        out.push_str(item_sep);
+                    }
+                    out.push_str(&open_sep);
+                    write_json_escaped(k, out);
+                    out.push_str(key_sep);
+                    write_stringified(v, indent, depth + 1, out);
+                }
+                out.push_str(&close_sep);
+                out.push('}');
             }
             #[cfg(feature = "python")]
             JValue::LazyPyDict(lazy) => match lazy.to_object_ref() {
                 Some(obj) => {
-                    let transformed: IndexMap<String, JValue> = obj
-                        .iter()
-                        .map(|(k, v)| {
-                            if v.is_function() {
-                                return (k.clone(), JValue::string(""));
-                            }
-                            (k.clone(), transform_for_stringify(v))
-                        })
-                        .collect();
-                    JValue::object(transformed)
+                    write_stringified(&JValue::object(obj.clone()), indent, depth, out);
                 }
-                None => JValue::Null,
+                None => out.push_str("null"),
             },
-            _ => value.clone(),
         }
+    }
+
+    /// Append the JSON string literal (quotes and escapes included) for `s`.
+    fn write_json_escaped(s: &str, out: &mut String) {
+        // serde_json's string escaping is JSON.stringify's.
+        out.push_str(&serde_json::to_string(s).expect("string serialization is infallible"));
     }
 
     /// $length() - Get string length with proper Unicode support
@@ -530,13 +505,11 @@ pub mod string {
         Ok(JValue::string(parts.join(sep)))
     }
 
-    /// Helper to format a number for $join (matching serde_json Number's Display)
+    /// Format a number for $join. Unreachable through validated dispatch —
+    /// the reference raises T0412 for non-string elements — but kept for
+    /// unvalidated callers, printing the JS way like everything else.
     fn format_join_number(n: f64) -> String {
-        if n.fract() == 0.0 && n.abs() < (i64::MAX as f64) {
-            (n as i64).to_string()
-        } else {
-            n.to_string()
-        }
+        crate::value::js_number_to_string(n)
     }
 
     /// Helper to perform capture group substitution in replacement string
@@ -888,69 +861,6 @@ pub mod numeric {
             }
         }
         Ok(JValue::Number(total))
-    }
-
-    /// $max(array) - Maximum value
-    pub fn max(arr: &[JValue]) -> Result<JValue, FunctionError> {
-        if arr.is_empty() {
-            return Ok(JValue::Null);
-        }
-
-        let mut max_val = f64::NEG_INFINITY;
-        for value in arr {
-            match value {
-                JValue::Number(n) => {
-                    if *n > max_val {
-                        max_val = *n;
-                    }
-                }
-                _ => {
-                    return Err(FunctionError::TypeError(
-                        "max() requires all array elements to be numbers".to_string(),
-                    ))
-                }
-            }
-        }
-        Ok(JValue::Number(max_val))
-    }
-
-    /// $min(array) - Minimum value
-    pub fn min(arr: &[JValue]) -> Result<JValue, FunctionError> {
-        if arr.is_empty() {
-            return Ok(JValue::Null);
-        }
-
-        let mut min_val = f64::INFINITY;
-        for value in arr {
-            match value {
-                JValue::Number(n) => {
-                    if *n < min_val {
-                        min_val = *n;
-                    }
-                }
-                _ => {
-                    return Err(FunctionError::TypeError(
-                        "min() requires all array elements to be numbers".to_string(),
-                    ))
-                }
-            }
-        }
-        Ok(JValue::Number(min_val))
-    }
-
-    /// $average(array) - Average value
-    pub fn average(arr: &[JValue]) -> Result<JValue, FunctionError> {
-        if arr.is_empty() {
-            return Ok(JValue::Null);
-        }
-
-        let sum_result = sum(arr)?;
-        if let JValue::Number(n) = sum_result {
-            let avg = n / arr.len() as f64;
-            Ok(JValue::Number(avg))
-        } else {
-            Err(FunctionError::RuntimeError("Sum failed".to_string()))
-        }
     }
 
     /// $abs(number) - Absolute value
@@ -1897,17 +1807,6 @@ pub mod array {
 pub mod object {
     use super::*;
 
-    /// $keys(object) - Get object keys
-    pub fn keys(obj: &IndexMap<String, JValue>) -> Result<JValue, FunctionError> {
-        let keys: Vec<JValue> = obj.keys().map(|k| JValue::string(k.as_str())).collect();
-        Ok(JValue::array(keys))
-    }
-
-    /// $lookup(object, key) - Lookup value by key
-    pub fn lookup(obj: &IndexMap<String, JValue>, key: &str) -> Result<JValue, FunctionError> {
-        Ok(obj.get(key).cloned().unwrap_or(JValue::Null))
-    }
-
     /// $spread(object) - Spread object into array of key-value pairs
     pub fn spread(obj: &IndexMap<String, JValue>) -> Result<JValue, FunctionError> {
         // Each key-value pair becomes a single-key object: {"key": value}
@@ -2365,37 +2264,6 @@ mod tests {
     }
 
     #[test]
-    fn test_max_min() {
-        let arr = vec![
-            JValue::from(3i64),
-            JValue::from(1i64),
-            JValue::from(4i64),
-            JValue::from(2i64),
-        ];
-
-        assert_eq!(numeric::max(&arr).unwrap(), JValue::Number(4.0));
-        assert_eq!(numeric::min(&arr).unwrap(), JValue::Number(1.0));
-
-        // Empty array
-        assert_eq!(numeric::max(&[]).unwrap(), JValue::Null);
-        assert_eq!(numeric::min(&[]).unwrap(), JValue::Null);
-    }
-
-    #[test]
-    fn test_average() {
-        let arr = vec![
-            JValue::from(1i64),
-            JValue::from(2i64),
-            JValue::from(3i64),
-            JValue::from(4i64),
-        ];
-        assert_eq!(numeric::average(&arr).unwrap(), JValue::Number(2.5));
-
-        // Empty array
-        assert_eq!(numeric::average(&[]).unwrap(), JValue::Null);
-    }
-
-    #[test]
     fn test_math_functions() {
         // abs
         assert_eq!(numeric::abs(-5.5).unwrap(), JValue::Number(5.5));
@@ -2568,36 +2436,6 @@ mod tests {
     }
 
     // ===== Object Functions Tests =====
-
-    #[test]
-    fn test_keys() {
-        let mut obj = IndexMap::new();
-        obj.insert("name".to_string(), JValue::string("Alice"));
-        obj.insert("age".to_string(), JValue::Number(30.0));
-
-        let result = object::keys(&obj).unwrap();
-        if let JValue::Array(keys) = result {
-            assert_eq!(keys.len(), 2);
-            assert!(keys.contains(&JValue::string("name")));
-            assert!(keys.contains(&JValue::string("age")));
-        } else {
-            panic!("Expected array of keys");
-        }
-    }
-
-    #[test]
-    fn test_lookup() {
-        let mut obj = IndexMap::new();
-        obj.insert("name".to_string(), JValue::string("Alice"));
-        obj.insert("age".to_string(), JValue::Number(30.0));
-
-        assert_eq!(
-            object::lookup(&obj, "name").unwrap(),
-            JValue::string("Alice")
-        );
-        assert_eq!(object::lookup(&obj, "age").unwrap(), JValue::Number(30.0));
-        assert_eq!(object::lookup(&obj, "missing").unwrap(), JValue::Null);
-    }
 
     #[test]
     fn test_spread() {

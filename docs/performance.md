@@ -8,128 +8,130 @@ jsonatapy is a high-performance Rust implementation of JSONata with Python bindi
 
 | Implementation | Language | Version | Description |
 |----------------|----------|---------|-------------|
-| **jsonatapy** | Rust + Python | 2.2.8 | This project (compiled Rust extension via PyO3) |
-| **jsonatapy** (rust-only) | Rust + Python | 2.2.8 | Same library, JSON string I/O path (bypasses Python object conversion) |
+| **jsonatapy** | Rust + Python | 2.2.9 | This project (compiled Rust extension via PyO3); data crosses the boundary as Python dicts |
+| **jsonatapy** (JSON string I/O) | Rust + Python | 2.2.9 | Same library via `evaluate_json`: data crosses as JSON strings, parsed/serialized by serde per call |
+| **jsonata-core** (pure Rust) | Rust | 2.2.9 | This project's engine measured as a Rust library — no Python at all, data pre-parsed, expression pre-compiled (criterion methodology, per table row) |
 | **jsonata-js** | JavaScript | 2.2.2 | Reference implementation (Node.js v20.20.2) |
-| **jsonata-python** | Python | unknown | Pure Python implementation |
-| **jsonata-rs** | Rust | 0.3 | Pure Rust implementation (CLI benchmark, no Python overhead) |
+| **jsonata-python** | Python | unknown | Python wrapper embedding a JS engine (Duktape) |
+| **jsonata-rs** | Rust | 0.3 | Third-party Rust implementation (Stedi's crate — not this project; CLI harness, no Python overhead) |
 
 ### Methodology: compile-once, evaluate-many
 
 Every implementation below is measured the way a real caller who evaluates the same expression repeatedly would use it, not its slowest possible one-off call:
 
 - **jsonatapy** — `jsonatapy.compile(expr)` once, then `.evaluate(data)` in the timed loop. No further reuse is available; the compiled bytecode is already cached on the expression object.
+- **jsonata-core (pure Rust)** — `Expression::compile(expr)` once, input parsed to a `JValue` once, then `Expression::evaluate(&data)` in an in-process timed loop with warmup — the same methodology as the criterion suite (`benches/`), reported per table row. The gap between this column and the jsonatapy columns *is* the Python boundary cost; the engine is identical.
 - **jsonata-js** — `jsonata(expr)` once, then `.evaluate(data)` in the timed loop. Same story: this is already the library's fastest repeated-call path.
 
 - **jsonata-python** — uses its documented `Context` object (`ctx = jsonata.Context()`, then `ctx(expr, data)` in the loop) rather than the one-off `transform()` convenience function. `transform()` re-bootstraps an embedded Duktape engine — reloading the `jsonata.js` library into it — on every single call; reusing a `Context` keeps that engine warm and is the library's own documented path for repeated evaluation. It is *not* a true compile-once equivalent, since `Context.__call__` still re-parses the expression string on every call, so some of the remaining gap to jsonatapy/jsonata-js is real parsing cost this library doesn't let a caller amortize away.
 
 
-Benchmarks run on 2026-07-20.
+Benchmarks run on 2026-08-31.
 
 ## Summary by Category
 
 | Category | jsonatapy vs JS |
 |----------|----------------|
-| Simple Paths | **3.6x faster** |
-| Array Operations | **3.0x faster** |
-| Complex Transformations | **6.3x faster** |
-| Deep Nesting | **1.7x faster** |
-| String Operations | **5.8x faster** |
-| Higher-Order Functions | **9.0x faster** |
-| Realistic Workload | **6.1x faster** |
+| Simple Paths | **4.9x faster** |
+| Array Operations | **3.7x faster** |
+| Complex Transformations | **7.6x faster** |
+| Deep Nesting | **2.9x faster** |
+| String Operations | **6.5x faster** |
+| Higher-Order Functions | **11.9x faster** |
+| Realistic Workload | **8.1x faster** |
 
 ## Detailed Results
 
 ### Simple Paths
 
-| Operation | Data Size | jsonatapy | jsonatapy (rust) | jsonata-js | jsonata-python | jsonata-rs | vs JS |
-|-----------|-----------|-----------|------------------|------------|----------------|------------|-------|
-| Simple Path | tiny | 5.672 | 6.609 | 16.940 | 1823.155 | 61.096 | **3.0x faster** |
-| Deep Path (5 levels) | tiny | 7.823 | 9.518 | 25.310 | 3001.015 | 71.647 | **3.2x faster** |
-| Array Index Access | 100 elements | 6.457 | 9.519 | 11.120 | 938.526 | 85.860 | **1.7x faster** |
-| Arithmetic Expression | tiny | 3.399 | 5.113 | 22.220 | 2601.242 | 56.501 | **6.5x faster** |
+| Operation | Data Size | jsonatapy | jsonatapy (json I/O) | jsonata-core (pure Rust) | jsonata-js | jsonata-python | jsonata-rs | vs JS |
+|-----------|-----------|-----------|----------------------|--------------------------|------------|----------------|------------|-------|
+| Simple Path | tiny | 3.705 | 4.877 | 0.768 | 16.820 | 1824.042 | 61.484 | **4.5x faster** |
+| Deep Path (5 levels) | tiny | 5.479 | 6.812 | 1.232 | 25.360 | 3005.573 | 72.071 | **4.6x faster** |
+| Array Index Access | 100 elements | 4.320 | 8.413 | 0.465 | 11.190 | 933.850 | 97.630 | **2.6x faster** |
+| Arithmetic Expression | tiny | 2.841 | 4.032 | 0.857 | 22.380 | 2603.586 | 56.913 | **7.9x faster** |
 
 ### Array Operations
 
-| Operation | Data Size | jsonatapy | jsonatapy (rust) | jsonata-js | jsonata-python | jsonata-rs | vs JS |
-|-----------|-----------|-----------|------------------|------------|----------------|------------|-------|
-| Array Sum (100 elements) | 100 elements | 1.657 | 2.263 | 6.810 | 303.671 | 17.863 | **4.1x faster** |
-| Array Max (100 elements) | 100 elements | 1.407 | 2.018 | 6.390 | 297.695 | 17.891 | **4.5x faster** |
-| Array Count (100 elements) | 100 elements | 2.608 | 3.813 | 8.900 | 529.199 | 34.780 | **3.4x faster** |
-| Array Sum (1000 elements) | 1000 elements | 2.602 | 3.821 | 4.650 | 178.284 | 24.047 | **1.8x faster** |
-| Array Max (1000 elements) | 1000 elements | 2.104 | 3.329 | 3.810 | 165.795 | 24.012 | **1.8x faster** |
-| Array Sum (10000 elements) | 10000 elements | 6.472 | 9.737 | 8.840 | 353.456 | 59.336 | **1.4x faster** |
-| Array Mapping (extract field) | 100 objects | 11.455 | 34.593 | 21.410 | 2668.433 | 206.427 | **1.9x faster** |
-| Array Mapping + Sum | 100 objects | 10.760 | 33.672 | 24.660 | 2971.003 | 206.451 | **2.3x faster** |
-| Array Filtering (predicate) | 100 objects | 8.989 | 21.126 | 50.940 | 6714.903 | 107.646 | **5.7x faster** |
+| Operation | Data Size | jsonatapy | jsonatapy (json I/O) | jsonata-core (pure Rust) | jsonata-js | jsonata-python | jsonata-rs | vs JS |
+|-----------|-----------|-----------|----------------------|--------------------------|------------|----------------|------------|-------|
+| Array Sum (100 elements) | 100 elements | 1.499 | 2.319 | 0.781 | 6.890 | 304.144 | 20.184 | **4.6x faster** |
+| Array Max (100 elements) | 100 elements | 1.243 | 2.064 | 0.534 | 6.410 | 297.163 | 20.172 | **5.2x faster** |
+| Array Count (100 elements) | 100 elements | 1.946 | 3.596 | 0.545 | 8.700 | 527.289 | 39.419 | **4.5x faster** |
+| Array Sum (1000 elements) | 1000 elements | 2.290 | 3.849 | 1.057 | 4.660 | 178.617 | 28.586 | **2.0x faster** |
+| Array Max (1000 elements) | 1000 elements | 1.787 | 3.336 | 0.558 | 3.840 | 166.545 | 28.630 | **2.1x faster** |
+| Array Sum (10000 elements) | 10000 elements | 5.586 | 9.973 | 2.519 | 8.810 | 354.240 | 70.519 | **1.6x faster** |
+| Array Mapping (extract field) | 100 objects | 8.833 | 25.838 | 1.306 | 21.620 | 2676.758 | 208.870 | **2.4x faster** |
+| Array Mapping + Sum | 100 objects | 8.805 | 25.215 | 2.047 | 24.760 | 2982.977 | 209.306 | **2.8x faster** |
+| Array Filtering (predicate) | 100 objects | 6.241 | 16.739 | 2.698 | 50.870 | 6738.023 | 112.088 | **8.2x faster** |
 
 ### Complex Transformations
 
-| Operation | Data Size | jsonatapy | jsonatapy (rust) | jsonata-js | jsonata-python | jsonata-rs | vs JS |
-|-----------|-----------|-----------|------------------|------------|----------------|------------|-------|
-| Object Construction (simple) | tiny | 5.843 | 5.275 | 26.750 | 2529.875 | 33.741 | **4.6x faster** |
-| Object Construction (nested) | tiny | 8.230 | 6.577 | 33.370 | 2895.849 | 36.592 | **4.1x faster** |
-| Conditional Expression | tiny | 1.415 | 2.150 | 13.450 | 1352.151 | 26.026 | **9.5x faster** |
-| Multiple Nested Functions | tiny | 2.698 | 2.739 | 18.860 | 1771.814 | 27.537 | **7.0x faster** |
+| Operation | Data Size | jsonatapy | jsonatapy (json I/O) | jsonata-core (pure Rust) | jsonata-js | jsonata-python | jsonata-rs | vs JS |
+|-----------|-----------|-----------|----------------------|--------------------------|------------|----------------|------------|-------|
+| Object Construction (simple) | tiny | 4.101 | 3.817 | 2.959 | 27.590 | 2531.848 | 34.017 | **6.7x faster** |
+| Object Construction (nested) | tiny | 5.491 | 4.545 | 4.045 | 33.400 | 2898.268 | 36.853 | **6.1x faster** |
+| Conditional Expression | tiny | 1.275 | 1.765 | 0.452 | 13.550 | 1350.644 | 26.355 | **10.6x faster** |
+| Multiple Nested Functions | tiny | 2.769 | 2.973 | 2.931 | 19.210 | 1775.537 | 27.779 | **6.9x faster** |
 
 ### Deep Nesting
 
-| Operation | Data Size | jsonatapy | jsonatapy (rust) | jsonata-js | jsonata-python | jsonata-rs | vs JS |
-|-----------|-----------|-----------|------------------|------------|----------------|------------|-------|
-| Deep Path (12 levels) | 12 levels | 8.889 | 8.819 | 25.710 | 2908.301 | 55.146 | **2.9x faster** |
-| Nested Array Access | 4-level nested arrays | 16.969 | 18.412 | 7.930 | 609.109 | 107.753 | 2.1x slower |
+| Operation | Data Size | jsonatapy | jsonatapy (json I/O) | jsonata-core (pure Rust) | jsonata-js | jsonata-python | jsonata-rs | vs JS |
+|-----------|-----------|-----------|----------------------|--------------------------|------------|----------------|------------|-------|
+| Deep Path (12 levels) | 12 levels | 5.686 | 6.678 | 1.232 | 25.920 | 2910.910 | 55.381 | **4.6x faster** |
+| Nested Array Access | 4-level nested arrays | 6.884 | 12.924 | 0.314 | 7.900 | 609.672 | 107.454 | **1.1x faster** |
 
 ### String Operations
 
-| Operation | Data Size | jsonatapy | jsonatapy (rust) | jsonata-js | jsonata-python | jsonata-rs | vs JS |
-|-----------|-----------|-----------|------------------|------------|----------------|------------|-------|
-| String Uppercase | tiny | 4.688 | 5.182 | 22.460 | 2389.683 | 52.800 | **4.8x faster** |
-| String Lowercase | tiny | 4.646 | 5.184 | 22.150 | 2387.992 | 52.960 | **4.8x faster** |
-| String Length | tiny | 4.140 | 4.791 | 24.440 | 2590.140 | 54.446 | **5.9x faster** |
-| String Concatenation | tiny | 4.127 | 3.803 | 25.780 | 1920.096 | 29.960 | **6.2x faster** |
-| String Substring | tiny | 3.282 | 3.458 | 19.270 | 1682.234 | 28.505 | **5.9x faster** |
-| String Contains | tiny | 2.158 | 2.430 | 15.840 | 1414.831 | 28.103 | **7.3x faster** |
+| Operation | Data Size | jsonatapy | jsonatapy (json I/O) | jsonata-core (pure Rust) | jsonata-js | jsonata-python | jsonata-rs | vs JS |
+|-----------|-----------|-----------|----------------------|--------------------------|------------|----------------|------------|-------|
+| String Uppercase | tiny | 4.046 | 4.679 | 3.451 | 22.680 | 2395.514 | 53.345 | **5.6x faster** |
+| String Lowercase | tiny | 4.062 | 4.675 | 3.359 | 22.230 | 2395.335 | 53.213 | **5.5x faster** |
+| String Length | tiny | 3.735 | 4.583 | 2.886 | 24.550 | 2596.091 | 55.030 | **6.6x faster** |
+| String Concatenation | tiny | 3.311 | 3.232 | 3.048 | 26.150 | 1921.544 | 30.205 | **7.9x faster** |
+| String Substring | tiny | 2.940 | 3.238 | 3.023 | 19.500 | 1682.958 | 28.586 | **6.6x faster** |
+| String Contains | tiny | 2.294 | 2.676 | 1.755 | 16.160 | 1412.139 | 28.356 | **7.0x faster** |
 
 ### Higher-Order Functions
 
-| Operation | Data Size | jsonatapy | jsonatapy (rust) | jsonata-js | jsonata-python | jsonata-rs | vs JS |
-|-----------|-----------|-----------|------------------|------------|----------------|------------|-------|
-| $map with lambda | 100 elements | 2.458 | 2.555 | 23.360 | 2678.138 | 7.142 | **9.5x faster** |
-| $filter with lambda | 100 elements | 1.997 | 2.066 | 23.430 | 2677.115 | 7.011 | **11.7x faster** |
-| $reduce with lambda | 100 elements | 3.897 | 4.011 | 22.420 | 2687.093 | 7.644 | **5.8x faster** |
+| Operation | Data Size | jsonatapy | jsonatapy (json I/O) | jsonata-core (pure Rust) | jsonata-js | jsonata-python | jsonata-rs | vs JS |
+|-----------|-----------|-----------|----------------------|--------------------------|------------|----------------|------------|-------|
+| $map with lambda | 100 elements | 1.730 | 1.879 | 1.293 | 23.760 | 2679.104 | 7.651 | **13.7x faster** |
+| $filter with lambda | 100 elements | 1.720 | 1.845 | 1.498 | 23.600 | 2684.242 | 7.539 | **13.7x faster** |
+| $reduce with lambda | 100 elements | 2.765 | 2.929 | 2.776 | 22.940 | 2696.682 | 8.227 | **8.3x faster** |
 
 ### Realistic Workload
 
-| Operation | Data Size | jsonatapy | jsonatapy (rust) | jsonata-js | jsonata-python | jsonata-rs | vs JS |
-|-----------|-----------|-----------|------------------|------------|----------------|------------|-------|
-| Filter by category | 100 products | 16.825 | 55.333 | 51.520 | 7430.772 | 315.032 | **3.1x faster** |
-| Calculate total value | 100 products | 8.773 | 54.961 | 37.150 | 5152.192 | 315.215 | **4.2x faster** |
-| Complex transformation | 100 products | 19.633 | 31.560 | 85.440 | 9282.907 | 136.240 | **4.4x faster** |
-| Group by category (aggregate) | 100 products | 13.883 | 29.595 | 88.590 | N/A | 135.254 | **6.4x faster** |
-| Top rated products | 100 products | 3.018 | 13.246 | 37.960 | 4516.204 | 67.149 | **12.6x faster** |
+| Operation | Data Size | jsonatapy | jsonatapy (json I/O) | jsonata-core (pure Rust) | jsonata-js | jsonata-python | jsonata-rs | vs JS |
+|-----------|-----------|-----------|----------------------|--------------------------|------------|----------------|------------|-------|
+| Filter by category | 100 products | 8.673 | 41.494 | 2.685 | 51.550 | 7441.033 | 316.541 | **5.9x faster** |
+| Calculate total value | 100 products | 7.203 | 40.611 | 5.632 | 37.260 | 5153.651 | 315.792 | **5.2x faster** |
+| Complex transformation | 100 products | 14.573 | 24.130 | 9.758 | 89.030 | 9305.808 | 136.543 | **6.1x faster** |
+| Group by category (aggregate) | 100 products | 10.464 | 22.070 | 8.079 | 88.450 | N/A | 134.061 | **8.5x faster** |
+| Top rated products | 100 products | 2.512 | 9.976 | 2.047 | 37.160 | 4520.874 | 67.508 | **14.8x faster** |
 
 ### Path Comparison
 
 | Operation | jsonatapy (ms) | Iterations |
 |-----------|---------------|------------|
-| Filter by category (data handle) | 12.540 | 500 |
-| Filter by category (data→json) | 6.221 | 500 |
-| Complex transformation (data handle) | 33.960 | 500 |
-| Complex transformation (data→json) | 29.469 | 500 |
-| Aggregate (data handle) | 5.906 | 500 |
-| Aggregate (data→json) | 5.876 | 500 |
+| Filter by category (data handle) | 12.343 | 500 |
+| Filter by category (data→json) | 5.934 | 500 |
+| Complex transformation (data handle) | 28.303 | 500 |
+| Complex transformation (data→json) | 23.938 | 500 |
+| Aggregate (data handle) | 5.381 | 500 |
+| Aggregate (data→json) | 5.316 | 500 |
 
 ## Performance Characteristics
 
 **Faster than JavaScript:**
 
-- Simple Paths (**3.6x faster**)
-- Array Operations (**3.0x faster**)
-- Complex Transformations (**6.3x faster**)
-- Deep Nesting (**1.7x faster**)
-- String Operations (**5.8x faster**)
-- Higher-Order Functions (**9.0x faster**)
-- Realistic Workload (**6.1x faster**)
+- Simple Paths (**4.9x faster**)
+- Array Operations (**3.7x faster**)
+- Complex Transformations (**7.6x faster**)
+- Deep Nesting (**2.9x faster**)
+- String Operations (**6.5x faster**)
+- Higher-Order Functions (**11.9x faster**)
+- Realistic Workload (**8.1x faster**)
 
 **Comparable to JavaScript:**
 
@@ -154,7 +156,7 @@ result = expr.evaluate_with_data(jdata)
 
 ## Methodology
 
-- **Date:** 2026-07-20
+- **Date:** 2026-08-31
 - **Platform:** GitHub Actions (self-hosted Michaels-Mini, physical/dedicated hardware, macOS ARM64)
 - **Python:** 3.14.6
 - **Node.js:** v20.20.2
