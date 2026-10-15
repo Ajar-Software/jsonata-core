@@ -1988,6 +1988,72 @@ fn test_empty_predicate_still_keeps_array() {
     );
 }
 
+// ── Parenthesized map stages unwrap singletons (issue #181) ──────────────────
+//
+// A map stage whose RHS is a parenthesized expression produces a sequence for
+// the same reason a field-name step does: the array becomes the context of a
+// subsequent expression (processing model, rule 3), so a one-item result
+// unwraps (rule 2). The `FunctionApplication` arm set no array-mapping flag,
+// so `[{'b':1}].($)` stayed `[{"b":1}]` where jsonata-js returns the object.
+
+#[test]
+fn test_parenthesized_map_stage_unwraps_singleton_object() {
+    assert_eq!(
+        filter_eval(r#"($r := [{'b':1}]; $r.($merge([$,{'x':1}])))"#, json!({})),
+        JValue::from(json!({"b": 1, "x": 1}))
+    );
+}
+
+#[test]
+fn test_parenthesized_map_stage_unwraps_singleton_scalar() {
+    assert_eq!(
+        filter_eval(r#"($r := [{'b':1}]; $r.($v := 1; $v))"#, json!({})),
+        JValue::from(1)
+    );
+}
+
+#[test]
+fn test_parenthesized_map_stage_singleton_array_stays_flat() {
+    // The mapped value is itself an array; the singleton SEQUENCE unwraps to
+    // that array (rule 2), not to a nested `[[...]]`.
+    assert_eq!(
+        filter_eval(r#"($r := [{'b':1}]; $r.([$]))"#, json!({})),
+        JValue::from(json!([{"b": 1}]))
+    );
+}
+
+#[test]
+fn test_parenthesized_map_stage_multi_element_stays_array() {
+    assert_eq!(
+        filter_eval(
+            r#"($r := [{'b':1},{'b':2}]; $r.($merge([$,{'x':1}])))"#,
+            json!({})
+        ),
+        JValue::from(json!([{"b": 1, "x": 1}, {"b": 2, "x": 1}]))
+    );
+}
+
+#[test]
+fn test_parenthesized_map_stage_singleton_compares_as_scalar() {
+    // Consequence of the unwrap: the block result participates in `=` as a
+    // string rather than raising T2010 (array vs string).
+    assert_eq!(
+        filter_eval(
+            r#"($r := [{'bucket':'a'}]; $r.($v := bucket; $v = 'a'))"#,
+            json!({})
+        ),
+        JValue::from(true)
+    );
+}
+
+#[test]
+fn test_parenthesized_map_stage_keep_array_wins() {
+    assert_eq!(
+        filter_eval(r#"($r := [{'b':1}]; $r.($)[])"#, json!({})),
+        JValue::from(json!([{"b": 1}]))
+    );
+}
+
 // ── Numeric predicates select by index (issue #98, root cause 3) ─────────────
 //
 // `arr[p]` does not mean "keep elements where p is truthy". When the predicate

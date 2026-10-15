@@ -5491,6 +5491,14 @@ impl Evaluator {
                     }
                     let fa_result = match &current {
                         JValue::Array(arr) => {
+                            // Mapping over an array produces a sequence, so a
+                            // one-item result must unwrap at end-of-path exactly
+                            // like a `Name` step: `[{'b':1}].($)` is the object,
+                            // not `[object]`. `finalize_path_result` applies the
+                            // unwrap when `did_array_mapping` is set (or an array
+                            // op is present); without this flag the parenthesized
+                            // step kept its singleton array.
+                            did_array_mapping = true;
                             // Produce the mapped result (compiled fast path or tree-walker fallback).
                             // Do NOT return early — singleton unwrapping is applied by the outer
                             // path evaluation code after all steps are processed.
