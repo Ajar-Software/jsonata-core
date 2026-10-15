@@ -2054,6 +2054,62 @@ fn test_parenthesized_map_stage_keep_array_wins() {
     );
 }
 
+// ── Map stages flatten array results one level (issue #183) ─────────────────
+//
+// jsonata-js's evaluateStep pushes each item's result and then flattens one
+// level, with a last-step rule: a single contribution that is an explicitly
+// constructed array IS the result (`[9]`), while a single contribution that
+// is an inner sequence collapses as usual (`{"b":1}`). Without the flatten,
+// nested map pipelines stay arrays of arrays.
+
+#[test]
+fn test_map_stage_flattens_nested_map() {
+    assert_eq!(
+        filter_eval(
+            r#"($ids := [{'k':'a'},{'k':'b'}]; [1,2].($b := $; $ids.({'b': $b, 'k': $.k})))"#,
+            json!({})
+        ),
+        JValue::from(json!([
+            {"b": 1, "k": "a"},
+            {"b": 1, "k": "b"},
+            {"b": 2, "k": "a"},
+            {"b": 2, "k": "b"}
+        ]))
+    );
+}
+
+#[test]
+fn test_map_stage_flattens_constructor_arrays() {
+    for (expr, expected) in [
+        (r#"([1,2]).(([9,8]))"#, json!([9, 8, 9, 8])),
+        (r#"([1,2]).([9,8])"#, json!([9, 8, 9, 8])),
+        (r#"($x := [1,2]; $x.($v := [$]; $v))"#, json!([1, 2])),
+        (r#"($x := [[1,2],[3]]; $x.($))"#, json!([1, 2, 3])),
+        (r#"($x := [1,2]; $x.([5]))"#, json!([5, 5])),
+    ] {
+        assert_eq!(filter_eval(expr, json!({})), JValue::from(expected), "{expr}");
+    }
+}
+
+#[test]
+fn test_map_stage_last_step_single_array_rules() {
+    // A single constructed array result is kept as an array...
+    assert_eq!(
+        filter_eval(r#"($r := [{'b':1}]; $r.([$]))"#, json!({})),
+        JValue::from(json!([{"b": 1}]))
+    );
+    assert_eq!(
+        filter_eval(r#"([1]).(([9]))"#, json!({})),
+        JValue::from(json!([9]))
+    );
+    // ...while a single inner-sequence contribution collapses like any
+    // singleton sequence (issue #181).
+    assert_eq!(
+        filter_eval(r#"($ids := [{'k':'a'}]; [1].($b := $; $ids.({'b': $b})))"#, json!({})),
+        JValue::from(json!({"b": 1}))
+    );
+}
+
 // ── Numeric predicates select by index (issue #98, root cause 3) ─────────────
 //
 // `arr[p]` does not mean "keep elements where p is truthy". When the predicate
