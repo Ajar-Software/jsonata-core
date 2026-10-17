@@ -26,7 +26,7 @@
     <source media="(prefers-color-scheme: dark)"
             srcset="https://raw.githubusercontent.com/txjmb/jsonata-core/main/docs/assets/realistic-workload-dark.svg">
     <img width="880"
-         alt="Realistic-workload benchmark on a 100-product dataset, lower is better: jsonatapy is 7.5x faster than the jsonata-js reference on the geometric mean of 5 e-commerce queries, and the pure-Rust jsonata-core engine is faster still."
+         alt="Realistic-workload benchmark on a 100-product dataset, lower is better: jsonatapy is 8.7x faster than the jsonata-js reference on the geometric mean of 5 e-commerce queries, and the pure-Rust jsonata-core engine is faster still."
          src="https://raw.githubusercontent.com/txjmb/jsonata-core/main/docs/assets/realistic-workload-light.svg">
   </picture>
 </a>
@@ -107,10 +107,10 @@ let result = Evaluator::new().evaluate(&ast, &data)?;
 ```toml
 # Cargo.toml
 [dependencies]
-jsonata-core = "2.2.9"          # pure Rust, no Python dependency
+jsonata-core = "2.2.11"          # pure Rust, no Python dependency
 
 # Optional: disable SIMD for constrained targets
-jsonata-core = { version = "2.2.9", default-features = false }
+jsonata-core = { version = "2.2.11", default-features = false }
 ```
 
 ---
@@ -194,6 +194,8 @@ See [official JSONata docs](https://docs.jsonata.org/) for the full language ref
 ---
 
 ## Performance
+
+
 
 `jsonata-core` passes **1686/1686** JSONata reference tests and is the fastest JSONata
 implementation available in either Rust or Python:
