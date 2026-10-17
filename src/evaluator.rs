@@ -1944,7 +1944,8 @@ fn compiled_eval_field_path(
 /// value, looking each field up directly while the value is a single plain
 /// object and the step is `plain` (has no filter or other stage). Returns how
 /// many steps were taken and the value reached, which the general step loop
-/// continues from, or `None` once a field is missing (the path is undefined). This is exactly what jsonata-js gives: a one-item input
+/// continues from, or `None` once a field is missing (the path is
+/// undefined). This is exactly what jsonata-js gives: a one-item input
 /// either unwraps to the field's value or, when that value is an array, maps
 /// the next step over its items, as it does over the array itself; and the
 /// last-step rule returns a final array value as is.
@@ -2867,6 +2868,7 @@ fn callback_array_arg(input: &JValue, items: &[JValue]) -> JValue {
 /// (`group_items`). A value that is not an array is its own context.
 pub(crate) fn object_context(data: &JValue) -> Cow<'_, JValue> {
     match data {
+        JValue::Array(arr) if arr.outer_wrapper => Cow::Owned(data.bare()),
         JValue::Array(_) => Cow::Owned(group_context(&group_items(data))),
         _ => Cow::Borrowed(data),
     }
@@ -2899,10 +2901,18 @@ fn duplicate_literal_key(pairs: &[(AstNode, AstNode)]) -> Option<&str> {
     (0..pairs.len()).find_map(|i| key(i).filter(|k| !seen.insert(*k)))
 }
 
+/// jsonata-js's D1009, for two pairs of an object constructor giving `key`.
 fn duplicate_key_error(key: &str) -> EvaluatorError {
     EvaluatorError::EvaluationError(format!(
-        "D1009: Multiple key expressions evaluate to same key: {}",
-        key
+        "D1009: Multiple key definitions evaluate to same key: {key}"
+    ))
+}
+
+/// jsonata-js's T1003, for an object key that is not a string.
+fn key_type_error(key: &JValue) -> EvaluatorError {
+    let key = key.to_json_string().unwrap_or_else(|_| format!("{key:?}"));
+    EvaluatorError::TypeError(format!(
+        "T1003: Key in object structure must evaluate to a string; got: {key}"
     ))
 }
 
@@ -3751,6 +3761,20 @@ impl Evaluator {
             return result;
         }
 
+        // A request to keep tuple streams reaches only a tail path: jsonata-js
+        // marks a path or a block `tuple`, never the expressions inside them.
+        if self.keep_tuple_stream
+            && !matches!(
+                node,
+                AstNode::Path { .. } | AstNode::Block(_) | AstNode::FunctionApplication(_)
+            )
+        {
+            self.keep_tuple_stream = false;
+            let result = self.evaluate_unwrapped_later(node, data);
+            self.keep_tuple_stream = true;
+            return result;
+        }
+
         // Check recursion depth to prevent stack overflow. `effective_limit` is
         // whichever is tighter: the user's `max_stack_depth` guardrail or the
         // hardcoded native-stack-safety ceiling (`max_recursion_depth`, always
@@ -3946,7 +3970,7 @@ impl Evaluator {
                 // group-by key/value expressions can read the carried `$focus`
                 // bindings off each wrapper (e.g. `...@$e...{ $e.FirstName: ... }`).
                 let saved_keep = self.keep_tuple_stream;
-                self.keep_tuple_stream = true;
+                self.keep_tuple_stream = Self::is_tuple_path_node(input);
                 let input_value = self.evaluate_internal(input, data);
                 self.keep_tuple_stream = saved_keep;
                 let input_value = input_value?;
@@ -4025,115 +4049,112 @@ impl Evaluator {
                     }
                 };
 
-                // Phase 1: Group items by key expression
-                // groups maps key -> (grouped_data, expr_index), in first-seen
-                // order. When multiple items have same key, their data is
-                // appended together
-                let mut groups: IndexMap<String, (Vec<JValue>, usize)> = IndexMap::new();
-
                 // Save the current $ binding to restore later
                 let saved_dollar = self.context.lookup("$").cloned();
 
-                for item in &items {
-                    // In reduce mode evaluate the key against `@` with tuple keys
-                    // bound; otherwise against the item itself.
-                    let (key_data, tuple_saved) = match (reduce, item) {
-                        (true, JValue::Object(o)) => {
-                            let saved = bind_tuple(self, o);
-                            (
-                                o.get("@").cloned().unwrap_or(JValue::Undefined),
-                                Some(saved),
-                            )
-                        }
-                        _ => (item.clone(), None),
-                    };
-                    self.context.bind("$".to_string(), key_data.clone());
+                // The grouping, run so that `$` is restored on an error too.
+                let grouped = (|ev: &mut Self| -> Result<JValue, EvaluatorError> {
+                    // Phase 1: Group items by key expression
+                    // groups maps key -> (grouped_data, expr_index), in first-seen
+                    // order. When multiple items have same key, their data is
+                    // appended together
+                    let mut groups: IndexMap<String, (Vec<JValue>, usize)> = IndexMap::new();
 
-                    for (pair_index, (key_node, _value_node)) in pattern.iter().enumerate() {
-                        // Evaluate key with current item as context
-                        let key = match self.evaluate_internal(key_node, &key_data)? {
-                            JValue::String(s) => s,
-                            other => {
-                                // Skip undefined keys
-                                if other.is_undefined() {
-                                    continue;
-                                }
-                                if let Some(saved) = tuple_saved {
-                                    restore(self, saved);
-                                }
-                                return Err(EvaluatorError::TypeError(format!(
-                                    "T1003: Object key must be a string, got: {:?}",
-                                    other
-                                )));
+                    for item in &items {
+                        // In reduce mode evaluate the key against `@` with tuple keys
+                        // bound; otherwise against the item itev.
+                        let (key_data, tuple_saved) = match (reduce, item) {
+                            (true, JValue::Object(o)) => {
+                                let saved = bind_tuple(ev, o);
+                                (
+                                    o.get("@").cloned().unwrap_or(JValue::Undefined),
+                                    Some(saved),
+                                )
                             }
+                            _ => (item.clone(), None),
                         };
+                        ev.context.bind("$".to_string(), key_data.clone());
 
-                        // Group items by key
-                        if let Some((existing_data, existing_idx)) = groups.get_mut(&*key) {
-                            // Key already exists - check if from same expression index
-                            if *existing_idx != pair_index {
-                                if let Some(saved) = tuple_saved {
-                                    restore(self, saved);
+                        for (pair_index, (key_node, _value_node)) in pattern.iter().enumerate() {
+                            // Evaluate key with current item as context
+                            let key = match ev.evaluate_internal(key_node, &key_data)? {
+                                JValue::String(s) => s,
+                                other => {
+                                    // Skip undefined keys
+                                    if other.is_undefined() {
+                                        continue;
+                                    }
+                                    if let Some(saved) = tuple_saved {
+                                        restore(ev, saved);
+                                    }
+                                    return Err(key_type_error(&other));
                                 }
-                                // D1009: multiple key expressions evaluate to same key
-                                return Err(EvaluatorError::EvaluationError(format!(
-                                    "D1009: Multiple key expressions evaluate to same key: {}",
-                                    key
-                                )));
+                            };
+
+                            // Group items by key
+                            if let Some((existing_data, existing_idx)) = groups.get_mut(&*key) {
+                                // Key already exists - check if from same expression index
+                                if *existing_idx != pair_index {
+                                    if let Some(saved) = tuple_saved {
+                                        restore(ev, saved);
+                                    }
+                                    return Err(duplicate_key_error(&key));
+                                }
+                                // Append item to the group
+                                existing_data.push(item.clone());
+                            } else {
+                                // New key - create new group
+                                groups.insert(key.to_string(), (vec![item.clone()], pair_index));
                             }
-                            // Append item to the group
-                            existing_data.push(item.clone());
-                        } else {
-                            // New key - create new group
-                            groups.insert(key.to_string(), (vec![item.clone()], pair_index));
+                        }
+
+                        if let Some(saved) = tuple_saved {
+                            restore(ev, saved);
                         }
                     }
 
-                    if let Some(saved) = tuple_saved {
-                        restore(self, saved);
-                    }
-                }
+                    // Phase 2: Evaluate value expression for each group
+                    let mut result = IndexMap::new();
 
-                // Phase 2: Evaluate value expression for each group
-                let mut result = IndexMap::new();
+                    for (key, (grouped_data, expr_index)) in groups {
+                        // Get the value expression for this group
+                        let (_key_node, value_node) = &pattern[expr_index];
 
-                for (key, (grouped_data, expr_index)) in groups {
-                    // Get the value expression for this group
-                    let (_key_node, value_node) = &pattern[expr_index];
+                        if reduce {
+                            // Reduce the grouped tuples into one (per-key values
+                            // appended), mirroring jsonata-js reduceTupleStream, then
+                            // evaluate the value against the merged `@` with the merged
+                            // focus/index/ancestor keys bound.
+                            let merged = reduce_tuple_stream(&grouped_data);
+                            let context = merged.get("@").cloned().unwrap_or(JValue::Undefined);
+                            let mut tuple_no_at = merged.clone();
+                            tuple_no_at.shift_remove("@");
+                            let saved = bind_tuple(ev, &tuple_no_at);
+                            ev.context.bind("$".to_string(), context.clone());
+                            let value = ev.evaluate_internal(value_node, &context);
+                            restore(ev, saved);
+                            let value = value?;
+                            if !value.is_undefined() {
+                                result.insert(key, value);
+                            }
+                            continue;
+                        }
 
-                    if reduce {
-                        // Reduce the grouped tuples into one (per-key values
-                        // appended), mirroring jsonata-js reduceTupleStream, then
-                        // evaluate the value against the merged `@` with the merged
-                        // focus/index/ancestor keys bound.
-                        let merged = reduce_tuple_stream(&grouped_data);
-                        let context = merged.get("@").cloned().unwrap_or(JValue::Undefined);
-                        let mut tuple_no_at = merged.clone();
-                        tuple_no_at.shift_remove("@");
-                        let saved = bind_tuple(self, &tuple_no_at);
-                        self.context.bind("$".to_string(), context.clone());
-                        let value = self.evaluate_internal(value_node, &context);
-                        restore(self, saved);
-                        let value = value?;
+                        let context = group_context(&grouped_data);
+
+                        // Bind $ to the context for value evaluation
+                        ev.context.bind("$".to_string(), context.clone());
+
+                        // Evaluate value expression with grouped context
+                        let value = ev.evaluate_internal(value_node, &context)?;
+
+                        // Skip undefined values
                         if !value.is_undefined() {
                             result.insert(key, value);
                         }
-                        continue;
                     }
-
-                    let context = group_context(&grouped_data);
-
-                    // Bind $ to the context for value evaluation
-                    self.context.bind("$".to_string(), context.clone());
-
-                    // Evaluate value expression with grouped context
-                    let value = self.evaluate_internal(value_node, &context)?;
-
-                    // Skip undefined values
-                    if !value.is_undefined() {
-                        result.insert(key, value);
-                    }
-                }
+                    Ok(JValue::object(result))
+                })(self);
 
                 // Restore the previous $ binding
                 if let Some(saved) = saved_dollar {
@@ -4141,8 +4162,7 @@ impl Evaluator {
                 } else {
                     self.context.unbind("$");
                 }
-
-                Ok(JValue::object(result))
+                grouped
             }
 
             AstNode::Function {
@@ -4202,9 +4222,16 @@ impl Evaluator {
                 // `AstNode::Undefined`, but a `.()` step keeps it as an empty
                 // `Block` so the ancestry pass can walk past it; see #114).
                 let mut result = JValue::Undefined;
-                for expr in expressions {
+                // Only the last expression is the block's value, so only it
+                // may keep a tuple stream.
+                let keep = std::mem::replace(&mut self.keep_tuple_stream, false);
+                for (index, expr) in expressions.iter().enumerate() {
+                    if index + 1 == expressions.len() {
+                        self.keep_tuple_stream = keep;
+                    }
                     result = self.evaluate_internal(expr, data)?;
                 }
+                self.keep_tuple_stream = keep;
 
                 // Closures escaping the block (IIFE pattern) carry their own
                 // storage inside the value, so popping is unconditional.
@@ -4296,7 +4323,7 @@ impl Evaluator {
                 // Keep the input path's tuple wrappers so the sort terms can read
                 // the carried `%`/`$focus`/`$index` bindings per element.
                 let saved = self.keep_tuple_stream;
-                self.keep_tuple_stream = true;
+                self.keep_tuple_stream = Self::is_tuple_path_node(input);
                 let value = self.evaluate_internal(input, data);
                 self.keep_tuple_stream = saved;
                 let mut sorted = self.evaluate_sort(&value?, terms)?;
@@ -4711,16 +4738,15 @@ impl Evaluator {
         // shadowed by `:=`) stays on the tree-walker.
         let compiled = match node {
             _ if items.len() < 2 => None,
-            _ if Self::collect_free_variables(node, &[])
-                .iter()
-                .any(|name| self.context.lookup(name).is_some()) =>
-            {
-                None
-            }
             AstNode::Object(_) => try_compile_expr(node),
             AstNode::FunctionApplication(expr) => try_compile_expr(expr),
             _ => None,
-        };
+        }
+        .filter(|_| {
+            !Self::collect_free_variables(node, &[])
+                .iter()
+                .any(|name| self.context.lookup(name).is_some())
+        });
         let mut values = Vec::with_capacity(items.len());
         if let Some(compiled) = compiled {
             for item in items {
@@ -4778,12 +4804,7 @@ impl Evaluator {
                 let key = match self.evaluate_internal(key, item)? {
                     JValue::String(key) => key,
                     JValue::Undefined => continue,
-                    other => {
-                        return Err(EvaluatorError::TypeError(format!(
-                            "T1003: Key in object structure must evaluate to a string; got: {:?}",
-                            other
-                        )))
-                    }
+                    other => return Err(key_type_error(&other)),
                 };
                 match groups.get_mut(&*key) {
                     Some((index, _)) if *index != pair_index => {
@@ -4932,6 +4953,28 @@ impl Evaluator {
     /// such a path's result into a fresh sequence of each tuple's `@` value.
     fn is_tuple_path(steps: &[PathStep]) -> bool {
         steps.iter().any(Self::step_creates_tuple)
+    }
+
+    /// True for a path node that is a tuple stream. A sort or group-by over
+    /// one sees its tuples, as jsonata-js passes them its path's tuple
+    /// bindings; over anything else, even a block holding such a path, it
+    /// sees values.
+    fn is_tuple_path_node(node: &AstNode) -> bool {
+        matches!(node, AstNode::Path { steps } if Self::is_tuple_path(steps))
+    }
+
+    /// True when `%` resolves through `node`'s value: its tail path (through
+    /// blocks and `.(...)` steps) has a step labelled as an ancestor.
+    /// jsonata-js marks such a path or block `tuple`, so it keeps its tuples.
+    fn carries_ancestry(node: &AstNode) -> bool {
+        match node {
+            AstNode::Path { steps } => steps
+                .iter()
+                .any(|step| step.ancestor_label.is_some() || Self::carries_ancestry(&step.node)),
+            AstNode::Block(expressions) => expressions.last().is_some_and(Self::carries_ancestry),
+            AstNode::FunctionApplication(expr) => Self::carries_ancestry(expr),
+            _ => false,
+        }
     }
 
     /// True for a one-step path whose step is an expression jsonata-js does
@@ -5151,14 +5194,11 @@ impl Evaluator {
                 (!matches!(step.node, AstNode::Name(_))).then(|| self.bind_tuple_keys(&tuple_obj));
 
             let actual_data = tuple_obj.get("@").cloned().unwrap_or(JValue::Undefined);
-            // A block step's inner path may itself be a tuple stream (its `%`
-            // resolves through this step); keep its tuples so their bindings
-            // merge into this stream, as jsonata-js does for a `tuple` path.
+            // A block step whose inner path a `%` resolves through keeps that
+            // path's tuples, so their bindings merge into this stream, as
+            // jsonata-js does for a `tuple` path.
             let saved_keep = self.keep_tuple_stream;
-            if matches!(
-                step.node,
-                AstNode::FunctionApplication(_) | AstNode::Block(_)
-            ) {
+            if Self::carries_ancestry(&step.node) {
                 self.keep_tuple_stream = true;
             }
             let step_value = self.evaluate_step_node(&step.node, &actual_data);

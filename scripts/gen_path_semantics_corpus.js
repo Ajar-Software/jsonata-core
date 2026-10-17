@@ -123,6 +123,11 @@ const EXTRA = [
   // Tuple-producing paths inside a sort with an index.
   'objs^(>p)#$i[$i = 0].p', '(o.(t#$k[$k = 0]))^($)#$i.{"v": $, "i": $i}',
   'o^(>t#$k[$k = 0])#$i.{"i": $i}', 'o.{"r": t#$k[$k = 0]}^(>r)#$i.{"r": r, "i": $i}',
+  // A sort or group-by keeps tuples only from a tuple path it sorts directly.
+  '$keys(objs#$i)^($)', '$string(objs#$i)^($)', '$string(objs#$i){"k": $}',
+  '(objs#$i)^(>p).{"i": $i}', '($a := objs#$i; $a)^(>p).{"i": $i}', '(objs#$i){"k": $i}',
+  '[objs#$i]{"k": $i}', 'objs#$i.($string(objs#$z))', 'objs#$i^(>p).{"i": $i}',
+  'objs#$i{"k": $i}', 'o.(t.%)', 'o.t.{"p": %.t}', 'o.t.(%.%)', 'o.(t.(%))',
 ];
 
 // The same questions with a top-level array as input. jsonata-js wraps that
