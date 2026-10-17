@@ -109,6 +109,19 @@ impl JArray {
         }
     }
 
+    /// A new sequence of the same items, sharing them: what jsonata-js
+    /// builds when a step collects an array's items with `createSequence()`.
+    /// O(1); none of this array's other flags carry over.
+    #[inline]
+    pub fn fresh_sequence(&self) -> JArray {
+        JArray {
+            items: Rc::clone(&self.items),
+            sequence: true,
+            cons: false,
+            keep_singleton: false,
+        }
+    }
+
     /// True when both arrays share the same items allocation.
     #[inline]
     pub fn ptr_eq(a: &JArray, b: &JArray) -> bool {

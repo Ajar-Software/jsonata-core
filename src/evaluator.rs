@@ -1834,13 +1834,31 @@ fn compiled_eval_field_path(
     options: &EvaluatorOptions,
     start_time: Option<Instant>,
 ) -> Result<JValue, EvaluatorError> {
-    let mut input = match data {
-        JValue::Array(arr) if from_dollar || !is_root_input(arr) => data.clone(),
-        _ => JValue::sequence(vec![data.clone()]),
+    let per_item = matches!(data, JValue::Array(arr) if from_dollar || !is_root_input(arr));
+    let (start, mut result) = if per_item {
+        (0, JValue::Undefined)
+    } else {
+        walk_single_values(steps.iter().map(|s| (&*s.field, s.filter.is_none())), data)?
     };
-    let mut result = JValue::sequence(Vec::new());
-    for (index, step) in steps.iter().enumerate() {
-        let items = input.as_array().map_or(&[][..], Vec::as_slice);
+    if start == steps.len() {
+        return Ok(result);
+    }
+    for (index, step) in steps.iter().enumerate().skip(start) {
+        let previous;
+        let items: &[JValue] = if index == 0 && per_item {
+            data.as_array().map_or(&[][..], Vec::as_slice)
+        } else if index == 0 {
+            std::slice::from_ref(data)
+        } else {
+            match &result {
+                JValue::Array(arr) if !arr.is_empty() => {
+                    previous = arr.clone();
+                    &previous
+                }
+                JValue::Undefined => break,
+                single => std::slice::from_ref(single),
+            }
+        };
         let mut values = field_values(&step.field, items, options)?;
         if let Some(filter) = &step.filter {
             let mut filtered = Vec::with_capacity(values.len());
@@ -1854,39 +1872,70 @@ fn compiled_eval_field_path(
         }
         check_sequence_length(values.len(), options)?;
         result = collect_step_results(values, index + 1 == steps.len());
-        if result.as_array().is_some_and(Vec::is_empty) {
-            break;
-        }
-        input = result.clone();
     }
     Ok(result)
 }
 
+/// Walk the leading `(field, plain)` steps of a path over a single input
+/// value, looking each field up directly while the value is a single plain
+/// object and the step is `plain` (has no filter or other stage). Returns how
+/// many steps were taken and the value reached, which the general step loop
+/// continues from. This is exactly what jsonata-js gives: a one-item input
+/// either unwraps to the field's value or, when that value is an array, maps
+/// the next step over its items, as it does over the array itself; and the
+/// last-step rule returns a final array value as is.
+fn walk_single_values<'a>(
+    steps: impl Iterator<Item = (&'a str, bool)>,
+    data: &JValue,
+) -> Result<(usize, JValue), EvaluatorError> {
+    let mut value = data.clone();
+    let mut taken = 0;
+    for (field, plain) in steps {
+        if !plain {
+            break;
+        }
+        value = match &value {
+            JValue::Object(obj) if !is_tuple_object(obj) => {
+                obj.get(field).cloned().unwrap_or(JValue::Undefined)
+            }
+            #[cfg(feature = "python")]
+            JValue::LazyPyDict(lazy) => lazy.get_field(field)?,
+            _ => break,
+        };
+        taken += 1;
+        if value.is_undefined() {
+            return Ok((usize::MAX, JValue::Undefined));
+        }
+    }
+    Ok((taken, value))
+}
+
 /// The value of `field` in each of `items` that has one, in order: jsonata-js
 /// `lookup` applied item by item. An item that is itself an array yields the
-/// sequence of its own items' values. A shape cache built from the first
-/// plain object makes homogeneous arrays O(1) per item.
+/// sequence of its own items' values. The field's position in the first
+/// object is reused for the rest, so homogeneous arrays look it up in O(1)
+/// without hashing.
 fn field_values(
     field: &str,
     items: &[JValue],
     options: &EvaluatorOptions,
 ) -> Result<Vec<JValue>, EvaluatorError> {
-    let shape: Option<ShapeCache> = items.iter().find_map(|v| match v {
-        JValue::Object(obj) if !is_tuple_object(obj) => build_shape_cache(v),
-        _ => None,
-    });
+    let mut position: Option<usize> = None;
     let mut values = Vec::with_capacity(items.len());
     for item in items {
-        let value = match (&shape, item) {
-            (Some(sh), JValue::Object(obj)) if !is_tuple_object(obj) => match sh.get(field) {
-                // Positional access with key verification guards against
-                // objects whose schema differs from the first one's.
-                Some(&pos) => match obj.get_index(pos) {
-                    Some((k, v)) if k.as_str() == field => v.clone(),
-                    _ => obj.get(field).cloned().unwrap_or(JValue::Undefined),
-                },
-                None => obj.get(field).cloned().unwrap_or(JValue::Undefined),
-            },
+        let value = match item {
+            JValue::Object(obj) if !is_tuple_object(obj) => {
+                match position.and_then(|p| obj.get_index(p)) {
+                    Some((key, value)) if key == field => value.clone(),
+                    _ => match obj.get_full(field) {
+                        Some((index, _, value)) => {
+                            position = Some(index);
+                            value.clone()
+                        }
+                        None => JValue::Undefined,
+                    },
+                }
+            }
             _ => compiled_field_step(field, item, options)?,
         };
         if !value.is_undefined() {
@@ -2807,6 +2856,19 @@ fn collect_step_results(mut results: Vec<JValue>, last_step: bool) -> JValue {
     if last_step && results.len() == 1 && matches!(&results[0], JValue::Array(arr) if !arr.sequence)
     {
         return results.pop().expect("length checked");
+    }
+    // A single array flattens into a sequence of its own items, which can
+    // share them.
+    if let [JValue::Array(arr)] = results.as_slice() {
+        if !arr.cons {
+            return JValue::Array(arr.fresh_sequence());
+        }
+    }
+    if !results
+        .iter()
+        .any(|value| matches!(value, JValue::Array(arr) if !arr.cons))
+    {
+        return JValue::sequence(results);
     }
     let mut items = Vec::with_capacity(results.len());
     for value in results {
@@ -4359,23 +4421,56 @@ impl Evaluator {
             first.node,
             AstNode::Variable(_) | AstNode::ParentVariable(_) | AstNode::Sort { .. }
         );
-        let mut input = match data {
-            JValue::Array(arr) if !takes_whole_input && !is_root_input(arr) => data.clone(),
-            _ => JValue::sequence(vec![data.clone()]),
+        let first_items: &[JValue] = match data {
+            JValue::Array(arr) if !takes_whole_input && !is_root_input(arr) => arr,
+            _ => std::slice::from_ref(data),
         };
 
         let mut tuples: Option<Vec<JValue>> = None;
-        let mut result = JValue::sequence(Vec::new());
+        let mut result = JValue::Undefined;
         for (index, step) in steps.iter().enumerate() {
             if tuples.is_some() || step.is_tuple || Self::step_creates_tuple(step) {
+                // A final plain field step over a stream that is about to be
+                // projected can't use the tuples' bindings: its projected
+                // values are the field of each tuple's `@`, an array value
+                // giving one tuple per item (jsonata-js `evaluateTupleStep`).
+                if let (Some(stream), AstNode::Name(field)) = (&tuples, &step.node) {
+                    if index + 1 == steps.len()
+                        && !self.keep_tuple_stream
+                        && step.stages.is_empty()
+                        && !Self::step_creates_tuple(step)
+                    {
+                        let focus: Vec<JValue> = stream.iter().map(tuple_focus_value).collect();
+                        let mut projected = Vec::with_capacity(focus.len());
+                        for value in field_values(field, &focus, &self.options)? {
+                            match value {
+                                JValue::Array(items) => projected.extend(items.iter().cloned()),
+                                other => projected.push(other),
+                            }
+                        }
+                        check_sequence_length(projected.len(), &self.options)?;
+                        result = JValue::sequence(projected);
+                        tuples = None;
+                        break;
+                    }
+                }
                 let source = match tuples.take() {
                     Some(stream) => JValue::array(stream),
                     None if index == 0 => data.clone(),
-                    None => input.clone(),
+                    None => result.clone(),
                 };
                 tuples = Some(self.create_tuple_stream(step, &source, index == 0)?);
                 continue;
             }
+
+            // The previous step's result (always an array once the loop
+            // reaches here), or the path's input for the first step.
+            let previous = match &result {
+                JValue::Array(arr) if index > 0 => Some(arr.clone()),
+                _ if index > 0 => break,
+                _ => None,
+            };
+            let items: &[JValue] = previous.as_deref().map_or(first_items, Vec::as_slice);
 
             result = if index == 0 && matches!(step.node, AstNode::Array(_)) {
                 // A leading array constructor builds one array from the whole
@@ -4386,7 +4481,7 @@ impl Evaluator {
                 }
                 self.apply_filter_stages(value, &step.stages)?
             } else {
-                self.evaluate_step(step, &input, index + 1 == steps.len())?
+                self.evaluate_step(step, items, previous.as_ref(), index + 1 == steps.len())?
             };
 
             if result.is_undefined() || matches!(&result, JValue::Array(arr) if arr.is_empty()) {
@@ -4403,7 +4498,6 @@ impl Evaluator {
                     continue;
                 }
             }
-            input = result.clone();
         }
 
         if let Some(stream) = tuples {
@@ -4432,20 +4526,32 @@ impl Evaluator {
     fn evaluate_step(
         &mut self,
         step: &PathStep,
-        input: &JValue,
+        items: &[JValue],
+        source: Option<&JArray>,
         last_step: bool,
     ) -> Result<JValue, EvaluatorError> {
-        let single;
-        let items: &[JValue] = match input {
-            JValue::Array(arr) => arr,
-            other => {
-                single = [other.clone()];
-                &single
+        // A `$` step without stages yields its input items again; unless one
+        // of them is an array to flatten, that is the input as a sequence.
+        if let (AstNode::Variable(name), Some(source)) = (&step.node, source) {
+            let flattens = |v: &JValue| matches!(v, JValue::Array(arr) if !arr.cons);
+            if name.is_empty()
+                && step.stages.is_empty()
+                && !(last_step && items.len() == 1)
+                && !items.iter().any(flattens)
+            {
+                return Ok(JValue::Array(source.fresh_sequence()));
             }
+        }
+        let values = match &step.node {
+            // A field step looks the field up in each item, reusing its
+            // position across a homogeneous array.
+            AstNode::Name(field) => field_values(field, items, &self.options)?,
+            // `$` is each item itself.
+            AstNode::Variable(name) if name.is_empty() => items.to_vec(),
+            node => self.evaluate_step_node_per_item(node, items)?,
         };
-        let mut results = Vec::with_capacity(items.len());
-        for item in items {
-            let value = self.evaluate_step_node(&step.node, item)?;
+        let mut results = Vec::with_capacity(values.len());
+        for value in values {
             let value = self.apply_filter_stages(value, &step.stages)?;
             if !value.is_undefined() {
                 results.push(value);
@@ -4453,6 +4559,43 @@ impl Evaluator {
         }
         check_sequence_length(results.len(), &self.options)?;
         Ok(collect_step_results(results, last_step))
+    }
+
+    /// A step node's value for each item, in order, undefined ones included.
+    /// An object constructor or a `.(expr)` block that compiles runs on the
+    /// compiled path, which gives the same values with less per-item work.
+    fn evaluate_step_node_per_item(
+        &mut self,
+        node: &AstNode,
+        items: &[JValue],
+    ) -> Result<Vec<JValue>, EvaluatorError> {
+        let compiled = match node {
+            AstNode::Object(_) => try_compile_expr(node),
+            AstNode::FunctionApplication(expr) => try_compile_expr(expr),
+            _ => None,
+        };
+        let mut values = Vec::with_capacity(items.len());
+        if let Some(compiled) = compiled {
+            let shape = items.first().and_then(build_shape_cache);
+            for item in items {
+                values.push(match &shape {
+                    Some(shape) => eval_compiled_shaped(
+                        &compiled,
+                        item,
+                        None,
+                        shape,
+                        &self.options,
+                        self.start_time,
+                    )?,
+                    None => eval_compiled(&compiled, item, None, &self.options, self.start_time)?,
+                });
+            }
+            return Ok(values);
+        }
+        for item in items {
+            values.push(self.evaluate_step_node(node, item)?);
+        }
+        Ok(values)
     }
 
     /// Evaluate a path step's node against one input item. `$` is the item,
@@ -4770,7 +4913,10 @@ impl Evaluator {
             // Saves/restores rather than blindly unbinding, so a tuple key
             // whose name collides with a live outer `:=` binding doesn't get
             // deleted once this tuple row's evaluation is done.
-            let tuple_bindings = self.bind_tuple_keys(&tuple_obj);
+            // A field step can't see the bindings, so it needs no frame; its
+            // stages, which can, run on the built stream below.
+            let tuple_bindings =
+                (!matches!(step.node, AstNode::Name(_))).then(|| self.bind_tuple_keys(&tuple_obj));
 
             let actual_data = tuple_obj.get("@").cloned().unwrap_or(JValue::Undefined);
             // A block step's inner path may itself be a tuple stream (its `%`
@@ -4786,8 +4932,10 @@ impl Evaluator {
             let step_value = self.evaluate_step_node(&step.node, &actual_data);
             self.keep_tuple_stream = saved_keep;
 
+            if let Some(bindings) = tuple_bindings {
+                bindings.restore(self);
+            }
             let step_value = step_value?;
-            tuple_bindings.restore(self);
 
             let row: Vec<JValue> = match step_value {
                 JValue::Undefined => continue,
