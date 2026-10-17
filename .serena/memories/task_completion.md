@@ -20,4 +20,4 @@ fast path is bypassed (forcing the tree-walker) — see `mem:architecture` for h
 verified this dual-path parity.
 
 If the change is user-facing (new function, new signature, changed error), update
-`CHANGELOG.md` per Keep a Changelog format (per CLAUDE.MD).
+`CHANGELOG.md` per Keep a Changelog format (per CLAUDE.md).

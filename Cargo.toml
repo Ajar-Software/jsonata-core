@@ -26,7 +26,7 @@ exclude = [
     "examples/*.py",
     "*.png",
     "mkdocs.yml",
-    "CLAUDE.MD",
+    "CLAUDE.md",
     "pyproject.toml",
     "uv.lock",
 ]
