@@ -73,6 +73,3 @@ benchmarks/javascript/package-lock.json
 *.tmp
 *.bak
 *.exe
-
-# Serena
-/project.yml
