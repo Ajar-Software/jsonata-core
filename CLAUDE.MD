@@ -235,6 +235,11 @@ python benches/compare_js.py
 4. Add built-in functions incrementally
 5. Each feature should immediately have corresponding tests from JS suite
 
+### Pull Requests
+- Run a code review on every PR before opening it for review or marking it ready, and again after substantial pushes (`/code-review <PR number>` in Claude Code)
+- Fix every confirmed finding, and add a regression test where the finding was a behavior gap
+- Post the findings on the PR, with what happened to each: fixed (with the commit), deferred (and where it will be handled), or not changed (and why)
+
 ### Tracking Upstream
 - Monitor jsonata-js releases: https://github.com/jsonata-js/jsonata/releases
 - Track commit history for understanding rationale behind changes
