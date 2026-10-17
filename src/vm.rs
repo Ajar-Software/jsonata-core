@@ -20,8 +20,8 @@ use std::cell::Cell;
 use std::collections::HashMap;
 
 use crate::evaluator::{
-    check_loop_timeout, check_sequence_length, eval_compiled, predicate_index_match, CompiledExpr,
-    EvaluatorError, EvaluatorOptions,
+    check_loop_timeout, check_sequence_length, eval_compiled, is_root_input, predicate_index_match,
+    CompiledExpr, EvaluatorError, EvaluatorOptions, RootInputGuard,
 };
 use crate::value::JValue;
 
@@ -46,8 +46,12 @@ pub(crate) enum Instr {
     /// Uses the inline shape cache at `shape_cache[ip]`.
     GetField(u16),
     /// Like `GetField` but operates directly on the context (`$`), skipping a push.
-    /// Peephole target for `PushData; GetField(x)`.
+    /// Peephole target for `PushData; GetField(x)`: the first step of a bare
+    /// `x...` path, which treats the top-level array input as one item.
     GetDataField(u16),
+    /// The first step of a `$.x...` path: `x` of each item of an array
+    /// context, the top-level one included.
+    GetDataItemsField(u16),
     /// Push the variable `string_pool[idx]` from the `vars` map.
     GetVar(u16),
     /// Shorthand for `GetVar(v); GetField(f)` — common `$var.field` pattern.
@@ -117,12 +121,10 @@ pub(crate) enum Instr {
     /// with the element as `data`, keep elements where result is truthy.
     /// Pushes the filtered array (or Undefined if empty).
     /// The sub-program runs with a reusable stack (no per-element allocation).
-    /// Filter the array on the stack by a sub-program. The bool is
-    /// `filter_selects_by_index`: true for a standalone predicate (`arr[p]`),
-    /// where a numeric result matches the element's own index; false for a
-    /// stage filter (`a.b[-1]`), where truthiness applies here and numeric
-    /// index mapping is handled by the tree-walker's stage path.
-    FilterByBytecode(u16, bool),
+    /// Filter the value on the stack by a sub-program, following jsonata-js
+    /// `evaluateFilter`: a numeric (or numeric-array) result selects by
+    /// position, anything else by truthiness.
+    FilterByBytecode(u16),
 
     // ── Fallback ─────────────────────────────────────────────────────────
     /// Evaluate `fallback_exprs[idx]` via `eval_compiled` (tree-IR fallback).
@@ -199,6 +201,7 @@ impl<'prog> Vm<'prog> {
         data: &JValue,
         vars: Option<&HashMap<&str, &JValue>>,
     ) -> Result<JValue, EvaluatorError> {
+        let _root = RootInputGuard::set(data);
         let start_time = if self.options.timeout_ms.is_some() {
             Some(std::time::Instant::now())
         } else {
@@ -261,12 +264,36 @@ fn run_inner(
             Instr::GetField(idx) => {
                 let val = stack.pop().unwrap_or(JValue::Undefined);
                 let field = &string_pool[*idx as usize];
-                stack.push(get_field_cached(&val, field, &shape_cache[ip], options)?);
+                stack.push(get_field_cached(
+                    &val,
+                    field,
+                    &shape_cache[ip],
+                    options,
+                    true,
+                )?);
                 ip += 1;
             }
             Instr::GetDataField(idx) => {
                 let field = &string_pool[*idx as usize];
-                stack.push(get_field_cached(data, field, &shape_cache[ip], options)?);
+                let per_item = !matches!(data, JValue::Array(arr) if is_root_input(arr));
+                stack.push(get_field_cached(
+                    data,
+                    field,
+                    &shape_cache[ip],
+                    options,
+                    per_item,
+                )?);
+                ip += 1;
+            }
+            Instr::GetDataItemsField(idx) => {
+                let field = &string_pool[*idx as usize];
+                stack.push(get_field_cached(
+                    data,
+                    field,
+                    &shape_cache[ip],
+                    options,
+                    true,
+                )?);
                 ip += 1;
             }
             Instr::GetVar(idx) => {
@@ -287,7 +314,13 @@ fn run_inner(
                 }
                 .unwrap_or(JValue::Undefined);
                 let field = &string_pool[*field_idx as usize];
-                stack.push(get_field_cached(&obj, field, &shape_cache[ip], options)?);
+                stack.push(get_field_cached(
+                    &obj,
+                    field,
+                    &shape_cache[ip],
+                    options,
+                    true,
+                )?);
                 ip += 1;
             }
 
@@ -523,12 +556,12 @@ fn run_inner(
                 let n = *arg_count as usize;
                 let start = stack.len().saturating_sub(n);
                 let args: Vec<JValue> = stack.drain(start..).collect();
-                stack.push(dispatch_pure(name, &args, data, options, false)?);
+                stack.push(dispatch_pure(name, &args, data, options)?.unwrap_sequence());
                 ip += 1;
             }
 
             // ── Array filtering ─────────────────────────────────────
-            Instr::FilterByBytecode(idx, selects_by_index) => {
+            Instr::FilterByBytecode(idx) => {
                 let sub_prog = &sub_programs[*idx as usize];
                 let src = stack.pop().unwrap_or(JValue::Undefined);
                 // Allocate one reusable sub-stack for all element evaluations.
@@ -548,8 +581,8 @@ fn run_inner(
                                 start_time,
                             )?;
                             let repeats = match predicate_index_match(&test, index, len) {
-                                Some(n) if *selects_by_index => n,
-                                _ => usize::from(compiled_is_truthy(&test)),
+                                Some(n) => n,
+                                None => usize::from(compiled_is_truthy(&test)),
                             };
                             for _ in 0..repeats {
                                 kept.push(item.clone());
@@ -573,8 +606,8 @@ fn run_inner(
                         let test =
                             run_inner(sub_prog, &other, vars, &mut sub_stack, options, start_time)?;
                         let repeats = match predicate_index_match(&test, 0, 1) {
-                            Some(n) if *selects_by_index => n,
-                            _ => usize::from(compiled_is_truthy(&test)),
+                            Some(n) => n,
+                            None => usize::from(compiled_is_truthy(&test)),
                         };
                         // A singleton sequence repeats like any other when the
                         // selector names position 0 more than once.
@@ -604,7 +637,8 @@ fn run_inner(
         }
     }
 
-    Ok(stack.pop().unwrap_or(JValue::Undefined))
+    // jsonata-js's generic unwrap of the expression's value.
+    Ok(stack.pop().unwrap_or(JValue::Undefined).unwrap_sequence())
 }
 
 // ---------------------------------------------------------------------------
@@ -616,12 +650,24 @@ fn run_inner(
 /// On a cold access, looks up `field` in `obj` normally.
 /// On objects with IndexMap storage, caches the positional index so subsequent
 /// accesses (for the same object schema) are O(1) positional lookups.
+///
+/// Over an array, `field` is looked up in each item. With `per_item` set this
+/// is jsonata-js `evaluateStep` for a field step: when exactly one item has
+/// the field and its value is an array but not a sequence, that array is the
+/// result as is (the last-step rule; mid-path it makes no difference, since
+/// the next step maps over the array either way), and otherwise the values
+/// are flattened one level, constructed arrays excepted. Without it, this is
+/// jsonata-js `lookup`, which flattens every value: the rule for nested
+/// arrays and for the top-level input. A one-item result is unwrapped here
+/// rather than at the end of the path, which gives the same answer: the next
+/// step maps over an item and over a one-item sequence alike.
 #[inline]
 fn get_field_cached(
     val: &JValue,
     field: &str,
     cache: &Cell<Option<usize>>,
     options: &EvaluatorOptions,
+    per_item: bool,
 ) -> Result<JValue, EvaluatorError> {
     match val {
         JValue::Object(obj) => {
@@ -648,16 +694,25 @@ fn get_field_cached(
         #[cfg(feature = "python")]
         JValue::LazyPyDict(lazy) => Ok(lazy.get_field(field)?),
         JValue::Array(arr) => {
-            // Array: map field access over elements (implicit array mapping).
-            // Mirrors `compiled_field_step`: flatten nested arrays one level.
-            // This is a query-result sequence (D2015 applies, matching
-            // `evaluate_path`'s array-mapping check in evaluator.rs).
-            let mut results: Vec<JValue> = Vec::with_capacity(arr.len());
+            let mut values: Vec<JValue> = Vec::with_capacity(arr.len());
             for item in arr.iter() {
-                let v = get_field_cached(item, field, cache, options)?;
+                let v = get_field_cached(item, field, cache, options, false)?;
+                if !v.is_undefined() {
+                    values.push(v);
+                }
+            }
+            if per_item
+                && values.len() == 1
+                && matches!(&values[0], JValue::Array(a) if !a.sequence)
+            {
+                return Ok(values.pop().expect("length checked"));
+            }
+            let mut results: Vec<JValue> = Vec::with_capacity(values.len());
+            for v in values {
                 match v {
-                    JValue::Undefined => {}
-                    JValue::Array(inner) => results.extend(inner.iter().cloned()),
+                    JValue::Array(inner) if !(per_item && inner.cons) => {
+                        results.extend(inner.iter().cloned())
+                    }
                     other => results.push(other),
                 }
             }

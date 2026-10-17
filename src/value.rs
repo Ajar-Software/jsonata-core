@@ -331,6 +331,22 @@ impl JValue {
         }
     }
 
+    /// jsonata-js's generic unwrap, applied to the result of every
+    /// expression: an empty sequence is undefined, and a one-item sequence is
+    /// its item unless `keep_singleton` is set. Arrays that are not sequences
+    /// are left alone.
+    #[inline]
+    pub fn unwrap_sequence(self) -> JValue {
+        match self {
+            JValue::Array(arr) if arr.sequence => match arr.len() {
+                0 => JValue::Undefined,
+                1 if !arr.keep_singleton => arr[0].clone(),
+                _ => JValue::Array(arr),
+            },
+            other => other,
+        }
+    }
+
     /// Set `sequence` on an array. A no-op on non-arrays. O(1): the items are
     /// never copied, even when shared.
     #[inline]

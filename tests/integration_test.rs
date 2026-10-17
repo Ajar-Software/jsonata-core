@@ -687,9 +687,9 @@ fn test_recursive_lambda_ids_do_not_collide() {
 //
 // Regression guard for the runtime half of Task 6. The `ast_transform` unit
 // tests only assert AST *tagging*; these assert the resolved VALUES end-to-end,
-// so the fragile runtime pieces (create_tuple_stream's deferred incoming-unbind
-// for `%.%` chains, the step's own-label bind before apply_stages, and routing
-// a `%` path-step over a tuple stream) fail loudly if broken. Expected values
+// so the fragile runtime pieces (create_tuple_stream's incoming-tuple bindings
+// for `%.%` chains, filter stages applied to the built tuple stream, and
+// routing a `%` path-step over a tuple stream) fail loudly if broken. Expected values
 // are from tests/jsonata-js/.../parent-operator/parent.json (dataset5).
 //
 // The result is still a tuple stream (final output-unwrap is Task 7), so we

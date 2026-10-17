@@ -1554,34 +1554,31 @@ impl Parser {
 
                     self.advance()?;
 
-                    // Predicates in postfix position are always separate steps
-                    // Predicates as stages are only attached during DOT operator parsing
-                    if self.current_token == Token::RightBracket {
-                        // Empty brackets []
-                        self.advance()?;
-
-                        let mut steps = match lhs {
-                            AstNode::Path { steps } => steps,
-                            _ => vec![PathStep::new(lhs)],
-                        };
-
-                        steps.push(PathStep::new(AstNode::KeepArray));
-                        self.bump_parse_depth()?;
-                        lhs = AstNode::Path { steps };
+                    // A postfix predicate or `[]` attaches to the last step of
+                    // the path as a stage, as jsonata-js does: on a path it
+                    // filters that step's result per input item; on any other
+                    // expression (`$x[0]`, `(expr)[0]`, `[1,2][0]`) it becomes
+                    // the single step of a new path, which filters the whole
+                    // value. `[]` is the keep-array marker, distinct from the
+                    // filter `[true]`.
+                    let stage = if self.current_token == Token::RightBracket {
+                        Stage::KeepArray
                     } else {
-                        // Normal predicate
-                        let predicate = self.parse_expression(0)?;
-                        self.expect(Token::RightBracket)?;
+                        Stage::Filter(Box::new(self.parse_expression(0)?))
+                    };
+                    self.expect(Token::RightBracket)?;
 
-                        let mut steps = match lhs {
-                            AstNode::Path { steps } => steps,
-                            _ => vec![PathStep::new(lhs)],
-                        };
-
-                        steps.push(PathStep::new(AstNode::Predicate(Box::new(predicate))));
-                        self.bump_parse_depth()?;
-                        lhs = AstNode::Path { steps };
-                    }
+                    let mut steps = match lhs {
+                        AstNode::Path { steps } => steps,
+                        _ => vec![PathStep::new(lhs)],
+                    };
+                    steps
+                        .last_mut()
+                        .expect("a path has at least one step")
+                        .stages
+                        .push(stage);
+                    self.bump_parse_depth()?;
+                    lhs = AstNode::Path { steps };
                 }
                 Token::LeftParen => {
                     self.advance()?;
@@ -2206,11 +2203,11 @@ mod tests {
         let mut parser = Parser::new("foo[]".to_string()).unwrap();
         let ast = parser.parse().unwrap();
 
-        // Path with two steps: Name("foo") and the keepSingleton marker.
+        // `[]` is the keep-array stage on the step it follows, as in jsonata-js.
         if let AstNode::Path { steps } = ast {
-            assert_eq!(steps.len(), 2);
+            assert_eq!(steps.len(), 1);
             assert!(matches!(steps[0].node, AstNode::Name(ref s) if s == "foo"));
-            assert!(matches!(steps[1].node, AstNode::KeepArray));
+            assert_eq!(steps[0].stages, vec![Stage::KeepArray]);
         } else {
             panic!("Expected Path, got {:?}", ast);
         }
@@ -2218,7 +2215,7 @@ mod tests {
 
     /// `[]` and `[true]` are different operators and must not share a node.
     ///
-    /// They did until `AstNode::KeepArray` split them, which made one of the
+    /// They did until `Stage::KeepArray` split them, which made one of the
     /// two wrong for every input: `foo[]` keeps the array while `foo[true]`
     /// filters and then unwraps a lone result.
     #[test]
@@ -2227,16 +2224,38 @@ mod tests {
         let ast = parser.parse().unwrap();
 
         if let AstNode::Path { steps } = ast {
-            assert_eq!(steps.len(), 2);
-            match &steps[1].node {
-                AstNode::Predicate(pred) => {
-                    assert!(matches!(**pred, AstNode::Boolean(true)))
-                }
-                other => panic!("Expected Predicate, got {:?}", other),
+            assert_eq!(steps.len(), 1);
+            match steps[0].stages.as_slice() {
+                [Stage::Filter(pred)] => assert!(matches!(**pred, AstNode::Boolean(true))),
+                other => panic!("Expected a filter stage, got {:?}", other),
             }
         } else {
             panic!("Expected Path, got {:?}", ast);
         }
+    }
+
+    /// A postfix predicate filters the step it follows, per input item, as a
+    /// stage: `a.b[0]` and `a[0]` alike. On a non-path expression it becomes
+    /// the one step of a new path and filters the whole value.
+    #[test]
+    fn test_postfix_predicate_is_a_stage_of_the_last_step() {
+        let ast = Parser::new("a.b[0]".to_string()).unwrap().parse().unwrap();
+        let AstNode::Path { steps } = ast else {
+            panic!("Expected Path")
+        };
+        assert_eq!(steps.len(), 2);
+        assert!(matches!(steps[1].stages.as_slice(), [Stage::Filter(_)]));
+
+        let ast = Parser::new("$x[0][]".to_string()).unwrap().parse().unwrap();
+        let AstNode::Path { steps } = ast else {
+            panic!("Expected Path")
+        };
+        assert_eq!(steps.len(), 1);
+        assert!(matches!(steps[0].node, AstNode::Variable(ref v) if v == "x"));
+        assert!(matches!(
+            steps[0].stages.as_slice(),
+            [Stage::Filter(_), Stage::KeepArray]
+        ));
     }
 
     #[test]

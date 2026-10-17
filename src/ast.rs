@@ -11,8 +11,10 @@ use serde::{Deserialize, Serialize};
 pub enum Stage {
     /// Filter/predicate stage `[expr]`
     Filter(Box<AstNode>),
-    /// Empty-bracket stage `[]` -- see `AstNode::KeepArray`. Distinct from
-    /// `Filter(Boolean(true))`, which is the literal `[true]`.
+    /// Empty-bracket stage `[]` -- jsonata's keepSingleton marker. Distinct
+    /// from `Filter(Boolean(true))`, the literal filter `[true]`: `[]` keeps
+    /// the result an array (`num[]` is `[5]`), while `[true]` keeps every
+    /// item and then unwraps a lone result (`num[true]` is `5`).
     KeepArray,
     /// Positional index stage `#$var` that lands on a step already carrying an
     /// index/stages (jsonata-js's `{type: 'index', value}` stage). Binds the
@@ -164,16 +166,6 @@ pub enum AstNode {
     /// Descendant operator (**) in path expressions
     Descendant,
 
-    /// Empty brackets `[]` -- jsonata's keepSingleton marker.
-    ///
-    /// Distinct from `Predicate(Boolean(true))`, which is the literal filter
-    /// `[true]`. The two are different operators: `[]` forces the result to
-    /// stay an array (`num[]` is `[5]`), while `[true]` is an ordinary filter
-    /// that keeps everything and then unwraps a lone result (`num[true]` is
-    /// `5`). Both used to parse to the same node, so neither could be right
-    /// for every input.
-    KeepArray,
-
     /// Parent-reference operator (%) in path expressions, resolved.
     /// Carries the synthetic ancestor label ("!0", "!1", ...) assigned by
     /// ast_transform -- looked up at runtime via the same tuple/scope
@@ -181,10 +173,6 @@ pub enum AstNode {
     /// (an empty placeholder never observed by the evaluator); ast_transform
     /// fills every occurrence with a real label or raises S0217.
     Parent(String),
-
-    /// Array filter/predicate `[condition]`
-    /// Can be an index (number) or a predicate (boolean expression)
-    Predicate(Box<AstNode>),
 
     /// Array grouping in path expression `.[expr]`
     /// Like Array but doesn't flatten when used in paths

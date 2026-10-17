@@ -142,21 +142,28 @@ impl BytecodeCompiler {
                 let iidx = self.intern_str(inner);
                 self.emit(Instr::GetField(iidx));
             }
-            CompiledExpr::FieldPath(steps) => {
+            CompiledExpr::FieldPath { steps, from_dollar } => {
                 if steps.is_empty() {
                     self.emit(Instr::PushData);
                     return;
                 }
-                let all_simple = steps.iter().all(|s| s.filter.is_none());
-                if all_simple {
-                    // Inline the chain: PushData then GetField for each step.
-                    // Peephole will fold the first PushData+GetField into GetDataField.
-                    self.emit(Instr::PushData);
-                    for step in steps {
+                if steps.iter().all(|s| s.filter.is_none()) {
+                    // Inline the chain. A bare `a.b` starts with `PushData`,
+                    // which the peephole folds into `GetDataField`; `$.a.b`
+                    // starts with `GetDataItemsField`, which maps over the
+                    // items of an array input, the top-level one included.
+                    let first = self.intern_str(&steps[0].field);
+                    if *from_dollar {
+                        self.emit(Instr::GetDataItemsField(first));
+                    } else {
+                        self.emit(Instr::PushData);
+                        self.emit(Instr::GetField(first));
+                    }
+                    for step in &steps[1..] {
                         let fidx = self.intern_str(&step.field);
                         self.emit(Instr::GetField(fidx));
                     }
-                } else if steps.len() == 1 {
+                } else if steps.len() == 1 && !*from_dollar {
                     // Single step with filter: `field[predicate]`
                     // Emit: GetDataField("field") + FilterByBytecode(predicate_prog)
                     // The predicate is compiled to its own BytecodeProgram and run per
@@ -168,11 +175,11 @@ impl BytecodeCompiler {
                         let sub_bc = BytecodeCompiler::compile(filter);
                         let sidx = self.sub_programs.len() as u16;
                         self.sub_programs.push(sub_bc);
-                        self.emit(Instr::FilterByBytecode(sidx, step.filter_selects_by_index));
+                        self.emit(Instr::FilterByBytecode(sidx));
                     }
                 } else {
-                    // Multi-step filtered path: delegate to eval_compiled (handles
-                    // intermediate array-mapping and nested filter application).
+                    // Multi-step filtered path: delegate to eval_compiled, which
+                    // applies each filter per input item.
                     let idx = self.add_fallback(expr.clone());
                     self.emit(Instr::EvalFallback(idx));
                 }
