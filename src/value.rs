@@ -64,7 +64,7 @@ pub enum JValue {
 ///
 /// The flags are metadata only: equality, serialization, and conversion to
 /// host values ignore them. `JArray` dereferences to `Vec<JValue>`.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Default)]
 pub struct JArray {
     items: Rc<Vec<JValue>>,
     pub sequence: bool,
@@ -98,6 +98,17 @@ impl JArray {
         Rc::try_unwrap(self.items).unwrap_or_else(|rc| (*rc).clone())
     }
 
+    /// A new array holding `items`, carrying this array's flags. Use it to
+    /// rebuild an array from its items; `into_vec` and `JValue::array` drop
+    /// the flags.
+    #[inline]
+    pub fn with_items(&self, items: Vec<JValue>) -> JArray {
+        JArray {
+            items: Rc::new(items),
+            ..*self
+        }
+    }
+
     /// True when both arrays share the same items allocation.
     #[inline]
     pub fn ptr_eq(a: &JArray, b: &JArray) -> bool {
@@ -111,6 +122,14 @@ impl Deref for JArray {
     #[inline]
     fn deref(&self) -> &Vec<JValue> {
         &self.items
+    }
+}
+
+/// Prints the items only, as `Rc<Vec<JValue>>` did, so that error messages
+/// formatting a value with `{:?}` don't change with the flags.
+impl fmt::Debug for JArray {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Debug::fmt(&*self.items, f)
     }
 }
 
@@ -1126,5 +1145,22 @@ mod tests {
             }
             _ => panic!("expected arrays"),
         }
+    }
+
+    #[test]
+    fn test_array_debug_hides_flags() {
+        let seq = JValue::sequence(vec![JValue::from(1i64)]);
+        assert_eq!(format!("{seq:?}"), "Array([Number(1.0)])");
+    }
+
+    #[test]
+    fn test_with_items_keeps_flags() {
+        let seq = JValue::sequence(vec![JValue::from(1i64)]);
+        let JValue::Array(arr) = &seq else {
+            unreachable!()
+        };
+        let rebuilt = arr.with_items(vec![JValue::from(2i64)]);
+        assert!(rebuilt.sequence && !rebuilt.cons && !rebuilt.keep_singleton);
+        assert_eq!(*rebuilt, vec![JValue::from(2i64)]);
     }
 }
