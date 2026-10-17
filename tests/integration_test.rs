@@ -2087,7 +2087,11 @@ fn test_map_stage_flattens_constructor_arrays() {
         (r#"($x := [[1,2],[3]]; $x.($))"#, json!([1, 2, 3])),
         (r#"($x := [1,2]; $x.([5]))"#, json!([5, 5])),
     ] {
-        assert_eq!(filter_eval(expr, json!({})), JValue::from(expected), "{expr}");
+        assert_eq!(
+            filter_eval(expr, json!({})),
+            JValue::from(expected),
+            "{expr}"
+        );
     }
 }
 
@@ -2105,7 +2109,10 @@ fn test_map_stage_last_step_single_array_rules() {
     // ...while a single inner-sequence contribution collapses like any
     // singleton sequence (issue #181).
     assert_eq!(
-        filter_eval(r#"($ids := [{'k':'a'}]; [1].($b := $; $ids.({'b': $b})))"#, json!({})),
+        filter_eval(
+            r#"($ids := [{'k':'a'}]; [1].($b := $; $ids.({'b': $b})))"#,
+            json!({})
+        ),
         JValue::from(json!({"b": 1}))
     );
 }

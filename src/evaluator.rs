@@ -5636,19 +5636,21 @@ impl Evaluator {
         self.finalize_path_result(steps, current, did_array_mapping, keep_singleton_array)
     }
 
-/// True when the expression is a path (or a parenthesized path), i.e. it
-/// produces a query-result sequence rather than a constructed array.
-/// jsonata-js uses a sequence flag for this in `evaluateStep`'s last-step
-/// single-array rule; without value-level flags this engine approximates it
-/// from the AST shape.
-fn map_expr_produces_sequence(node: &AstNode) -> bool {
-    match node {
-        AstNode::Path { .. } => true,
-        AstNode::Block(expressions) => expressions.last().is_some_and(Self::map_expr_produces_sequence),
-        AstNode::FunctionApplication(inner) => Self::map_expr_produces_sequence(inner),
-        _ => false,
+    /// True when the expression is a path (or a parenthesized path), i.e. it
+    /// produces a query-result sequence rather than a constructed array.
+    /// jsonata-js uses a sequence flag for this in `evaluateStep`'s last-step
+    /// single-array rule; without value-level flags this engine approximates it
+    /// from the AST shape.
+    fn map_expr_produces_sequence(node: &AstNode) -> bool {
+        match node {
+            AstNode::Path { .. } => true,
+            AstNode::Block(expressions) => expressions
+                .last()
+                .is_some_and(Self::map_expr_produces_sequence),
+            AstNode::FunctionApplication(inner) => Self::map_expr_produces_sequence(inner),
+            _ => false,
+        }
     }
-}
 
     /// End-of-path result policy, applied once after the step loop: project a
     /// tuple stream down to its visible `@` values (unless a consumer asked to
