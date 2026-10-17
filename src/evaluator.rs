@@ -3783,7 +3783,7 @@ impl Evaluator {
                 // undotted form disagree with the dotted `nul.{"a": $}`, which
                 // takes a different route and was already right.
                 let items: Vec<JValue> = match input_value {
-                    JValue::Array(ref arr) => (**arr).clone(),
+                    JValue::Array(ref arr) => arr.to_vec(),
                     JValue::Undefined => Vec::new(),
                     other => vec![other],
                 };
