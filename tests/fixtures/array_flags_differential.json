@@ -1117,6 +1117,199 @@
    }
   },
   {
+   "expression": "($y := a[]; $y.$)",
+   "result": {
+    "$arr": [
+     1,
+     2,
+     3
+    ],
+    "seq": true,
+    "cons": false,
+    "ks": false
+   }
+  },
+  {
+   "expression": "obj.(*[])",
+   "result": {
+    "$arr": [
+     1,
+     1,
+     2
+    ],
+    "seq": false,
+    "cons": false,
+    "ks": false
+   }
+  },
+  {
+   "expression": "orders.items.p[]^($)",
+   "result": {
+    "$arr": [
+     1,
+     2,
+     3
+    ],
+    "seq": false,
+    "cons": false,
+    "ks": true
+   }
+  },
+  {
+   "expression": "orders[0].(**[])",
+   "result": {
+    "$arr": [
+     {
+      "id": 1,
+      "tags": {
+       "$arr": [
+        "a"
+       ],
+       "seq": false,
+       "cons": false,
+       "ks": false
+      },
+      "items": {
+       "$arr": [
+        {
+         "p": 1
+        },
+        {
+         "p": 2
+        }
+       ],
+       "seq": false,
+       "cons": false,
+       "ks": false
+      }
+     },
+     1,
+     "a",
+     {
+      "p": 1
+     },
+     1,
+     {
+      "p": 2
+     },
+     2
+    ],
+    "seq": true,
+    "cons": false,
+    "ks": false
+   }
+  },
+  {
+   "expression": "orders.(**[])",
+   "result": {
+    "$arr": [
+     {
+      "id": 1,
+      "tags": {
+       "$arr": [
+        "a"
+       ],
+       "seq": false,
+       "cons": false,
+       "ks": false
+      },
+      "items": {
+       "$arr": [
+        {
+         "p": 1
+        },
+        {
+         "p": 2
+        }
+       ],
+       "seq": false,
+       "cons": false,
+       "ks": false
+      }
+     },
+     1,
+     "a",
+     {
+      "p": 1
+     },
+     1,
+     {
+      "p": 2
+     },
+     2,
+     {
+      "id": 2,
+      "tags": {
+       "$arr": [
+        "b",
+        "c"
+       ],
+       "seq": false,
+       "cons": false,
+       "ks": false
+      },
+      "items": {
+       "$arr": [
+        {
+         "p": 3
+        }
+       ],
+       "seq": false,
+       "cons": false,
+       "ks": false
+      }
+     },
+     2,
+     "b",
+     "c",
+     {
+      "p": 3
+     },
+     3
+    ],
+    "seq": true,
+    "cons": false,
+    "ks": false
+   }
+  },
+  {
+   "expression": "orders[0].(tags)",
+   "result": {
+    "$arr": [
+     "a"
+    ],
+    "seq": false,
+    "cons": false,
+    "ks": false
+   }
+  },
+  {
+   "expression": "orders[0].(tags).$",
+   "result": "a"
+  },
+  {
+   "expression": "orders[0].[id][]",
+   "result": {
+    "$arr": [
+     {
+      "$arr": [
+       1
+      ],
+      "seq": false,
+      "cons": true,
+      "ks": false
+     }
+    ],
+    "seq": true,
+    "cons": false,
+    "ks": true
+   }
+  },
+  {
+   "expression": "$single(a, function($v) { $v = 2 })",
+   "result": 2
+  },
+  {
    "expression": "orders{\"k\": id}",
    "result": {
     "k": {

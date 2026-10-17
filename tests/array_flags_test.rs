@@ -24,6 +24,10 @@ const KNOWN_VALUE_DIVERGENCES: &[(&str, &str)] = &[
     // `*` does not flatten array-valued fields as `evaluateWildcard` does.
     ("compiled", "*"),
     ("tree", "*"),
+    // `[]` over a constructed array: jsonata-js wraps it in a new sequence,
+    // giving `[[1]]` (#184 step 3).
+    ("compiled", "orders[0].[id][]"),
+    ("tree", "orders[0].[id][]"),
     // `$lookup` over an array does not flatten array-valued results.
     ("compiled", "$lookup(orders, \"tags\")"),
     ("tree", "$lookup(orders, \"tags\")"),

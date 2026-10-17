@@ -2788,13 +2788,6 @@ pub struct EvaluatorOptions {
     pub max_sequence_length: Option<usize>,
 }
 
-/// Checks a constructed query-result sequence's length against the configured
-/// `max_sequence_length` guardrail. Call this at sites that build a query-result
-/// sequence (map/filter/wildcard/descendants/keys/lookup/append/spread/each/range/
-/// path-mapping). NOT currently called at literal array construction (`[1,2,3]`) —
-/// unlike upstream jsonata-js, which caps flat/non-nested literals too via
-/// `fn.append`'s `createSequence()` hook. See `EvaluatorOptions::max_sequence_length`
-/// doc comment above for why this is a deliberate, temporary gap.
 /// The values of an object under `*`, with array-valued fields flattened in.
 ///
 /// jsonata-js appends an array-valued field with `fn.append`, whose `concat`
@@ -2820,18 +2813,36 @@ fn wildcard_object_values(obj: &IndexMap<String, JValue>, last_step: bool) -> JV
     }
 }
 
+/// The result of a path step over a single input whose expression produced
+/// `value`, following jsonata-js `evaluateStep`: on the last step a lone
+/// non-sequence array is the result as is; otherwise the step collects the
+/// items into a fresh sequence. A constructed (`cons`) array is left alone --
+/// jsonata-js would wrap it, which changes the value and is #184 step 3's job.
+fn single_input_step_result(value: JValue, last_step: bool) -> JValue {
+    match &value {
+        JValue::Array(arr) if !arr.cons && (arr.sequence || !last_step) => sequence_of(arr),
+        _ => value,
+    }
+}
+
 /// The array a higher-order function hands its callback as the last
 /// argument: the input array itself, flags and all, as jsonata-js passes it,
 /// or the items of a non-array input wrapped as a plain array.
-fn callback_array_arg(input: Option<JArray>, items: &[JValue]) -> JValue {
-    input.map_or_else(|| JValue::array(items.to_vec()), JValue::Array)
+fn callback_array_arg(input: &JValue, items: &[JValue]) -> JValue {
+    match input {
+        JValue::Array(arr) => JValue::Array(arr.clone()),
+        _ => JValue::array(items.to_vec()),
+    }
 }
 
-/// The elements of `arr` as a sequence, as when jsonata-js collects a step's
-/// results. Shares the items; only the flag differs.
+/// The elements of `arr` as a fresh sequence, as when jsonata-js collects a
+/// step's results with `createSequence()`: shares the items but takes none of
+/// `arr`'s other flags.
 fn sequence_of(arr: &JArray) -> JValue {
     let mut seq = arr.clone();
     seq.sequence = true;
+    seq.cons = false;
+    seq.keep_singleton = false;
     JValue::Array(seq)
 }
 
@@ -2856,6 +2867,13 @@ pub(crate) fn hof_result_sequence(
     }
 }
 
+/// Checks a constructed query-result sequence's length against the configured
+/// `max_sequence_length` guardrail. Call this at sites that build a query-result
+/// sequence (map/filter/wildcard/descendants/keys/lookup/append/spread/each/range/
+/// path-mapping). NOT currently called at literal array construction (`[1,2,3]`) —
+/// unlike upstream jsonata-js, which caps flat/non-nested literals too via
+/// `fn.append`'s `createSequence()` hook. See `EvaluatorOptions::max_sequence_length`
+/// doc comment above for why this is a deliberate, temporary gap.
 pub(crate) fn check_sequence_length(
     len: usize,
     options: &EvaluatorOptions,
@@ -4172,10 +4190,16 @@ impl Evaluator {
                 let value = self.evaluate_internal(input, data);
                 self.keep_tuple_stream = saved;
                 let mut sorted = self.evaluate_sort(&value?, terms)?;
-                // jsonata-js sorts as a step of the path; a tuple-stream path
-                // then re-collects its result into a fresh sequence.
-                if matches!(&**input, AstNode::Path { steps } if Self::is_tuple_path(steps)) {
-                    sorted.mark_sequence();
+                // jsonata-js sorts as a step of the path, so the path's own
+                // result rules apply after the sort: a tuple-stream path
+                // re-collects into a fresh sequence, and `[]` keeps it.
+                if let AstNode::Path { steps } = &**input {
+                    if Self::is_tuple_path(steps) {
+                        sorted.mark_sequence();
+                    }
+                    if Self::path_keeps_singleton_array(steps) {
+                        sorted.mark_keep_singleton();
+                    }
                 }
                 Ok(sorted)
             }
@@ -4662,7 +4686,9 @@ impl Evaluator {
                     // Wildcard as first step
                     let normalized = normalize_lazy(data)?;
                     match &normalized {
-                        JValue::Object(obj) => wildcard_object_values(obj, steps.len() == 1),
+                        JValue::Object(obj) => {
+                            wildcard_object_values(obj, Self::is_last_path_step(steps, 0))
+                        }
                         JValue::Array(arr) => sequence_of(arr),
                         // jsonata-js's wildcard guards with `typeof input ===
                         // 'object' && input !== null`, so null maps over
@@ -5096,7 +5122,10 @@ impl Evaluator {
                     let stages = &step.stages;
                     let normalized_current = normalize_lazy(&current)?;
                     let wildcard_result = match &normalized_current {
-                        JValue::Object(obj) => wildcard_object_values(obj, is_last_step),
+                        JValue::Object(obj) => wildcard_object_values(
+                            obj,
+                            Self::is_last_path_step(steps, step_idx + 1),
+                        ),
                         JValue::Array(arr) => {
                             // Map wildcard over array
                             let mut all_values = Vec::new();
@@ -5629,7 +5658,10 @@ impl Evaluator {
                                 self.context.unbind("$");
                             }
 
-                            value
+                            single_input_step_result(
+                                value,
+                                Self::is_last_path_step(steps, step_idx + 1),
+                            )
                         }
                     };
                     self.keep_tuple_stream = saved_keep;
@@ -5854,6 +5886,15 @@ impl Evaluator {
     ///
     fn step_creates_tuple(step: &PathStep) -> bool {
         step.focus.is_some() || step.index_var.is_some() || step.ancestor_label.is_some()
+    }
+
+    /// True when no step after `steps[idx]` does anything but keep the array.
+    /// `[]` is parsed as a step of its own, but jsonata-js counts the step it
+    /// follows as the path's last.
+    fn is_last_path_step(steps: &[PathStep], idx: usize) -> bool {
+        steps[idx + 1..]
+            .iter()
+            .all(|step| matches!(step.node, AstNode::KeepArray))
     }
 
     /// True when any step makes the path a tuple stream. jsonata-js collects
@@ -7882,11 +7923,10 @@ impl Evaluator {
                 // Track if input was a single value to unwrap result appropriately
                 // Use references to avoid upfront cloning of all elements
                 let single_holder;
-                let input_array = array.as_jarray().cloned();
                 let (items, was_single_value): (&[JValue], bool) = match &array {
                     JValue::Array(arr) => (arr.as_slice(), false),
                     _ => {
-                        single_holder = [array];
+                        single_holder = [array.clone()];
                         (&single_holder[..], true)
                     }
                 };
@@ -7978,7 +8018,7 @@ impl Evaluator {
 
                 // Only create the array value if callback uses 3 parameters
                 let arr_value = if param_count >= 3 {
-                    Some(callback_array_arg(input_array, items))
+                    Some(callback_array_arg(&array, items))
                 } else {
                     None
                 };
@@ -8035,12 +8075,11 @@ impl Evaluator {
                 // Convert single value to array (JSONata reduce accepts single values)
                 // Use references to avoid upfront cloning of all elements
                 let single_holder;
-                let input_array = array.as_jarray().cloned();
                 let items: &[JValue] = match &array {
                     JValue::Array(arr) => arr.as_slice(),
                     JValue::Null => return Ok(JValue::Null),
                     _ => {
-                        single_holder = [array];
+                        single_holder = [array.clone()];
                         &single_holder[..]
                     }
                 };
@@ -8138,7 +8177,7 @@ impl Evaluator {
 
                 // Only create the array value if callback uses 4 parameters
                 let arr_value = if param_count >= 4 {
-                    Some(callback_array_arg(input_array, items))
+                    Some(callback_array_arg(&array, items))
                 } else {
                     None
                 };
@@ -8187,11 +8226,15 @@ impl Evaluator {
                 // Evaluate the array argument
                 let array = self.evaluate_internal(&args[0], data)?;
 
-                // Convert to array (wrap single values)
-                let arr = match array {
-                    JValue::Array(arr) => arr.to_vec(),
+                // A single value is a one-item sequence.
+                let single_holder;
+                let arr: &[JValue] = match &array {
+                    JValue::Array(arr) => arr.as_slice(),
                     JValue::Null => return Ok(JValue::Null),
-                    other => vec![other],
+                    _ => {
+                        single_holder = [array.clone()];
+                        &single_holder[..]
+                    }
                 };
 
                 if args.len() == 1 {
@@ -8200,7 +8243,7 @@ impl Evaluator {
                         0 => Err(EvaluatorError::EvaluationError(
                             "D3139: The $single() function expected exactly 1 matching result.  Instead it matched 0.".to_string(),
                         )),
-                        1 => Ok(arr.into_iter().next().unwrap()),
+                        1 => Ok(arr[0].clone()),
                         count => Err(EvaluatorError::EvaluationError(format!(
                             "D3138: The $single() function expected exactly 1 matching \
                              result.  Instead it matched more. ({} values)",
@@ -8216,18 +8259,18 @@ impl Evaluator {
                     let param_count = self.get_callback_param_count(&args[1]);
                     // Only create the array value if callback uses 3 parameters
                     let arr_value = if param_count >= 3 {
-                        Some(JValue::array(arr.clone()))
+                        Some(callback_array_arg(&array, arr))
                     } else {
                         None
                     };
                     let mut matches = Vec::new();
-                    for (index, item) in arr.into_iter().enumerate() {
+                    for (index, item) in arr.iter().enumerate() {
                         // hofFuncArgs shaping (see hof_array_call_args)
                         let call_args =
-                            hof_array_call_args(&item, index, arr_value.as_ref(), param_count);
+                            hof_array_call_args(item, index, arr_value.as_ref(), param_count);
                         let predicate_result = self.apply_function(&args[1], &call_args, data)?;
                         if self.is_truthy(&predicate_result) {
-                            matches.push(item);
+                            matches.push(item.clone());
                         }
                     }
 

@@ -102,6 +102,17 @@ const EXPRESSIONS = [
   'orders#$i[$i < 2]^(>id).id',
   'orders.items.p#$i^(>$)',
   'orders.items.p^(>$)',
+  // Cases from review: a step's fresh sequence drops the input's flags, `[]`
+  // after the last step, `[]` through a sort, and a block over one input.
+  '($y := a[]; $y.$)',
+  'obj.(*[])',
+  'orders.items.p[]^($)',
+  'orders[0].(**[])',
+  'orders.(**[])',
+  'orders[0].(tags)',
+  'orders[0].(tags).$',
+  'orders[0].[id][]',
+  '$single(a, function($v) { $v = 2 })',
   // Grouping
   'orders{"k": id}',
   'orders{"k": tags}',
