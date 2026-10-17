@@ -46,3 +46,19 @@ def test_match_no_match_is_absent_not_null():
     assert ev('$exists($match("xyz", /abc/))') is False
     assert ev('$count($match("xyz", /abc/))') == 0
     assert ev('$exists($match("abc", /abc/))') is True
+
+
+def test_match_returns_all_matches_without_g_flag():
+    # jsonata-js always compiles regex literals with `g`; expected from 2.2.2
+    assert ev('$match("abab", /a/)') == [
+        {"match": "a", "index": 0, "groups": []},
+        {"match": "a", "index": 2, "groups": []},
+    ]
+    assert ev('$match("abab", /(a)/)') == [
+        {"match": "a", "index": 0, "groups": ["a"]},
+        {"match": "a", "index": 2, "groups": ["a"]},
+    ]
+
+
+def test_match_single_result_has_empty_groups():
+    assert ev('$match("ab", /a/)') == {"match": "a", "index": 0, "groups": []}

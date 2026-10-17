@@ -3100,3 +3100,56 @@ fn test_match_no_match_exists_count_and_array() {
         assert_eq!(result, JValue::from(expected), "{expr}");
     }
 }
+
+/// jsonata-js compiles every regex literal with the `g` flag, so `$match`
+/// returns every match (not just the first), and each match object always
+/// carries `groups`, which is `[]` when the regex has no capture groups.
+/// Expected values were produced by jsonata-js 2.2.2.
+#[test]
+fn test_match_returns_all_matches_with_groups() {
+    for (expr, expected) in [
+        (
+            r#"$match("abab", /a/)"#,
+            json!([
+                {"match": "a", "index": 0, "groups": []},
+                {"match": "a", "index": 2, "groups": []}
+            ]),
+        ),
+        (
+            r#"$match("abab", /(a)/)"#,
+            json!([
+                {"match": "a", "index": 0, "groups": ["a"]},
+                {"match": "a", "index": 2, "groups": ["a"]}
+            ]),
+        ),
+        (
+            r#"$match("ab", /a/)"#,
+            json!({"match": "a", "index": 0, "groups": []}),
+        ),
+        (
+            r#"$match("abab", /a/, 1)"#,
+            json!({"match": "a", "index": 0, "groups": []}),
+        ),
+        (
+            r#"$match("", /x*/)"#,
+            json!({"match": "", "index": 0, "groups": []}),
+        ),
+    ] {
+        let ast = parse(expr).unwrap();
+        let mut evaluator = Evaluator::new();
+        let result = evaluator.evaluate(&ast, &JValue::Null).unwrap();
+        assert_eq!(result, JValue::from(expected), "{expr}");
+    }
+}
+
+/// Iterating every match means a regex that can match the empty string would
+/// never advance; jsonata-js raises D1004 for it (even when a limit is hit).
+#[test]
+fn test_match_zero_length_is_d1004() {
+    for expr in [r#"$match("abc", /x*/)"#, r#"$match("abc", /b*/, 1)"#] {
+        let ast = parse(expr).unwrap();
+        let mut evaluator = Evaluator::new();
+        let err = evaluator.evaluate(&ast, &JValue::Null).unwrap_err();
+        assert!(err.to_string().contains("D1004"), "{expr} => {err}");
+    }
+}

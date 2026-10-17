@@ -29,6 +29,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`$match` returns every match, and every match object carries `groups`.** jsonata-js compiles
+  each regex literal with the `g` flag, so `$match("abab", /a/)` yields both matches; this engine
+  stopped after the first unless the literal itself said `g`. `groups` is now `[]` when the regex
+  has no capture groups, instead of being left out. Since a regex that matches the empty string
+  can no longer stop after one match, it raises `D1004` as upstream does (`$match("", /x*/)`, a
+  lone empty match at end of string, still succeeds).
 - **`unknown(function)` now reports `T1006`** ("Attempted to invoke a non-function") instead of
   `S0202`. The `function` keyword in argument position used to commit the parser to a lambda,
   which then failed on its shape before anything decided the call target was not a function.

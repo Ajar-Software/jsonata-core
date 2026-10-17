@@ -7471,21 +7471,40 @@ impl Evaluator {
 
                 // Build regex via the shared flag translation ($split/$replace
                 // use the same helper, so i/m/s behave identically everywhere)
-                let is_global = flags.contains('g');
                 let re = crate::functions::string::build_regex(&pattern, &flags)
                     .map_err(|e| EvaluatorError::EvaluationError(e.to_string()))?;
 
                 let mut results = Vec::new();
                 let mut count = 0;
 
-                for caps in re.captures_iter(&s) {
-                    if let Some(lim) = limit {
-                        if count >= lim {
-                            break;
-                        }
+                // jsonata-js compiles every regex literal with the `g` flag, so
+                // $match always returns every match. Mirror its matcher chain:
+                // after each match, resume the search at the match end (stopping
+                // at end of string) and raise D1004 if the next match is empty,
+                // since a zero-length match would never advance.
+                let mut next_caps = if limit == Some(0) {
+                    None
+                } else {
+                    re.captures_at(&s, 0)
+                };
+
+                while let Some(caps) = next_caps {
+                    let full_match = caps.get(0).unwrap();
+                    let end = full_match.end();
+                    next_caps = if end >= s.len() {
+                        None
+                    } else {
+                        re.captures_at(&s, end)
+                    };
+                    if next_caps
+                        .as_ref()
+                        .is_some_and(|c| c.get(0).unwrap().as_str().is_empty())
+                    {
+                        return Err(EvaluatorError::EvaluationError(
+                            "D1004: Regular expression matches zero length string".to_string(),
+                        ));
                     }
 
-                    let full_match = caps.get(0).unwrap();
                     let mut match_obj = IndexMap::new();
                     match_obj.insert(
                         "match".to_string(),
@@ -7505,23 +7524,21 @@ impl Evaluator {
                             groups.push(JValue::Null);
                         }
                     }
-                    if !groups.is_empty() {
-                        match_obj.insert("groups".to_string(), JValue::array(groups));
-                    }
+                    // jsonata-js always emits `groups`, even when it is empty
+                    match_obj.insert("groups".to_string(), JValue::array(groups));
 
                     results.push(JValue::object(match_obj));
                     count += 1;
 
-                    // If not global, only return first match
-                    if !is_global {
+                    if limit.is_some_and(|lim| count >= lim) {
                         break;
                     }
                 }
 
                 if results.is_empty() {
                     Ok(JValue::Undefined)
-                } else if results.len() == 1 && !is_global {
-                    // Single match (non-global) returns the match object directly
+                } else if results.len() == 1 {
+                    // A singleton result sequence unwraps to the match object
                     Ok(results.into_iter().next().unwrap())
                 } else {
                     Ok(JValue::array(results))
