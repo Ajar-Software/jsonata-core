@@ -212,7 +212,7 @@ fn boundary_collapse(
 ) -> Result<JValue, EvaluatorError> {
     if by_reference {
         crate::evaluator::check_sequence_length(items.len(), options)?;
-        Ok(JValue::array(items))
+        Ok(JValue::sequence(items))
     } else {
         crate::evaluator::hof_result_sequence(items, options)
     }
@@ -943,7 +943,14 @@ pub(crate) fn dispatch_pure(
             // unwrapped, and it must stay Null; only Undefined (and a
             // genuinely absent argument) moves to Undefined.
             None | Some(JValue::Undefined) => Ok(JValue::Undefined),
-            Some(JValue::Array(arr)) if arr.len() > 1 => Ok(functions::array::distinct(arr)?),
+            Some(JValue::Array(arr)) if arr.len() > 1 => {
+                let mut result = functions::array::distinct(arr)?;
+                // jsonata-js builds a sequence only when the input was one.
+                if arr.sequence {
+                    result.mark_sequence();
+                }
+                Ok(result)
+            }
             // Non-array input (including Null), and arrays of length <= 1,
             // pass through unchanged (jsonata-js functions.js:
             // `if(!Array.isArray(arr) || arr.length <= 1) return arr;`)
