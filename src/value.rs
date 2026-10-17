@@ -2,7 +2,7 @@
 // Replaces serde_json::Value for internal use
 
 use std::fmt;
-use std::ops::{Deref, DerefMut};
+use std::ops::Deref;
 use std::rc::Rc;
 
 use indexmap::IndexMap;
@@ -21,7 +21,7 @@ pub enum JValue {
     Bool(bool),
     Number(f64),
     String(Rc<str>),
-    Array(Rc<JArray>),
+    Array(JArray),
     Object(Rc<IndexMap<String, JValue>>),
 
     // Internal types (previously tagged objects)
@@ -46,8 +46,9 @@ pub enum JValue {
 
 // ── JArray ───────────────────────────────────────────────────────────────────
 
-/// The payload of `JValue::Array`: the items plus the flags jsonata-js keeps on
-/// array values to decide singleton unwrapping and flattening (issue #184).
+/// The payload of `JValue::Array`: a shared, reference-counted list of items
+/// plus the flags jsonata-js keeps on array values to decide singleton
+/// unwrapping and flattening (issue #184).
 ///
 /// - `sequence`: built by the evaluator (jsonata-js `createSequence()`), as
 ///   opposed to an array read from the input or built by `[...]`.
@@ -55,11 +56,17 @@ pub enum JValue {
 /// - `keep_singleton`: produced under the `[]` keep-array modifier; a one-item
 ///   sequence is not unwrapped.
 ///
+/// The flags sit beside the `Rc`, not inside it, so flagging an array that is
+/// shared (an input array, a bound variable) is O(1) and never copies the
+/// items. They belong to this value, not to the allocation: two `JValue`s may
+/// share items and differ in flags. jsonata-js gets the same effect by
+/// mutating the array object in place.
+///
 /// The flags are metadata only: equality, serialization, and conversion to
 /// host values ignore them. `JArray` dereferences to `Vec<JValue>`.
 #[derive(Clone, Debug, Default)]
 pub struct JArray {
-    items: Vec<JValue>,
+    items: Rc<Vec<JValue>>,
     pub sequence: bool,
     pub cons: bool,
     pub keep_singleton: bool,
@@ -70,17 +77,31 @@ impl JArray {
     #[inline]
     pub fn new(items: Vec<JValue>) -> Self {
         JArray {
-            items,
+            items: Rc::new(items),
             sequence: false,
             cons: false,
             keep_singleton: false,
         }
     }
 
-    /// Consume the array and return its items, dropping the flags.
+    /// A mutable reference to the items, cloning them first if they are
+    /// shared (`Rc::make_mut`).
+    #[inline]
+    pub fn make_mut(&mut self) -> &mut Vec<JValue> {
+        Rc::make_mut(&mut self.items)
+    }
+
+    /// Consume the array and return its items, dropping the flags. Clones the
+    /// items only if they are shared.
     #[inline]
     pub fn into_vec(self) -> Vec<JValue> {
-        self.items
+        Rc::try_unwrap(self.items).unwrap_or_else(|rc| (*rc).clone())
+    }
+
+    /// True when both arrays share the same items allocation.
+    #[inline]
+    pub fn ptr_eq(a: &JArray, b: &JArray) -> bool {
+        Rc::ptr_eq(&a.items, &b.items)
     }
 }
 
@@ -90,13 +111,6 @@ impl Deref for JArray {
     #[inline]
     fn deref(&self) -> &Vec<JValue> {
         &self.items
-    }
-}
-
-impl DerefMut for JArray {
-    #[inline]
-    fn deref_mut(&mut self) -> &mut Vec<JValue> {
-        &mut self.items
     }
 }
 
@@ -117,7 +131,7 @@ impl From<Vec<JValue>> for JArray {
 impl From<JArray> for Vec<JValue> {
     #[inline]
     fn from(arr: JArray) -> Self {
-        arr.items
+        arr.into_vec()
     }
 }
 
@@ -137,7 +151,7 @@ impl IntoIterator for JArray {
 
     #[inline]
     fn into_iter(self) -> Self::IntoIter {
-        self.items.into_iter()
+        self.into_vec().into_iter()
     }
 }
 
@@ -284,7 +298,7 @@ impl JValue {
     #[inline]
     pub fn as_array_mut(&mut self) -> Option<&mut Vec<JValue>> {
         match self {
-            JValue::Array(arr) => Some(&mut **Rc::make_mut(arr)),
+            JValue::Array(arr) => Some(arr.make_mut()),
             _ => None,
         }
     }
@@ -346,25 +360,25 @@ impl JValue {
 
     #[inline]
     pub fn array(v: Vec<JValue>) -> Self {
-        JValue::Array(Rc::new(JArray::new(v)))
+        JValue::Array(JArray::new(v))
     }
 
     /// An array built by the evaluator (jsonata-js `createSequence()`).
     #[inline]
     pub fn sequence(v: Vec<JValue>) -> Self {
-        JValue::Array(Rc::new(JArray {
+        JValue::Array(JArray {
             sequence: true,
             ..JArray::new(v)
-        }))
+        })
     }
 
     /// An array built by the `[...]` array constructor.
     #[inline]
     pub fn cons(v: Vec<JValue>) -> Self {
-        JValue::Array(Rc::new(JArray {
+        JValue::Array(JArray {
             cons: true,
             ..JArray::new(v)
-        }))
+        })
     }
 
     #[inline]
@@ -942,7 +956,7 @@ mod tests {
         ]);
         let arr2 = arr.clone();
         if let (JValue::Array(a), JValue::Array(b)) = (&arr, &arr2) {
-            assert!(Rc::ptr_eq(a, b));
+            assert!(JArray::ptr_eq(a, b));
         } else {
             panic!("expected arrays");
         }
@@ -1096,5 +1110,21 @@ mod tests {
         seq.as_array_mut().unwrap().push(JValue::from(2i64));
         assert_eq!(flags(&seq), (true, false, false));
         assert_eq!(shared.as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn test_flagging_a_shared_array_does_not_copy() {
+        let input = JValue::array(vec![JValue::from(1i64), JValue::from(2i64)]);
+        let mut flagged = input.clone();
+        if let JValue::Array(a) = &mut flagged {
+            a.sequence = true;
+        }
+        match (&input, &flagged) {
+            (JValue::Array(a), JValue::Array(b)) => {
+                assert!(JArray::ptr_eq(a, b), "items should still be shared");
+                assert!(!a.sequence && b.sequence, "flags belong to each value");
+            }
+            _ => panic!("expected arrays"),
+        }
     }
 }

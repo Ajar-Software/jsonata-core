@@ -12,7 +12,7 @@ use std::time::Instant;
 
 use crate::ast::{AstNode, BinaryOp, PathStep, Stage};
 use crate::parser;
-use crate::value::JValue;
+use crate::value::{JArray, JValue};
 use indexmap::IndexMap;
 use std::rc::Rc;
 use thiserror::Error;
@@ -10128,7 +10128,7 @@ impl Evaluator {
                 (JValue::Bool(x), JValue::Bool(y)) => x == y,
                 (JValue::Number(x), JValue::Number(y)) => x == y,
                 (JValue::String(x), JValue::String(y)) => x == y,
-                (JValue::Array(x), JValue::Array(y)) => Rc::ptr_eq(x, y),
+                (JValue::Array(x), JValue::Array(y)) => JArray::ptr_eq(x, y),
                 (JValue::Object(x), JValue::Object(y)) => Rc::ptr_eq(x, y),
                 #[cfg(feature = "python")]
                 (JValue::LazyPyDict(x), JValue::LazyPyDict(y)) => x.same_object(y),
