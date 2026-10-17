@@ -55,6 +55,11 @@ pub enum JValue {
 /// - `cons`: built by the `[...]` array constructor; never flattened.
 /// - `keep_singleton`: produced under the `[]` keep-array modifier; a one-item
 ///   sequence is not unwrapped.
+/// - `outer_wrapper`: the evaluation's input array as a context value.
+///   jsonata-js wraps that array in a one-item `outerWrapper` sequence, so a
+///   path over it treats it as a single item; `$`, `*` and an object
+///   constructor see the bare array. This flag stands for that wrapper, and
+///   `JValue::bare` removes it.
 ///
 /// The flags sit beside the `Rc`, not inside it, so flagging an array that is
 /// shared (an input array, a bound variable) is O(1) and never copies the
@@ -70,6 +75,7 @@ pub struct JArray {
     pub sequence: bool,
     pub cons: bool,
     pub keep_singleton: bool,
+    pub outer_wrapper: bool,
 }
 
 impl JArray {
@@ -81,6 +87,7 @@ impl JArray {
             sequence: false,
             cons: false,
             keep_singleton: false,
+            outer_wrapper: false,
         }
     }
 
@@ -98,13 +105,15 @@ impl JArray {
         Rc::try_unwrap(self.items).unwrap_or_else(|rc| (*rc).clone())
     }
 
-    /// A new array holding `items`, carrying this array's flags. Use it to
+    /// A new array holding `items`, carrying this array's flags other than
+    /// `outer_wrapper`, which only the input array has. Use it to
     /// rebuild an array from its items; `into_vec` and `JValue::array` drop
     /// the flags.
     #[inline]
     pub fn with_items(&self, items: Vec<JValue>) -> JArray {
         JArray {
             items: Rc::new(items),
+            outer_wrapper: false,
             ..*self
         }
     }
@@ -119,6 +128,7 @@ impl JArray {
             sequence: true,
             cons: false,
             keep_singleton: false,
+            outer_wrapper: false,
         }
     }
 
@@ -357,6 +367,33 @@ impl JValue {
                 _ => JValue::Array(arr),
             },
             other => other,
+        }
+    }
+
+    /// This value as the context for a top-level evaluation: an input array
+    /// that is not a sequence is marked `outer_wrapper`, as jsonata-js wraps
+    /// it. O(1).
+    #[inline]
+    pub fn into_outer_wrapper(self) -> JValue {
+        match self {
+            JValue::Array(mut arr) if !arr.sequence => {
+                arr.outer_wrapper = true;
+                JValue::Array(arr)
+            }
+            other => other,
+        }
+    }
+
+    /// This value with any `outer_wrapper` removed: what jsonata-js's
+    /// wrapper holds. O(1).
+    #[inline]
+    pub fn bare(&self) -> JValue {
+        match self {
+            JValue::Array(arr) if arr.outer_wrapper => JValue::Array(JArray {
+                outer_wrapper: false,
+                ..arr.clone()
+            }),
+            other => other.clone(),
         }
     }
 

@@ -3,7 +3,8 @@
 //! Checks that both engines give the value jsonata-js gives for each corpus
 //! expression: when a one-item sequence is unwrapped, when nested results are
 //! flattened, and how both interact with blocks, constructors, variables,
-//! function arguments and map stages.
+//! function arguments and map stages. Cases marked `root` run on a
+//! top-level array instead of an object.
 //!
 //! Regenerate the fixture with `node scripts/gen_path_semantics_corpus.js`.
 //! Set `PATH_SEMANTICS_VERBOSE=1` to print every divergence.
@@ -53,13 +54,19 @@ fn is_error(v: &Value) -> bool {
 fn path_semantics_match_jsonata_js() {
     let fixture: Value =
         serde_json::from_str(include_str!("fixtures/path_semantics_differential.json")).unwrap();
-    let data = JValue::from(fixture["data"].clone());
+    let object_data = JValue::from(fixture["data"].clone());
+    let root_data = JValue::from(fixture["root_data"].clone());
     let verbose = std::env::var_os("PATH_SEMANTICS_VERBOSE").is_some();
 
     let mut divergences = Vec::new();
     for case in fixture["cases"].as_array().unwrap() {
         let src = case["expression"].as_str().unwrap();
         let expected = norm(&case["result"]);
+        let data = if case["root"] == true {
+            &root_data
+        } else {
+            &object_data
+        };
         let expr = match Expression::compile(src) {
             Ok(expr) => expr,
             Err(e) => {
@@ -72,8 +79,8 @@ fn path_semantics_match_jsonata_js() {
                 continue;
             }
         };
-        let compiled = expr.evaluate(&data);
-        let tree = Evaluator::new().evaluate(expr.ast(), &data);
+        let compiled = expr.evaluate(data);
+        let tree = Evaluator::new().evaluate(expr.ast(), data);
         for (engine, result) in [("compiled", compiled), ("tree", tree)] {
             let matches = match &result {
                 Ok(v) => norm(&encode(v)) == expected,

@@ -6,6 +6,7 @@
 #![allow(clippy::too_many_arguments)]
 #![allow(clippy::manual_strip)]
 
+use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
@@ -146,6 +147,25 @@ fn try_specialize_sort_comparator(
 /// instead of O(1)-amortized hash lookups.
 type ShapeCache = HashMap<String, usize>;
 
+/// `obj[field]`, read at the position the shape cache gives when the object
+/// has the field there, else by hash lookup: an array's objects need not all
+/// order their keys like the first.
+#[inline]
+fn shaped_get<'a>(
+    obj: &'a IndexMap<String, JValue>,
+    field: &str,
+    shape: Option<&ShapeCache>,
+) -> Option<&'a JValue> {
+    if let Some(&idx) = shape.and_then(|shape| shape.get(field)) {
+        if let Some((key, value)) = obj.get_index(idx) {
+            if key == field {
+                return Some(value);
+            }
+        }
+    }
+    obj.get(field)
+}
+
 /// Build a shape cache from the first object in an array.
 /// Returns None if the data is not an object.
 fn build_shape_cache(first_element: &JValue) -> Option<ShapeCache> {
@@ -193,8 +213,10 @@ pub(crate) enum CompiledExpr {
     /// A literal value known at compile time.
     Literal(JValue),
     /// Single-level field lookup on the current object: `obj.get("field")`.
+    /// Over an array it follows the general path rules (`FieldPath`).
     FieldLookup(String),
-    /// Two-level nested field lookup: `obj.get("a")?.get("b")`.
+    /// Two-level nested field lookup: `obj.get("a")?.get("b")`. Over an
+    /// array, at either level, it follows the general path rules.
     NestedFieldLookup(String, String),
     /// Variable lookup from enclosing scope (e.g. `$var`).
     /// Resolved at eval time via a provided variable map.
@@ -939,48 +961,30 @@ fn eval_compiled_node(
         CompiledExpr::Literal(v) => Ok(v.clone()),
 
         CompiledExpr::FieldLookup(field) => match data {
-            JValue::Object(obj) => {
-                // Shape-accelerated: use positional index if available
-                if let Some(shape) = shape {
-                    if let Some(&idx) = shape.get(field.as_str()) {
-                        return Ok(obj
-                            .get_index(idx)
-                            .map(|(_, v)| v.clone())
-                            .unwrap_or(JValue::Undefined));
-                    }
-                }
-                Ok(obj
-                    .get(field.as_str())
-                    .cloned()
-                    .unwrap_or(JValue::Undefined))
-            }
+            JValue::Object(obj) => Ok(shaped_get(obj, field, shape)
+                .cloned()
+                .unwrap_or(JValue::Undefined)),
             #[cfg(feature = "python")]
             JValue::LazyPyDict(lazy) => Ok(lazy.get_field(field)?),
+            JValue::Array(_) => {
+                field_chain_by_path_rules(&[field], data, vars, ctx, options, start_time)
+            }
             _ => Ok(JValue::Undefined),
         },
 
         CompiledExpr::NestedFieldLookup(outer, inner) => match data {
-            JValue::Object(obj) => {
-                // Shape-accelerated outer lookup
-                let outer_val = if let Some(shape) = shape {
-                    if let Some(&idx) = shape.get(outer.as_str()) {
-                        obj.get_index(idx).map(|(_, v)| v)
-                    } else {
-                        obj.get(outer.as_str())
-                    }
-                } else {
-                    obj.get(outer.as_str())
-                };
-                match outer_val {
-                    Some(JValue::Object(nested)) => Ok(nested
-                        .get(inner.as_str())
-                        .cloned()
-                        .unwrap_or(JValue::Undefined)),
-                    #[cfg(feature = "python")]
-                    Some(JValue::LazyPyDict(nested)) => Ok(nested.get_field(inner.as_str())?),
-                    _ => Ok(JValue::Undefined),
+            JValue::Object(obj) => match shaped_get(obj, outer, shape) {
+                Some(JValue::Object(nested)) => Ok(nested
+                    .get(inner.as_str())
+                    .cloned()
+                    .unwrap_or(JValue::Undefined)),
+                #[cfg(feature = "python")]
+                Some(JValue::LazyPyDict(nested)) => Ok(nested.get_field(inner.as_str())?),
+                Some(JValue::Array(_)) => {
+                    field_chain_by_path_rules(&[outer, inner], data, vars, ctx, options, start_time)
                 }
-            }
+                _ => Ok(JValue::Undefined),
+            },
             #[cfg(feature = "python")]
             JValue::LazyPyDict(lazy) => {
                 let outer_val = lazy.get_field(outer.as_str())?;
@@ -990,8 +994,19 @@ fn eval_compiled_node(
                         .cloned()
                         .unwrap_or(JValue::Undefined)),
                     JValue::LazyPyDict(nested) => Ok(nested.get_field(inner.as_str())?),
+                    JValue::Array(_) => field_chain_by_path_rules(
+                        &[outer, inner],
+                        data,
+                        vars,
+                        ctx,
+                        options,
+                        start_time,
+                    ),
                     _ => Ok(JValue::Undefined),
                 }
+            }
+            JValue::Array(_) => {
+                field_chain_by_path_rules(&[outer, inner], data, vars, ctx, options, start_time)
             }
             _ => Ok(JValue::Undefined),
         },
@@ -1004,7 +1019,7 @@ fn eval_compiled_node(
             }
             // $ (empty var name) refers to the current data
             if var.is_empty() {
-                return Ok(data.clone());
+                return Ok(data.bare());
             }
             Ok(JValue::Undefined)
         }
@@ -1102,9 +1117,17 @@ fn eval_compiled_node(
 
         // ── Object construction ─────────────────────────────────────────
         CompiledExpr::ObjectConstruct(fields) => {
+            // Keys are literals, so every item of the input is in each
+            // pair's group.
+            let context = object_context(data);
+            let shape = match context {
+                Cow::Borrowed(_) => shape,
+                Cow::Owned(_) => None,
+            };
             let mut result = IndexMap::with_capacity(fields.len());
             for (key, expr) in fields {
-                let value = eval_compiled_inner(expr, data, vars, ctx, shape, options, start_time)?;
+                let value =
+                    eval_compiled_inner(expr, &context, vars, ctx, shape, options, start_time)?;
                 if !value.is_undefined() {
                     result.insert(key.clone(), value);
                 }
@@ -1796,10 +1819,9 @@ fn try_compile_path(
         return Some(CompiledExpr::VariableLookup(String::new()));
     }
 
-    // Shape-cache optimizations (FieldLookup / NestedFieldLookup) are only safe
-    // in HOF mode (allowed_vars=Some), where data is always a single Object element
-    // from an array. In top-level mode (allowed_vars=None), data can itself be an
-    // Array, so we must use FieldPath which applies implicit array-mapping semantics.
+    // Shape-cache optimizations (FieldLookup / NestedFieldLookup) serve HOF
+    // mode (allowed_vars=Some), where data is usually one object element of
+    // an array; they fall back to the path rules on an array.
     if allowed_vars.is_some() {
         if compiled_steps.len() == 1 && compiled_steps[0].filter.is_none() {
             return Some(CompiledExpr::FieldLookup(compiled_steps.remove(0).field));
@@ -1825,6 +1847,26 @@ fn try_compile_path(
 /// looks its field up in each item of the previous step's result and applies
 /// its filter to that item's value, then the values are combined with the
 /// last-step rule (`collect_step_results`), exactly as `evaluate_path` does.
+/// A chain of plain field steps over a value the `FieldLookup` and
+/// `NestedFieldLookup` fast paths don't cover, by the general path rules.
+fn field_chain_by_path_rules(
+    fields: &[&String],
+    data: &JValue,
+    vars: Option<&HashMap<&str, &JValue>>,
+    ctx: Option<&Context>,
+    options: &EvaluatorOptions,
+    start_time: Option<Instant>,
+) -> Result<JValue, EvaluatorError> {
+    let steps: Vec<CompiledStep> = fields
+        .iter()
+        .map(|field| CompiledStep {
+            field: (*field).clone(),
+            filter: None,
+        })
+        .collect();
+    compiled_eval_field_path(&steps, false, data, vars, ctx, options, start_time)
+}
+
 fn compiled_eval_field_path(
     steps: &[CompiledStep],
     from_dollar: bool,
@@ -1834,7 +1876,7 @@ fn compiled_eval_field_path(
     options: &EvaluatorOptions,
     start_time: Option<Instant>,
 ) -> Result<JValue, EvaluatorError> {
-    let per_item = matches!(data, JValue::Array(arr) if from_dollar || !is_root_input(arr));
+    let per_item = matches!(data, JValue::Array(arr) if from_dollar || !arr.outer_wrapper);
     let (start, mut result) = if per_item {
         (0, JValue::Undefined)
     } else {
@@ -1861,9 +1903,27 @@ fn compiled_eval_field_path(
         };
         let mut values = field_values(&step.field, items, options)?;
         if let Some(filter) = &step.filter {
+            // One shape cache for the step, from its first object: the
+            // filtered values usually hold objects of one shape.
+            let shape = values
+                .iter()
+                .find_map(|value| match value {
+                    JValue::Array(arr) => arr.first(),
+                    JValue::Undefined => None,
+                    other => Some(other),
+                })
+                .and_then(build_shape_cache);
             let mut filtered = Vec::with_capacity(values.len());
             for value in values {
-                let value = compiled_apply_filter(filter, &value, vars, ctx, options, start_time)?;
+                let value = compiled_apply_filter(
+                    filter,
+                    &value,
+                    shape.as_ref(),
+                    vars,
+                    ctx,
+                    options,
+                    start_time,
+                )?;
                 if !value.is_undefined() {
                     filtered.push(value);
                 }
@@ -1961,7 +2021,7 @@ pub(crate) fn compiled_field_step(
     match value {
         JValue::Object(obj) => {
             // Check for tuple: extract from "@" inner object
-            if obj.get("__tuple__") == Some(&JValue::Bool(true)) {
+            if is_tuple_object(obj) {
                 match obj.get("@") {
                     Some(JValue::Object(inner)) => {
                         return Ok(inner.get(field).cloned().unwrap_or(JValue::Undefined));
@@ -2003,9 +2063,11 @@ pub(crate) fn compiled_field_step(
 /// the predicate selects it -- by position when the predicate yields a number
 /// or an array of numbers, by truthiness otherwise. Numeric-literal
 /// predicates (`[0]`) are not compiled; the tree-walker handles them.
+/// `shape` speeds up the predicate's field reads.
 fn compiled_apply_filter(
     filter: &CompiledExpr,
     value: &JValue,
+    shape: Option<&ShapeCache>,
     vars: Option<&HashMap<&str, &JValue>>,
     ctx: Option<&Context>,
     options: &EvaluatorOptions,
@@ -2020,15 +2082,11 @@ fn compiled_apply_filter(
             &single
         }
     };
-    // A shape cache from the first element saves per-item hash lookups in
-    // the predicate for homogeneous arrays.
-    let shape = items.first().and_then(build_shape_cache);
     let len = items.len();
     let mut result = Vec::new();
     for (index, item) in items.iter().enumerate() {
         check_loop_timeout(options, start_time)?;
-        let selector =
-            eval_compiled_inner(filter, item, vars, ctx, shape.as_ref(), options, start_time)?;
+        let selector = eval_compiled_inner(filter, item, vars, ctx, shape, options, start_time)?;
         let repeats = match predicate_index_match(&selector, index, len) {
             Some(n) => n,
             None => usize::from(compiled_is_truthy(&selector)),
@@ -2699,7 +2757,7 @@ fn reduce_tuple_stream(group: &[JValue]) -> IndexMap<String, JValue> {
 
 fn unwrap_tuple_output(value: JValue) -> JValue {
     match value {
-        JValue::Object(obj) if obj.get("__tuple__") == Some(&JValue::Bool(true)) => obj
+        JValue::Object(obj) if is_tuple_object(&obj) => obj
             .get("@")
             .cloned()
             .map(unwrap_tuple_output)
@@ -2799,44 +2857,48 @@ fn callback_array_arg(input: &JValue, items: &[JValue]) -> JValue {
     }
 }
 
-thread_local! {
-    /// The array the current top-level evaluation was started on, if any.
-    static ROOT_INPUT: std::cell::RefCell<Option<JArray>> = const { std::cell::RefCell::new(None) };
-}
-
-/// Marks `data` as the root input for the duration of a top-level
-/// evaluation, restoring the previous root (for a nested `$eval`) on drop.
-pub(crate) struct RootInputGuard {
-    previous: Option<JArray>,
-}
-
-impl RootInputGuard {
-    pub(crate) fn set(data: &JValue) -> Self {
-        let previous = ROOT_INPUT.with(|root| root.replace(data.as_jarray().cloned()));
-        RootInputGuard { previous }
+/// What an object constructor evaluates a value over when every item of its
+/// input is in that pair's group, as with a literal key (jsonata-js
+/// `evaluateGroupExpression`). A value that is not an array is the one item.
+/// The top-level input's wrapper holds one item, the bare array. Any other
+/// array is its items, an empty one holding a single undefined item.
+pub(crate) fn object_context(data: &JValue) -> Cow<'_, JValue> {
+    match data {
+        JValue::Array(arr) if arr.outer_wrapper => Cow::Owned(data.bare()),
+        JValue::Array(arr) if arr.is_empty() => Cow::Owned(JValue::Undefined),
+        JValue::Array(arr) => Cow::Owned(group_context(arr)),
+        _ => Cow::Borrowed(data),
     }
 }
 
-impl Drop for RootInputGuard {
-    fn drop(&mut self) {
-        ROOT_INPUT.with(|root| *root.borrow_mut() = self.previous.take());
+/// The value jsonata-js gives a group of items: the item itself when there
+/// is one, else the items appended with `$append` into a plain array, so an
+/// array item adds its own items.
+fn group_context(items: &[JValue]) -> JValue {
+    match items {
+        [] => JValue::Undefined,
+        [item] => item.clone(),
+        _ => {
+            let mut appended = Vec::with_capacity(items.len());
+            for item in items {
+                match item {
+                    JValue::Array(arr) => appended.extend(arr.iter().cloned()),
+                    JValue::Undefined => {}
+                    other => appended.push(other.clone()),
+                }
+            }
+            JValue::array(appended)
+        }
     }
 }
 
-/// True when `arr` is the array the current top-level evaluation was started
-/// on. jsonata-js wraps that input in a one-item `outerWrapper` sequence, so
-/// a path treats it as a single input item rather than mapping over it.
-pub(crate) fn is_root_input(arr: &JArray) -> bool {
-    ROOT_INPUT.with(|root| {
-        root.borrow()
-            .as_ref()
-            .is_some_and(|r| JArray::ptr_eq(r, arr))
-    })
-}
-
-/// True for a tuple-stream wrapper object (see `create_tuple_stream`).
+/// True for a tuple-stream wrapper object (see `create_tuple_stream`). Every
+/// wrapper is built with `@` as its first key, which rules out most plain
+/// objects without hashing.
+#[inline]
 fn is_tuple_object(obj: &IndexMap<String, JValue>) -> bool {
-    obj.get("__tuple__") == Some(&JValue::Bool(true))
+    matches!(obj.get_index(0), Some((key, _)) if key == "@")
+        && obj.get("__tuple__") == Some(&JValue::Bool(true))
 }
 
 /// The value a tuple-stream wrapper carries for its step (`@`).
@@ -2880,9 +2942,22 @@ fn collect_step_results(mut results: Vec<JValue>, last_step: bool) -> JValue {
     JValue::sequence(items)
 }
 
+/// `collect_step_results` for a step with one result, without building the
+/// one-item sequence: a value that is not an array stands for it (the path
+/// loop takes it as one item, and the generic unwrap would return it).
+fn collect_single_step_result(value: JValue, last_step: bool) -> JValue {
+    match value {
+        JValue::Array(arr) if last_step && !arr.sequence => JValue::Array(arr),
+        JValue::Array(arr) if !arr.cons => JValue::Array(arr.fresh_sequence()),
+        JValue::Array(arr) => JValue::sequence(vec![JValue::Array(arr)]),
+        other => other,
+    }
+}
+
 /// Apply a path's `[]` modifier to its result, following jsonata-js
 /// `evaluatePath`: the result is marked keep-singleton, after a constructed
-/// array that is not a sequence is first wrapped in a sequence of its own.
+/// array that is not a sequence, or a single item, is first wrapped in a
+/// sequence of its own.
 fn keep_singleton(result: JValue) -> JValue {
     match result {
         JValue::Array(arr) if arr.cons && !arr.sequence => {
@@ -2894,7 +2969,13 @@ fn keep_singleton(result: JValue) -> JValue {
             arr.keep_singleton = true;
             JValue::Array(arr)
         }
-        other => other,
+        JValue::Undefined => JValue::Undefined,
+        // A single item stands for a one-item sequence.
+        other => {
+            let mut kept = JValue::sequence(vec![other]);
+            kept.mark_keep_singleton();
+            kept
+        }
     }
 }
 
@@ -3554,7 +3635,7 @@ impl Evaluator {
         }
 
         self.tuple_stream_created = false;
-        let _root = RootInputGuard::set(data);
+        let data = &data.clone().into_outer_wrapper();
         let result = self.evaluate_internal(node, data)?;
         Ok(if self.tuple_stream_created {
             unwrap_tuple_output(result)
@@ -3599,7 +3680,7 @@ impl Evaluator {
             AstNode::Variable(name) if !name.is_empty() => {
                 // Simple variable lookup — only fast-path when no tuple data
                 if let JValue::Object(obj) = data {
-                    if obj.get("__tuple__") == Some(&JValue::Bool(true)) {
+                    if is_tuple_object(obj) {
                         return None; // Tuple data needs full evaluator
                     }
                 }
@@ -3744,17 +3825,17 @@ impl Evaluator {
                 // Otherwise, use the data parameter
                 if name.is_empty() {
                     if let Some(value) = self.context.lookup("$") {
-                        return Ok(value.clone());
+                        return Ok(value.bare());
                     }
                     // If data is a tuple, return the @ value
                     if let JValue::Object(obj) = data {
-                        if obj.get("__tuple__") == Some(&JValue::Bool(true)) {
+                        if is_tuple_object(obj) {
                             if let Some(inner) = obj.get("@") {
                                 return Ok(inner.clone());
                             }
                         }
                     }
-                    return Ok(data.clone());
+                    return Ok(data.bare());
                 }
 
                 // Check variable bindings FIRST
@@ -3767,7 +3848,7 @@ impl Evaluator {
                 // Check tuple bindings in data (for index binding operator #$var)
                 // When iterating over a tuple stream, $var can reference the bound index
                 if let JValue::Object(obj) = data {
-                    if obj.get("__tuple__") == Some(&JValue::Bool(true)) {
+                    if is_tuple_object(obj) {
                         // Check for the variable in tuple bindings (stored as "$name")
                         let binding_key = format!("${}", name);
                         if let Some(binding_value) = obj.get(&binding_key) {
@@ -3822,61 +3903,7 @@ impl Evaluator {
             // Array constructor - JSONata semantics:
             AstNode::Array(elements) => Ok(JValue::array(self.construct_array(elements, data)?)),
 
-            AstNode::Object(pairs) => {
-                let mut result = IndexMap::with_capacity(pairs.len());
-
-                // Check if all keys are string literals — can skip D1009 HashMap
-                let all_literal_keys = pairs.iter().all(|(k, _)| matches!(k, AstNode::String(_)));
-
-                if all_literal_keys {
-                    // Fast path: literal keys, no need for D1009 tracking
-                    for (key_node, value_node) in pairs.iter() {
-                        let key = match key_node {
-                            AstNode::String(s) => s,
-                            _ => unreachable!(),
-                        };
-                        let value = self.evaluate_internal(value_node, data)?;
-                        if value.is_undefined() {
-                            continue;
-                        }
-                        result.insert(key.clone(), value);
-                    }
-                } else {
-                    let mut key_sources: HashMap<String, usize> = HashMap::new();
-                    for (pair_index, (key_node, value_node)) in pairs.iter().enumerate() {
-                        let key = match self.evaluate_internal(key_node, data)? {
-                            JValue::String(s) => s,
-                            JValue::Null => continue,
-                            other => {
-                                if other.is_undefined() {
-                                    continue;
-                                }
-                                return Err(EvaluatorError::TypeError(format!(
-                                    "T1003: Key in object structure must evaluate to a string; got: {:?}",
-                                    other
-                                )));
-                            }
-                        };
-
-                        if let Some(&existing_idx) = key_sources.get(&*key) {
-                            if existing_idx != pair_index {
-                                return Err(EvaluatorError::EvaluationError(format!(
-                                    "D1009: Multiple key expressions evaluate to same key: {}",
-                                    key
-                                )));
-                            }
-                        }
-                        key_sources.insert(key.to_string(), pair_index);
-
-                        let value = self.evaluate_internal(value_node, data)?;
-                        if value.is_undefined() {
-                            continue;
-                        }
-                        result.insert(key.to_string(), value);
-                    }
-                }
-                Ok(JValue::object(result))
-            }
+            AstNode::Object(pairs) => self.construct_object(pairs, data),
 
             // Object transform: group items by key, then evaluate value once per group
             AstNode::ObjectTransform { input, pattern } => {
@@ -3927,9 +3954,9 @@ impl Evaluator {
                 // `$e` AND resolves the relative `Phone` against the Contact `@`),
                 // and grouped tuples are reduced (per-key values appended) before
                 // the value expression sees them.
-                let reduce = items.first().is_some_and(|it| {
-                    matches!(it, JValue::Object(o) if o.get("__tuple__") == Some(&JValue::Bool(true)))
-                });
+                let reduce = items
+                    .first()
+                    .is_some_and(|it| matches!(it, JValue::Object(o) if is_tuple_object(o)));
 
                 // Bind a tuple wrapper's carried `$var`/`!label` keys into scope;
                 // returns the saved prior values so they can be restored.
@@ -3964,9 +3991,10 @@ impl Evaluator {
                 };
 
                 // Phase 1: Group items by key expression
-                // groups maps key -> (grouped_data, expr_index)
-                // When multiple items have same key, their data is appended together
-                let mut groups: HashMap<String, (Vec<JValue>, usize)> = HashMap::new();
+                // groups maps key -> (grouped_data, expr_index), in first-seen
+                // order. When multiple items have same key, their data is
+                // appended together
+                let mut groups: IndexMap<String, (Vec<JValue>, usize)> = IndexMap::new();
 
                 // Save the current $ binding to restore later
                 let saved_dollar = self.context.lookup("$").cloned();
@@ -4059,14 +4087,7 @@ impl Evaluator {
                         continue;
                     }
 
-                    // Determine the context for value evaluation:
-                    // - If single item, use that item directly
-                    // - If multiple items, use the array of items
-                    let context = if grouped_data.len() == 1 {
-                        grouped_data.into_iter().next().unwrap()
-                    } else {
-                        JValue::array(grouped_data)
-                    };
+                    let context = group_context(&grouped_data);
 
                     // Bind $ to the context for value evaluation
                     self.context.bind("$".to_string(), context.clone());
@@ -4312,7 +4333,7 @@ impl Evaluator {
                 // separately bound into scope here (mirrors AstNode::Variable's
                 // tuple-binding fallback below).
                 if let JValue::Object(obj) = data {
-                    if obj.get("__tuple__") == Some(&JValue::Bool(true)) {
+                    if is_tuple_object(obj) {
                         if let Some(v) = obj.get(label) {
                             return Ok(v.clone());
                         }
@@ -4401,6 +4422,29 @@ impl Evaluator {
             }
         }
 
+        // `$var.field` over an object variable, common in lambda bodies: the
+        // general loop's answer without its machinery.
+        if let [var_step, field_step] = steps {
+            if let (AstNode::Variable(name), AstNode::Name(field)) =
+                (&var_step.node, &field_step.node)
+            {
+                let plain =
+                    |step: &PathStep| step.stages.is_empty() && !Self::step_creates_tuple(step);
+                if !name.is_empty()
+                    && plain(var_step)
+                    && plain(field_step)
+                    && !matches!(data, JValue::Object(obj) if is_tuple_object(obj))
+                {
+                    if let Some(JValue::Object(obj)) = self.context.lookup(name) {
+                        if !is_tuple_object(obj) {
+                            let value = obj.get(field).cloned().unwrap_or(JValue::Undefined);
+                            return Ok(collect_single_step_result(value, true));
+                        }
+                    }
+                }
+            }
+        }
+
         // An expression jsonata-js does not treat as a path (`(expr)[0]`,
         // `$x[]`, `*[0]`) is evaluated once against the whole input, its
         // predicates filter that value, and `[]` keeps it only if it is a
@@ -4421,8 +4465,17 @@ impl Evaluator {
             first.node,
             AstNode::Variable(_) | AstNode::ParentVariable(_) | AstNode::Sort { .. }
         );
+        // The wrapper's one item is the bare array; a sort evaluates its own
+        // input path, so it keeps the wrapper.
+        let bare;
         let first_items: &[JValue] = match data {
-            JValue::Array(arr) if !takes_whole_input && !is_root_input(arr) => arr,
+            JValue::Array(arr)
+                if arr.outer_wrapper && !matches!(first.node, AstNode::Sort { .. }) =>
+            {
+                bare = data.bare();
+                std::slice::from_ref(&bare)
+            }
+            JValue::Array(arr) if !takes_whole_input && !arr.outer_wrapper => arr,
             _ => std::slice::from_ref(data),
         };
 
@@ -4463,14 +4516,23 @@ impl Evaluator {
                 continue;
             }
 
-            // The previous step's result (always an array once the loop
-            // reaches here), or the path's input for the first step.
+            // The previous step's result, or the path's input for the first
+            // step. A result that is not an array is a single item, standing
+            // for the one-item sequence jsonata-js would build.
+            let single = if index > 0 && !matches!(result, JValue::Array(_)) {
+                std::mem::replace(&mut result, JValue::Undefined)
+            } else {
+                JValue::Undefined
+            };
             let previous = match &result {
                 JValue::Array(arr) if index > 0 => Some(arr.clone()),
-                _ if index > 0 => break,
                 _ => None,
             };
-            let items: &[JValue] = previous.as_deref().map_or(first_items, Vec::as_slice);
+            let items: &[JValue] = match &previous {
+                Some(arr) => arr,
+                None if index == 0 => first_items,
+                None => std::slice::from_ref(&single),
+            };
 
             result = if index == 0 && matches!(step.node, AstNode::Array(_)) {
                 // A leading array constructor builds one array from the whole
@@ -4488,8 +4550,11 @@ impl Evaluator {
                 break;
             }
             // A step that returns a tuple stream (a sort lifted out of a tuple
-            // path) puts the rest of the path in tuple mode.
-            if let JValue::Array(arr) = &result {
+            // path, or any step while an enclosing sort or group-by keeps
+            // tuple streams) puts the rest of the path in tuple mode.
+            let may_return_tuples =
+                self.keep_tuple_stream || matches!(step.node, AstNode::Sort { .. });
+            if let (JValue::Array(arr), true) = (&result, may_return_tuples) {
                 if arr
                     .first()
                     .is_some_and(|f| matches!(f, JValue::Object(o) if is_tuple_object(o)))
@@ -4542,6 +4607,28 @@ impl Evaluator {
                 return Ok(JValue::Array(source.fresh_sequence()));
             }
         }
+        // One item and no stages (a step inside a lambda, or over a single
+        // object) needs no per-item vectors.
+        if let ([item], true) = (items, step.stages.is_empty()) {
+            let value = match (&step.node, item) {
+                (AstNode::Name(field), JValue::Object(obj)) if !is_tuple_object(obj) => {
+                    obj.get(field).cloned().unwrap_or(JValue::Undefined)
+                }
+                (AstNode::Name(_), _) => return self.evaluate_step_items(step, items, last_step),
+                (node, item) => self.evaluate_step_node(node, item)?,
+            };
+            return Ok(collect_single_step_result(value, last_step));
+        }
+        self.evaluate_step_items(step, items, last_step)
+    }
+
+    /// `evaluate_step` over any number of items.
+    fn evaluate_step_items(
+        &mut self,
+        step: &PathStep,
+        items: &[JValue],
+        last_step: bool,
+    ) -> Result<JValue, EvaluatorError> {
         let values = match &step.node {
             // A field step looks the field up in each item, reusing its
             // position across a homogeneous array.
@@ -4569,26 +4656,24 @@ impl Evaluator {
         node: &AstNode,
         items: &[JValue],
     ) -> Result<Vec<JValue>, EvaluatorError> {
+        // Compiling costs about one tree evaluation and isn't cached, so it
+        // only pays off over several items.
         let compiled = match node {
+            _ if items.len() < 2 => None,
             AstNode::Object(_) => try_compile_expr(node),
             AstNode::FunctionApplication(expr) => try_compile_expr(expr),
             _ => None,
         };
         let mut values = Vec::with_capacity(items.len());
         if let Some(compiled) = compiled {
-            let shape = items.first().and_then(build_shape_cache);
             for item in items {
-                values.push(match &shape {
-                    Some(shape) => eval_compiled_shaped(
-                        &compiled,
-                        item,
-                        None,
-                        shape,
-                        &self.options,
-                        self.start_time,
-                    )?,
-                    None => eval_compiled(&compiled, item, None, &self.options, self.start_time)?,
-                });
+                values.push(eval_compiled(
+                    &compiled,
+                    item,
+                    None,
+                    &self.options,
+                    self.start_time,
+                )?);
             }
             return Ok(values);
         }
@@ -4596,6 +4681,81 @@ impl Evaluator {
             values.push(self.evaluate_step_node(node, item)?);
         }
         Ok(values)
+    }
+
+    /// An object constructor, following jsonata-js `evaluateGroupExpression`:
+    /// each item of the input (see `object_context`) is grouped under the key
+    /// each pair gives it, and a pair's value is evaluated over its group.
+    fn construct_object(
+        &mut self,
+        pairs: &[(AstNode, AstNode)],
+        data: &JValue,
+    ) -> Result<JValue, EvaluatorError> {
+        // A literal key puts every item in its pair's group.
+        if pairs
+            .iter()
+            .all(|(key, _)| matches!(key, AstNode::String(_)))
+        {
+            let context = object_context(data);
+            let mut result = IndexMap::with_capacity(pairs.len());
+            for (key, value) in pairs {
+                let AstNode::String(key) = key else {
+                    unreachable!("all keys are literals")
+                };
+                let value = self.evaluate_internal(value, &context)?;
+                if !value.is_undefined() {
+                    result.insert(key.to_string(), value);
+                }
+            }
+            return Ok(JValue::object(result));
+        }
+
+        let bare;
+        let items: &[JValue] = match data {
+            JValue::Array(arr) if arr.outer_wrapper => {
+                bare = data.bare();
+                std::slice::from_ref(&bare)
+            }
+            JValue::Array(arr) if arr.is_empty() => &[JValue::Undefined],
+            JValue::Array(arr) => arr,
+            other => std::slice::from_ref(other),
+        };
+        // Each key's pair and the items grouped under it, in first-seen order.
+        let mut groups: IndexMap<String, (usize, Vec<JValue>)> = IndexMap::new();
+        for item in items {
+            for (pair_index, (key, _)) in pairs.iter().enumerate() {
+                let key = match self.evaluate_internal(key, item)? {
+                    JValue::String(key) => key,
+                    JValue::Null | JValue::Undefined => continue,
+                    other => {
+                        return Err(EvaluatorError::TypeError(format!(
+                            "T1003: Key in object structure must evaluate to a string; got: {:?}",
+                            other
+                        )))
+                    }
+                };
+                match groups.get_mut(&*key) {
+                    Some((index, _)) if *index != pair_index => {
+                        return Err(EvaluatorError::EvaluationError(format!(
+                            "D1009: Multiple key expressions evaluate to same key: {}",
+                            key
+                        )));
+                    }
+                    Some((_, group)) => group.push(item.clone()),
+                    None => {
+                        groups.insert(key.to_string(), (pair_index, vec![item.clone()]));
+                    }
+                }
+            }
+        }
+        let mut result = IndexMap::with_capacity(groups.len());
+        for (key, (pair_index, group)) in groups {
+            let value = self.evaluate_internal(&pairs[pair_index].1, &group_context(&group))?;
+            if !value.is_undefined() {
+                result.insert(key, value);
+            }
+        }
+        Ok(JValue::object(result))
     }
 
     /// Evaluate a path step's node against one input item. `$` is the item,
@@ -4607,7 +4767,7 @@ impl Evaluator {
         item: &JValue,
     ) -> Result<JValue, EvaluatorError> {
         match node {
-            AstNode::Variable(name) if name.is_empty() => Ok(item.clone()),
+            AstNode::Variable(name) if name.is_empty() => Ok(item.bare()),
             AstNode::FunctionApplication(expr) => {
                 // Always bound, not only over an outer `$`: the lambda-step
                 // desugaring (`x.function($v){...}()`) passes `$` explicitly.
@@ -4624,6 +4784,10 @@ impl Evaluator {
                 let items =
                     self.with_dollar_bound(item, |ev| ev.construct_array(elements, item))?;
                 Ok(JValue::cons(items))
+            }
+            // These don't read `$`, so need no binding.
+            AstNode::Variable(_) | AstNode::ParentVariable(_) | AstNode::Name(_) => {
+                self.evaluate_internal(node, item)
             }
             _ => self.with_dollar_bound(item, |ev| ev.evaluate_internal(node, item)),
         }
@@ -4817,7 +4981,7 @@ impl Evaluator {
         let is_tuple_input = matches!(
             input,
             JValue::Array(arr) if arr.first().is_some_and(|f| {
-                matches!(f, JValue::Object(o) if o.get("__tuple__") == Some(&JValue::Bool(true)))
+                matches!(f, JValue::Object(o) if is_tuple_object(o))
             })
         );
         let incoming: Vec<Rc<IndexMap<String, JValue>>> = if is_tuple_input {
@@ -4872,15 +5036,27 @@ impl Evaluator {
         // evaluateTupleStep's `sort` case. `$^($)#$pos[$pos<3]` must sort the
         // array, then number the sorted values, then filter by `$pos`.
         if let AstNode::Sort { terms, .. } = &step.node {
-            let stream = JValue::array(
-                incoming
-                    .iter()
-                    .map(|t| JValue::object((**t).clone()))
-                    .collect(),
-            );
-            // evaluate_sort is tuple-aware (orders by each wrapper's `@`, with the
-            // carried keys bound), returning the wrappers in sorted order.
-            let sorted = self.evaluate_sort(&stream, terms)?;
+            let sorted = if is_tuple_input {
+                let stream = JValue::array(
+                    incoming
+                        .iter()
+                        .map(|t| JValue::object((**t).clone()))
+                        .collect(),
+                );
+                // evaluate_sort is tuple-aware (orders by each wrapper's `@`,
+                // with the carried keys bound), returning the wrappers in
+                // sorted order.
+                self.evaluate_sort(&stream, terms)?
+            } else {
+                // The sort's own input path (`arr` in `arr^($)#$i`) gives what
+                // it orders; its tuple wrappers are kept so their bindings
+                // carry into the new stream.
+                let saved_keep = self.keep_tuple_stream;
+                self.keep_tuple_stream = true;
+                let sorted = self.evaluate_internal(&step.node, input);
+                self.keep_tuple_stream = saved_keep;
+                sorted?
+            };
             let sorted_arr: Vec<JValue> = match sorted {
                 JValue::Array(a) => a.iter().cloned().collect(),
                 JValue::Null | JValue::Undefined => Vec::new(),
@@ -4888,17 +5064,19 @@ impl Evaluator {
             };
             let mut result = Vec::new();
             for (ss, elem) in sorted_arr.into_iter().enumerate() {
+                // jsonata-js numbers only a sort that starts a tuple stream; a
+                // sort of tuples keeps their bindings and adds no index.
                 let mut new_tuple = match elem {
-                    JValue::Object(o) => (*o).clone(),
+                    JValue::Object(o) if is_tuple_object(&o) => (*o).clone(),
                     other => {
                         let mut m = IndexMap::new();
                         m.insert("@".to_string(), other);
+                        if let Some(index_var) = &step.index_var {
+                            m.insert(format!("${}", index_var), JValue::from(ss as i64));
+                        }
                         m
                     }
                 };
-                if let Some(index_var) = &step.index_var {
-                    new_tuple.insert(format!("${}", index_var), JValue::from(ss as i64));
-                }
                 new_tuple.insert("__tuple__".to_string(), JValue::Bool(true));
                 result.push(JValue::object(new_tuple));
             }
@@ -8076,7 +8254,14 @@ impl Evaluator {
         };
 
         // Determine the context to use for evaluation
-        let eval_context = if args.len() == 2 { &args[1] } else { data };
+        // A focus array is wrapped the way evaluate wraps its input.
+        let focus;
+        let eval_context = if args.len() == 2 {
+            focus = args[1].clone().into_outer_wrapper();
+            &focus
+        } else {
+            data
+        };
 
         // Evaluate the parsed expression
         match self.evaluate_internal(&parsed_ast, eval_context) {
@@ -8169,7 +8354,7 @@ impl Evaluator {
     ) -> Result<JValue, EvaluatorError> {
         // For tuples (from index binding), extract the actual value from @ field
         let actual_element = if let JValue::Object(obj) = element {
-            if obj.get("__tuple__") == Some(&JValue::Bool(true)) {
+            if is_tuple_object(obj) {
                 obj.get("@").cloned().unwrap_or(JValue::Null)
             } else {
                 element.clone()
@@ -8257,9 +8442,7 @@ impl Evaluator {
             // that collides with a live outer `:=` binding doesn't get
             // deleted once this row's sort terms are evaluated.
             let tuple_bindings = match element {
-                JValue::Object(obj) if obj.get("__tuple__") == Some(&JValue::Bool(true)) => {
-                    Some(self.bind_tuple_keys(obj))
-                }
+                JValue::Object(obj) if is_tuple_object(obj) => Some(self.bind_tuple_keys(obj)),
                 _ => None,
             };
 
@@ -8269,7 +8452,7 @@ impl Evaluator {
             // object and raise T2008. The carried focus/index/ancestor keys stay
             // reachable via the context bindings established just above.
             let term_data = match element {
-                JValue::Object(obj) if obj.get("__tuple__") == Some(&JValue::Bool(true)) => {
+                JValue::Object(obj) if is_tuple_object(obj) => {
                     obj.get("@").cloned().unwrap_or(JValue::Null)
                 }
                 other => other.clone(),

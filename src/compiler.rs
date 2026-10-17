@@ -24,8 +24,8 @@ pub(crate) struct BytecodeCompiler {
     /// Fallback expressions for `EvalFallback` instructions.
     /// Contains `CompiledExpr` variants too complex to lower to flat bytecode.
     fallback_exprs: Vec<CompiledExpr>,
-    /// Sub-programs for `FilterByBytecode` instructions.
-    /// Each is a fully compiled predicate `BytecodeProgram` run per array element.
+    /// Sub-programs for `FilterByBytecode` (a predicate run per array
+    /// element) and `ConstructObject` (an object body run over its context).
     sub_programs: Vec<BytecodeProgram>,
 }
 
@@ -335,12 +335,20 @@ impl BytecodeCompiler {
                 }
             }
             CompiledExpr::ObjectConstruct(pairs) => {
+                // The values run over the constructor's context, which is
+                // not the input when that is an array (`object_context`), so
+                // the body is a program of its own.
+                let mut body = BytecodeCompiler::new();
                 for (key, val_expr) in pairs {
-                    let kidx = self.intern_const(JValue::string(key.clone()));
-                    self.emit(Instr::PushConst(kidx));
-                    self.compile_expr(val_expr);
+                    let kidx = body.intern_const(JValue::string(key.clone()));
+                    body.emit(Instr::PushConst(kidx));
+                    body.compile_expr(val_expr);
                 }
-                self.emit(Instr::MakeObject(pairs.len() as u16));
+                body.emit(Instr::MakeObject(pairs.len() as u16));
+                body.emit(Instr::Return);
+                let sidx = self.sub_programs.len() as u16;
+                self.sub_programs.push(body.finish());
+                self.emit(Instr::ConstructObject(sidx));
             }
 
             // ── Block ────────────────────────────────────────────────
@@ -392,6 +400,12 @@ impl BytecodeCompiler {
         let mut c = BytecodeCompiler::new();
         c.compile_expr(expr);
         c.emit(Instr::Return);
+        c.finish()
+    }
+
+    /// The program compiled so far, peephole-optimized.
+    fn finish(self) -> BytecodeProgram {
+        let c = self;
         let prog = BytecodeProgram {
             shape_cache: BytecodeProgram::alloc_shape_cache(c.instrs.len()),
             instrs: c.instrs,

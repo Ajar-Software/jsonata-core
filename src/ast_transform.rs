@@ -700,7 +700,11 @@ fn check_focus_bind_target(
     if !matches!(marker, BindingMarker::Focus(_)) {
         return Ok(());
     }
-    if !target_stages.is_empty() {
+    // `[]` is a flag on the step in jsonata-js, not one of its predicates.
+    if target_stages
+        .iter()
+        .any(|stage| !matches!(stage, crate::ast::Stage::KeepArray))
+    {
         return Err(coded(
             "S0215",
             "A context variable binding must precede any predicates on a step",

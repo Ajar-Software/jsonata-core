@@ -76,8 +76,50 @@
     "p": 1
    }
   ],
-  "v": 5
+  "v": 5,
+  "het": [
+   {
+    "a": 1,
+    "b": 5
+   },
+   {
+    "b": 0,
+    "a": 4
+   }
+  ]
  },
+ "root_data": [
+  {
+   "a": [
+    1,
+    2
+   ],
+   "b": {
+    "c": [
+     [
+      1
+     ]
+    ]
+   }
+  },
+  {
+   "a": [
+    3
+   ]
+  },
+  {
+   "a": [
+    [
+     4
+    ]
+   ],
+   "b": {
+    "c": [
+     2
+    ]
+   }
+  }
+ ],
  "cases": [
   {
    "expression": "a",
@@ -4824,7 +4866,15 @@
     {
      "p": 1
     },
-    5
+    5,
+    {
+     "a": 1,
+     "b": 5
+    },
+    {
+     "b": 0,
+     "a": 4
+    }
    ]
   },
   {
@@ -4906,6 +4956,787 @@
    "result": [
     1
    ]
+  },
+  {
+   "expression": "($f := function() { objs.p }; $f())",
+   "result": [
+    1,
+    2
+   ]
+  },
+  {
+   "expression": "($f := function() { o.t }; $f())",
+   "result": [
+    "x",
+    "y",
+    "z"
+   ]
+  },
+  {
+   "expression": "($f := function() { a.b }; $f())",
+   "result": [
+    1
+   ]
+  },
+  {
+   "expression": "$map([1], function($v) { $.objs.p })",
+   "result": [
+    1,
+    2
+   ]
+  },
+  {
+   "expression": "$map([1], function($v) { objs.p })",
+   "result": [
+    1,
+    2
+   ]
+  },
+  {
+   "expression": "$map([1], function($v) { o.t[0] })",
+   "result": [
+    "x",
+    "y"
+   ]
+  },
+  {
+   "expression": "arr[]@$v.$v",
+   "result": [
+    1,
+    2,
+    3
+   ]
+  },
+  {
+   "expression": "objs[]@$o.$o.p",
+   "result": [
+    1,
+    2
+   ]
+  },
+  {
+   "expression": "arr^($)#$i",
+   "result": [
+    1,
+    2,
+    3
+   ]
+  },
+  {
+   "expression": "arr^($)[0]#$i",
+   "result": 1
+  },
+  {
+   "expression": "arr^($)#$i.$i",
+   "result": [
+    0,
+    1,
+    2
+   ]
+  },
+  {
+   "expression": "arr^(>$)#$i.{\"v\": $, \"i\": $i}",
+   "result": [
+    {
+     "v": 3,
+     "i": 0
+    },
+    {
+     "v": 2,
+     "i": 1
+    },
+    {
+     "v": 1,
+     "i": 2
+    }
+   ]
+  },
+  {
+   "expression": "objs^(>p)#$i",
+   "result": [
+    {
+     "p": 2
+    },
+    {
+     "p": 1
+    }
+   ]
+  },
+  {
+   "expression": "objs^(>p)#$i.p",
+   "result": [
+    2,
+    1
+   ]
+  },
+  {
+   "expression": "objs^(>p)#$i.{\"p\": p, \"i\": $i}",
+   "result": [
+    {
+     "p": 2,
+     "i": 0
+    },
+    {
+     "p": 1,
+     "i": 1
+    }
+   ]
+  },
+  {
+   "expression": "objs#$j^(>p)#$i.{\"j\": $j, \"i\": $i}",
+   "result": [
+    {
+     "j": 1
+    },
+    {
+     "j": 0
+    }
+   ]
+  },
+  {
+   "expression": "arr^($)[$ > 1]#$i.{\"v\": $, \"i\": $i}",
+   "result": [
+    {
+     "v": 2,
+     "i": 0
+    },
+    {
+     "v": 3,
+     "i": 1
+    }
+   ]
+  },
+  {
+   "expression": "$eval(\"t\", o)",
+   "result": [
+    "x",
+    "y",
+    "z"
+   ]
+  },
+  {
+   "expression": "$eval(\"t[0]\", o)",
+   "result": "x"
+  },
+  {
+   "expression": "$eval(\"$.t[0]\", o)",
+   "result": [
+    "x",
+    "y"
+   ]
+  },
+  {
+   "expression": "$eval(\"n[0]\", $)",
+   "result": [
+    1,
+    2
+   ]
+  },
+  {
+   "expression": "$eval(\"p\", objs)",
+   "result": [
+    1,
+    2
+   ]
+  },
+  {
+   "expression": "$eval(\"$[0]\", arr)",
+   "result": 1
+  },
+  {
+   "expression": "het[a > 2].b",
+   "result": 0
+  },
+  {
+   "expression": "het.{\"k\": a}",
+   "result": [
+    {
+     "k": 1
+    },
+    {
+     "k": 4
+    }
+   ]
+  },
+  {
+   "expression": "$map([1], function($v) { het[a > 2].b })",
+   "result": 0
+  },
+  {
+   "expression": "($f := function() { het[a > 2].b }; $f())",
+   "result": 0
+  },
+  {
+   "expression": "$map(het, function($v) { $v.a })",
+   "result": [
+    1,
+    4
+   ]
+  },
+  {
+   "expression": "n.{\"x\": $}",
+   "result": [
+    {
+     "x": [
+      1,
+      2
+     ]
+    },
+    {
+     "x": 3
+    }
+   ]
+  },
+  {
+   "expression": "het.[a].{\"x\": $}",
+   "result": [
+    {
+     "x": 1
+    },
+    {
+     "x": 4
+    }
+   ]
+  },
+  {
+   "expression": "o.t.{\"x\": $}",
+   "result": [
+    {
+     "x": "x"
+    },
+    {
+     "x": "y"
+    },
+    {
+     "x": "z"
+    }
+   ]
+  },
+  {
+   "expression": "[[1, 2], [3]].{\"x\": $}",
+   "result": [
+    {
+     "x": [
+      1,
+      2
+     ]
+    },
+    {
+     "x": 3
+    }
+   ]
+  },
+  {
+   "expression": "n{\"x\": $}",
+   "result": {
+    "x": [
+     1,
+     2,
+     3
+    ]
+   }
+  },
+  {
+   "expression": "het.{\"k\": $string(a)}.k",
+   "result": [
+    "1",
+    "4"
+   ]
+  },
+  {
+   "expression": "$.{\"x\": het.a}",
+   "result": {
+    "x": [
+     1,
+     4
+    ]
+   }
+  },
+  {
+   "expression": "[$].{\"x\": v}",
+   "result": {
+    "x": 5
+   }
+  },
+  {
+   "expression": "a",
+   "root": true,
+   "result": [
+    1,
+    2,
+    3,
+    [
+     4
+    ]
+   ]
+  },
+  {
+   "expression": "a[0]",
+   "root": true,
+   "result": 1
+  },
+  {
+   "expression": "a[1]",
+   "root": true,
+   "result": 2
+  },
+  {
+   "expression": "(a)[0]",
+   "root": true,
+   "result": 1
+  },
+  {
+   "expression": "a[]",
+   "root": true,
+   "result": [
+    1,
+    2,
+    3,
+    [
+     4
+    ]
+   ]
+  },
+  {
+   "expression": "b.c",
+   "root": true,
+   "result": [
+    [
+     1
+    ],
+    2
+   ]
+  },
+  {
+   "expression": "b.c[0]",
+   "root": true,
+   "result": [
+    1,
+    2
+   ]
+  },
+  {
+   "expression": "$.a",
+   "root": true,
+   "result": [
+    1,
+    2,
+    3,
+    [
+     4
+    ]
+   ]
+  },
+  {
+   "expression": "$.a[0]",
+   "root": true,
+   "result": [
+    1,
+    3,
+    4
+   ]
+  },
+  {
+   "expression": "$$.a[0]",
+   "root": true,
+   "result": [
+    1,
+    3,
+    4
+   ]
+  },
+  {
+   "expression": "$[0]",
+   "root": true,
+   "result": {
+    "a": [
+     1,
+     2
+    ],
+    "b": {
+     "c": [
+      [
+       1
+      ]
+     ]
+    }
+   }
+  },
+  {
+   "expression": "$[0].a",
+   "root": true,
+   "result": [
+    1,
+    2
+   ]
+  },
+  {
+   "expression": "*",
+   "root": true,
+   "result": [
+    {
+     "a": [
+      1,
+      2
+     ],
+     "b": {
+      "c": [
+       [
+        1
+       ]
+      ]
+     }
+    },
+    {
+     "a": [
+      3
+     ]
+    },
+    {
+     "a": [
+      [
+       4
+      ]
+     ],
+     "b": {
+      "c": [
+       2
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "expression": "*.a",
+   "root": true,
+   "result": [
+    1,
+    2,
+    3,
+    [
+     4
+    ]
+   ]
+  },
+  {
+   "expression": "*[0]",
+   "root": true,
+   "result": {
+    "a": [
+     1,
+     2
+    ],
+    "b": {
+     "c": [
+      [
+       1
+      ]
+     ]
+    }
+   }
+  },
+  {
+   "expression": "$count(a)",
+   "root": true,
+   "result": 4
+  },
+  {
+   "expression": "[a]",
+   "root": true,
+   "result": [
+    1,
+    2,
+    3,
+    [
+     4
+    ]
+   ]
+  },
+  {
+   "expression": "[a][0]",
+   "root": true,
+   "result": 1
+  },
+  {
+   "expression": "{\"x\": a}",
+   "root": true,
+   "result": {
+    "x": [
+     1,
+     2,
+     3,
+     [
+      4
+     ]
+    ]
+   }
+  },
+  {
+   "expression": "{\"x\": a[0]}",
+   "root": true,
+   "result": {
+    "x": [
+     1,
+     3,
+     4
+    ]
+   }
+  },
+  {
+   "expression": "{\"x\": b.c}",
+   "root": true,
+   "result": {
+    "x": [
+     [
+      1
+     ],
+     2
+    ]
+   }
+  },
+  {
+   "expression": "{\"x\": $.a[0]}",
+   "root": true,
+   "result": {
+    "x": [
+     1,
+     3,
+     4
+    ]
+   }
+  },
+  {
+   "expression": "{\"x\": $$.a[0]}",
+   "root": true,
+   "result": {
+    "x": [
+     1,
+     3,
+     4
+    ]
+   }
+  },
+  {
+   "expression": "{\"x\": $count(a)}",
+   "root": true,
+   "result": {
+    "x": 4
+   }
+  },
+  {
+   "expression": "{\"x\": {\"y\": a[0]}}",
+   "root": true,
+   "result": {
+    "x": {
+     "y": [
+      1,
+      3,
+      4
+     ]
+    }
+   }
+  },
+  {
+   "expression": "{\"x\": a[0]}.x",
+   "root": true,
+   "result": [
+    1,
+    3,
+    4
+   ]
+  },
+  {
+   "expression": "[{\"x\": a[0]}]",
+   "root": true,
+   "result": [
+    {
+     "x": [
+      1,
+      3,
+      4
+     ]
+    }
+   ]
+  },
+  {
+   "expression": "($y := {\"x\": a[0]}; $y)",
+   "root": true,
+   "result": {
+    "x": [
+     1,
+     3,
+     4
+    ]
+   }
+  },
+  {
+   "expression": "$map([1], function($v) { {\"x\": a[0]} })",
+   "root": true,
+   "result": {
+    "x": [
+     1,
+     3,
+     4
+    ]
+   }
+  },
+  {
+   "expression": "$.{\"x\": a}",
+   "root": true,
+   "result": [
+    {
+     "x": [
+      1,
+      2
+     ]
+    },
+    {
+     "x": [
+      3
+     ]
+    },
+    {
+     "x": [
+      [
+       4
+      ]
+     ]
+    }
+   ]
+  },
+  {
+   "expression": "a.{\"x\": $}",
+   "root": true,
+   "result": [
+    {
+     "x": 1
+    },
+    {
+     "x": 2
+    },
+    {
+     "x": 3
+    },
+    {
+     "x": 4
+    }
+   ]
+  },
+  {
+   "expression": "{\"x\": a}.x[0]",
+   "root": true,
+   "result": 1
+  },
+  {
+   "expression": "{a[0] = 1 ? \"k\" : \"j\": a}",
+   "root": true,
+   "result": {
+    "j": [
+     1,
+     2,
+     3,
+     [
+      4
+     ]
+    ]
+   }
+  },
+  {
+   "expression": "($f := function() { a }; $f())",
+   "root": true,
+   "result": [
+    1,
+    2,
+    3,
+    [
+     4
+    ]
+   ]
+  },
+  {
+   "expression": "($f := function() { a[0] }; $f())",
+   "root": true,
+   "result": 1
+  },
+  {
+   "expression": "$eval(\"a[0]\")",
+   "root": true,
+   "result": 1
+  },
+  {
+   "expression": "$eval(\"a[0]\", $)",
+   "root": true,
+   "result": 1
+  },
+  {
+   "expression": "$eval(\"a[0]\", $$)",
+   "root": true,
+   "result": 1
+  },
+  {
+   "expression": "$eval(\"{\\\"x\\\": a[0]}\")",
+   "root": true,
+   "result": {
+    "x": [
+     1,
+     3,
+     4
+    ]
+   }
+  },
+  {
+   "expression": "$sort(a)",
+   "root": true,
+   "result": {
+    "$error": "D3070"
+   }
+  },
+  {
+   "expression": "$reverse(a)",
+   "root": true,
+   "result": [
+    [
+     4
+    ],
+    3,
+    2,
+    1
+   ]
+  },
+  {
+   "expression": "a ~> $count",
+   "root": true,
+   "result": 4
+  },
+  {
+   "expression": "(a)",
+   "root": true,
+   "result": [
+    1,
+    2,
+    3,
+    [
+     4
+    ]
+   ]
+  },
+  {
+   "expression": "[1].(a[0])",
+   "root": true,
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "[1].{\"x\": $$.a[0]}",
+   "root": true,
+   "result": {
+    "x": [
+     1,
+     3,
+     4
+    ]
+   }
   }
  ]
 }

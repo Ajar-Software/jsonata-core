@@ -20,8 +20,8 @@ use std::cell::Cell;
 use std::collections::HashMap;
 
 use crate::evaluator::{
-    check_loop_timeout, check_sequence_length, eval_compiled, is_root_input, predicate_index_match,
-    CompiledExpr, EvaluatorError, EvaluatorOptions, RootInputGuard,
+    check_loop_timeout, check_sequence_length, eval_compiled, object_context,
+    predicate_index_match, CompiledExpr, EvaluatorError, EvaluatorOptions,
 };
 use crate::value::JValue;
 
@@ -105,6 +105,10 @@ pub(crate) enum Instr {
     MakeArray(u16),
     /// Pop `n` (string key, value) pairs and push an object.
     MakeObject(u16),
+    /// Run sub-program `idx`, an object constructor's body ending in
+    /// `MakeObject`, over the constructor's context (`object_context`), and
+    /// push the object.
+    ConstructObject(u16),
     /// Pop `n` values and push the last one (sequential block evaluation).
     BlockEnd(u16),
 
@@ -201,7 +205,7 @@ impl<'prog> Vm<'prog> {
         data: &JValue,
         vars: Option<&HashMap<&str, &JValue>>,
     ) -> Result<JValue, EvaluatorError> {
-        let _root = RootInputGuard::set(data);
+        let data = &data.clone().into_outer_wrapper();
         let start_time = if self.options.timeout_ms.is_some() {
             Some(std::time::Instant::now())
         } else {
@@ -258,7 +262,7 @@ fn run_inner(
                 ip += 1;
             }
             Instr::PushData => {
-                stack.push(data.clone());
+                stack.push(data.bare());
                 ip += 1;
             }
             Instr::GetField(idx) => {
@@ -275,7 +279,7 @@ fn run_inner(
             }
             Instr::GetDataField(idx) => {
                 let field = &string_pool[*idx as usize];
-                let per_item = !matches!(data, JValue::Array(arr) if is_root_input(arr));
+                let per_item = !matches!(data, JValue::Array(arr) if arr.outer_wrapper);
                 stack.push(get_field_cached(
                     data,
                     field,
@@ -533,6 +537,19 @@ fn run_inner(
                     }
                 }
                 stack.push(JValue::Object(std::rc::Rc::new(obj)));
+                ip += 1;
+            }
+            Instr::ConstructObject(idx) => {
+                let context = object_context(data);
+                let mut sub_stack: Vec<JValue> = Vec::with_capacity(8);
+                stack.push(run_inner(
+                    &sub_programs[*idx as usize],
+                    &context,
+                    vars,
+                    &mut sub_stack,
+                    options,
+                    start_time,
+                )?);
                 ip += 1;
             }
             Instr::BlockEnd(n) => {
