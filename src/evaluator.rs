@@ -4600,6 +4600,10 @@ impl Evaluator {
 
         // Track whether we did array mapping (for singleton unwrapping)
         let mut did_array_mapping = false;
+        // Set when the last step's single contribution is an explicitly
+        // constructed array: jsonata-js's evaluateStep returns that array
+        // as the step result (no flatten, no later singleton unwrap).
+        let mut keep_singleton_array = false;
 
         // For the first step, work with a reference.
         // Tuple-binding first steps (e.g. `items#$i`, `foo@$v`) create a tuple
@@ -5491,6 +5495,14 @@ impl Evaluator {
                     }
                     let fa_result = match &current {
                         JValue::Array(arr) => {
+                            // Mapping over an array produces a sequence, so a
+                            // one-item result must unwrap at end-of-path exactly
+                            // like a `Name` step: `[{'b':1}].($)` is the object,
+                            // not `[object]`. `finalize_path_result` applies the
+                            // unwrap when `did_array_mapping` is set (or an array
+                            // op is present); without this flag the parenthesized
+                            // step kept its singleton array.
+                            did_array_mapping = true;
                             // Produce the mapped result (compiled fast path or tree-walker fallback).
                             // Do NOT return early — singleton unwrapping is applied by the outer
                             // path evaluation code after all steps are processed.
@@ -5548,9 +5560,36 @@ impl Evaluator {
                                 }
                                 result
                             };
-                            // Don't do singleton unwrapping here - let the path result
-                            // handling deal with it, which respects has_explicit_array_keep
-                            JValue::array(mapped)
+                            // jsonata-js evaluateStep flattens every array
+                            // contribution into the result sequence one level;
+                            // without this, nested map pipelines such as
+                            // `$outer.($inner.(...))` stay arrays of arrays
+                            // (issue #183).
+                            let is_last_step = step_idx == steps.len().saturating_sub(2);
+                            if is_last_step
+                                && mapped.len() == 1
+                                && matches!(mapped.first(), Some(JValue::Array(_)))
+                                && !Self::map_expr_produces_sequence(expr)
+                            {
+                                // Single explicitly constructed array result:
+                                // it IS the step result (jsonata-js
+                                // evaluateStep's `lastStep` branch), and a
+                                // later singleton unwrap must not collapse it:
+                                // `[{'b':1}].([$])` is `[{"b":1}]`, while
+                                // `[1].($ids.({'b': $}))` (an inner path, i.e.
+                                // a sequence) collapses to the object.
+                                keep_singleton_array = true;
+                                mapped.into_iter().next().unwrap()
+                            } else {
+                                let mut flat: Vec<JValue> = Vec::with_capacity(mapped.len());
+                                for value in mapped {
+                                    match value {
+                                        JValue::Array(items) => flat.extend(items.iter().cloned()),
+                                        other => flat.push(other),
+                                    }
+                                }
+                                JValue::array(flat)
+                            }
                         }
                         _ => {
                             // For non-arrays, bind $ and evaluate
@@ -5594,7 +5633,23 @@ impl Evaluator {
             };
         }
 
-        self.finalize_path_result(steps, current, did_array_mapping)
+        self.finalize_path_result(steps, current, did_array_mapping, keep_singleton_array)
+    }
+
+    /// True when the expression is a path (or a parenthesized path), i.e. it
+    /// produces a query-result sequence rather than a constructed array.
+    /// jsonata-js uses a sequence flag for this in `evaluateStep`'s last-step
+    /// single-array rule; without value-level flags this engine approximates it
+    /// from the AST shape.
+    fn map_expr_produces_sequence(node: &AstNode) -> bool {
+        match node {
+            AstNode::Path { .. } => true,
+            AstNode::Block(expressions) => expressions
+                .last()
+                .is_some_and(Self::map_expr_produces_sequence),
+            AstNode::FunctionApplication(inner) => Self::map_expr_produces_sequence(inner),
+            _ => false,
+        }
     }
 
     /// End-of-path result policy, applied once after the step loop: project a
@@ -5609,6 +5664,7 @@ impl Evaluator {
         steps: &[PathStep],
         mut current: JValue,
         did_array_mapping: bool,
+        keep_singleton_array: bool,
     ) -> Result<JValue, EvaluatorError> {
         // End-of-path tuple projection, mirroring jsonata-js evaluatePath
         // (jsonata.js ~L202-212): once the path is a tuple stream, its VISIBLE
@@ -5691,7 +5747,9 @@ impl Evaluator {
                 || matches!(&step.node, AstNode::Predicate(p) if !matches!(**p, AstNode::Number(_)))
                 || matches!(&step.node, AstNode::Descendant | AstNode::Wildcard)
         });
-        let should_unwrap = !has_explicit_array_keep && (has_array_op || did_array_mapping);
+        let should_unwrap = !has_explicit_array_keep
+            && !keep_singleton_array
+            && (has_array_op || did_array_mapping);
 
         let result = match &current {
             // An empty result sequence is "no value" -> undefined (jsonata-js
