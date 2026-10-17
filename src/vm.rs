@@ -540,16 +540,18 @@ fn run_inner(
                 ip += 1;
             }
             Instr::ConstructObject(idx) => {
+                // The body leaves the stack as it found it but for the
+                // object it pushes, which `run_inner` pops and returns.
                 let context = object_context(data);
-                let mut sub_stack: Vec<JValue> = Vec::with_capacity(8);
-                stack.push(run_inner(
+                let object = run_inner(
                     &sub_programs[*idx as usize],
                     &context,
                     vars,
-                    &mut sub_stack,
+                    stack,
                     options,
                     start_time,
-                )?);
+                )?;
+                stack.push(object);
                 ip += 1;
             }
             Instr::BlockEnd(n) => {

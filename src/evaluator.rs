@@ -631,7 +631,8 @@ fn try_compile_expr_inner(node: &AstNode, allowed_vars: Option<&[&str]>) -> Opti
             // Instr::MakeObject's operand is a u16 element count - bail out
             // to the (always-correct, no-limit) tree-walker rather than
             // silently truncating via CompiledExpr::ObjectConstruct here.
-            if pairs.len() > u16::MAX as usize {
+            // Duplicate literal keys raise D1009, which the tree-walker reports.
+            if pairs.len() > u16::MAX as usize || duplicate_literal_key(pairs).is_some() {
                 return None;
             }
             let mut fields = Vec::with_capacity(pairs.len());
@@ -1880,7 +1881,10 @@ fn compiled_eval_field_path(
     let (start, mut result) = if per_item {
         (0, JValue::Undefined)
     } else {
-        walk_single_values(steps.iter().map(|s| (&*s.field, s.filter.is_none())), data)?
+        match walk_single_values(steps.iter().map(|s| (&*s.field, s.filter.is_none())), data)? {
+            Some(walked) => walked,
+            None => return Ok(JValue::Undefined),
+        }
     };
     if start == steps.len() {
         return Ok(result);
@@ -1940,14 +1944,14 @@ fn compiled_eval_field_path(
 /// value, looking each field up directly while the value is a single plain
 /// object and the step is `plain` (has no filter or other stage). Returns how
 /// many steps were taken and the value reached, which the general step loop
-/// continues from. This is exactly what jsonata-js gives: a one-item input
+/// continues from, or `None` once a field is missing (the path is undefined). This is exactly what jsonata-js gives: a one-item input
 /// either unwraps to the field's value or, when that value is an array, maps
 /// the next step over its items, as it does over the array itself; and the
 /// last-step rule returns a final array value as is.
 fn walk_single_values<'a>(
     steps: impl Iterator<Item = (&'a str, bool)>,
     data: &JValue,
-) -> Result<(usize, JValue), EvaluatorError> {
+) -> Result<Option<(usize, JValue)>, EvaluatorError> {
     let mut value = data.clone();
     let mut taken = 0;
     for (field, plain) in steps {
@@ -1964,10 +1968,10 @@ fn walk_single_values<'a>(
         };
         taken += 1;
         if value.is_undefined() {
-            return Ok((usize::MAX, JValue::Undefined));
+            return Ok(None);
         }
     }
-    Ok((taken, value))
+    Ok(Some((taken, value)))
 }
 
 /// The value of `field` in each of `items` that has one, in order: jsonata-js
@@ -2859,16 +2863,47 @@ fn callback_array_arg(input: &JValue, items: &[JValue]) -> JValue {
 
 /// What an object constructor evaluates a value over when every item of its
 /// input is in that pair's group, as with a literal key (jsonata-js
-/// `evaluateGroupExpression`). A value that is not an array is the one item.
-/// The top-level input's wrapper holds one item, the bare array. Any other
-/// array is its items, an empty one holding a single undefined item.
+/// `evaluateGroupExpression`): the context of a group of all its items
+/// (`group_items`). A value that is not an array is its own context.
 pub(crate) fn object_context(data: &JValue) -> Cow<'_, JValue> {
     match data {
-        JValue::Array(arr) if arr.outer_wrapper => Cow::Owned(data.bare()),
-        JValue::Array(arr) if arr.is_empty() => Cow::Owned(JValue::Undefined),
-        JValue::Array(arr) => Cow::Owned(group_context(arr)),
+        JValue::Array(_) => Cow::Owned(group_context(&group_items(data))),
         _ => Cow::Borrowed(data),
     }
+}
+
+/// The items an object constructor groups (jsonata-js
+/// `evaluateGroupExpression`): a value that is not an array is the one item,
+/// the top-level input's wrapper holds the bare array, and an empty array
+/// holds a single undefined item.
+fn group_items(data: &JValue) -> Cow<'_, [JValue]> {
+    match data {
+        JValue::Array(arr) if arr.outer_wrapper => Cow::Owned(vec![data.bare()]),
+        JValue::Array(arr) if arr.is_empty() => Cow::Owned(vec![JValue::Undefined]),
+        JValue::Array(arr) => Cow::Borrowed(arr.as_slice()),
+        other => Cow::Borrowed(std::slice::from_ref(other)),
+    }
+}
+
+/// The first literal key that more than one pair of an object constructor
+/// uses: jsonata-js raises D1009 for it, whatever the input.
+fn duplicate_literal_key(pairs: &[(AstNode, AstNode)]) -> Option<&str> {
+    let key = |index: usize| match &pairs[index].0 {
+        AstNode::String(key) => Some(&**key),
+        _ => None,
+    };
+    if pairs.len() <= 16 {
+        return (1..pairs.len()).find_map(|i| key(i).filter(|k| (0..i).any(|j| key(j) == Some(k))));
+    }
+    let mut seen = HashSet::with_capacity(pairs.len());
+    (0..pairs.len()).find_map(|i| key(i).filter(|k| !seen.insert(*k)))
+}
+
+fn duplicate_key_error(key: &str) -> EvaluatorError {
+    EvaluatorError::EvaluationError(format!(
+        "D1009: Multiple key expressions evaluate to same key: {}",
+        key
+    ))
 }
 
 /// The value jsonata-js gives a group of items: the item itself when there
@@ -4018,7 +4053,6 @@ impl Evaluator {
                         // Evaluate key with current item as context
                         let key = match self.evaluate_internal(key_node, &key_data)? {
                             JValue::String(s) => s,
-                            JValue::Null => continue, // Skip null keys
                             other => {
                                 // Skip undefined keys
                                 if other.is_undefined() {
@@ -4402,6 +4436,22 @@ impl Evaluator {
         steps: &[PathStep],
         data: &JValue,
     ) -> Result<JValue, EvaluatorError> {
+        // A request to keep tuple streams is for this path only, not for the
+        // expressions its steps evaluate.
+        let keep_tuple_stream = std::mem::replace(&mut self.keep_tuple_stream, false);
+        let result = self.evaluate_path_steps(steps, data, keep_tuple_stream);
+        self.keep_tuple_stream = keep_tuple_stream;
+        result
+    }
+
+    /// `evaluate_path`, with `keep_tuple_stream` saying whether a tuple
+    /// stream result is returned as its tuples rather than their values.
+    fn evaluate_path_steps(
+        &mut self,
+        steps: &[PathStep],
+        data: &JValue,
+        keep_tuple_stream: bool,
+    ) -> Result<JValue, EvaluatorError> {
         let Some(first) = steps.first() else {
             return Ok(data.clone());
         };
@@ -4489,7 +4539,7 @@ impl Evaluator {
                 // giving one tuple per item (jsonata-js `evaluateTupleStep`).
                 if let (Some(stream), AstNode::Name(field)) = (&tuples, &step.node) {
                     if index + 1 == steps.len()
-                        && !self.keep_tuple_stream
+                        && !keep_tuple_stream
                         && step.stages.is_empty()
                         && !Self::step_creates_tuple(step)
                     {
@@ -4552,8 +4602,7 @@ impl Evaluator {
             // A step that returns a tuple stream (a sort lifted out of a tuple
             // path, or any step while an enclosing sort or group-by keeps
             // tuple streams) puts the rest of the path in tuple mode.
-            let may_return_tuples =
-                self.keep_tuple_stream || matches!(step.node, AstNode::Sort { .. });
+            let may_return_tuples = keep_tuple_stream || matches!(step.node, AstNode::Sort { .. });
             if let (JValue::Array(arr), true) = (&result, may_return_tuples) {
                 if arr
                     .first()
@@ -4566,7 +4615,7 @@ impl Evaluator {
         }
 
         if let Some(stream) = tuples {
-            result = if self.keep_tuple_stream {
+            result = if keep_tuple_stream {
                 // An enclosing sort or group-by reads the carried bindings.
                 JValue::array(stream)
             } else {
@@ -4657,9 +4706,17 @@ impl Evaluator {
         items: &[JValue],
     ) -> Result<Vec<JValue>, EvaluatorError> {
         // Compiling costs about one tree evaluation and isn't cached, so it
-        // only pays off over several items.
+        // only pays off over several items. A compiled call reaches the
+        // builtin directly, so a node calling a name bound here (a builtin
+        // shadowed by `:=`) stays on the tree-walker.
         let compiled = match node {
             _ if items.len() < 2 => None,
+            _ if Self::collect_free_variables(node, &[])
+                .iter()
+                .any(|name| self.context.lookup(name).is_some()) =>
+            {
+                None
+            }
             AstNode::Object(_) => try_compile_expr(node),
             AstNode::FunctionApplication(expr) => try_compile_expr(expr),
             _ => None,
@@ -4696,6 +4753,9 @@ impl Evaluator {
             .iter()
             .all(|(key, _)| matches!(key, AstNode::String(_)))
         {
+            if let Some(key) = duplicate_literal_key(pairs) {
+                return Err(duplicate_key_error(key));
+            }
             let context = object_context(data);
             let mut result = IndexMap::with_capacity(pairs.len());
             for (key, value) in pairs {
@@ -4710,23 +4770,14 @@ impl Evaluator {
             return Ok(JValue::object(result));
         }
 
-        let bare;
-        let items: &[JValue] = match data {
-            JValue::Array(arr) if arr.outer_wrapper => {
-                bare = data.bare();
-                std::slice::from_ref(&bare)
-            }
-            JValue::Array(arr) if arr.is_empty() => &[JValue::Undefined],
-            JValue::Array(arr) => arr,
-            other => std::slice::from_ref(other),
-        };
+        let items = group_items(data);
         // Each key's pair and the items grouped under it, in first-seen order.
         let mut groups: IndexMap<String, (usize, Vec<JValue>)> = IndexMap::new();
-        for item in items {
+        for item in items.iter() {
             for (pair_index, (key, _)) in pairs.iter().enumerate() {
                 let key = match self.evaluate_internal(key, item)? {
                     JValue::String(key) => key,
-                    JValue::Null | JValue::Undefined => continue,
+                    JValue::Undefined => continue,
                     other => {
                         return Err(EvaluatorError::TypeError(format!(
                             "T1003: Key in object structure must evaluate to a string; got: {:?}",
@@ -4736,10 +4787,7 @@ impl Evaluator {
                 };
                 match groups.get_mut(&*key) {
                     Some((index, _)) if *index != pair_index => {
-                        return Err(EvaluatorError::EvaluationError(format!(
-                            "D1009: Multiple key expressions evaluate to same key: {}",
-                            key
-                        )));
+                        return Err(duplicate_key_error(&key));
                     }
                     Some((_, group)) => group.push(item.clone()),
                     None => {
@@ -5035,7 +5083,15 @@ impl Evaluator {
         // and re-tuples with the index = sorted position, mirroring jsonata-js
         // evaluateTupleStep's `sort` case. `$^($)#$pos[$pos<3]` must sort the
         // array, then number the sorted values, then filter by `$pos`.
-        if let AstNode::Sort { terms, .. } = &step.node {
+        if let AstNode::Sort {
+            input: sort_input,
+            terms,
+        } = &step.node
+        {
+            // A sort of a tuple stream keeps its tuples' bindings and adds no
+            // index; jsonata-js numbers only a sort that starts a stream.
+            let sorts_tuples = is_tuple_input
+                || matches!(&**sort_input, AstNode::Path { steps } if Self::is_tuple_path(steps));
             let sorted = if is_tuple_input {
                 let stream = JValue::array(
                     incoming
@@ -5049,13 +5105,9 @@ impl Evaluator {
                 self.evaluate_sort(&stream, terms)?
             } else {
                 // The sort's own input path (`arr` in `arr^($)#$i`) gives what
-                // it orders; its tuple wrappers are kept so their bindings
-                // carry into the new stream.
-                let saved_keep = self.keep_tuple_stream;
-                self.keep_tuple_stream = true;
-                let sorted = self.evaluate_internal(&step.node, input);
-                self.keep_tuple_stream = saved_keep;
-                sorted?
+                // it orders. Over a tuple path the sort returns the tuples,
+                // whose bindings carry into the new stream.
+                self.evaluate_internal(&step.node, input)?
             };
             let sorted_arr: Vec<JValue> = match sorted {
                 JValue::Array(a) => a.iter().cloned().collect(),
@@ -5064,13 +5116,15 @@ impl Evaluator {
             };
             let mut result = Vec::new();
             for (ss, elem) in sorted_arr.into_iter().enumerate() {
-                // jsonata-js numbers only a sort that starts a tuple stream; a
-                // sort of tuples keeps their bindings and adds no index.
                 let mut new_tuple = match elem {
-                    JValue::Object(o) if is_tuple_object(&o) => (*o).clone(),
+                    JValue::Object(o) if sorts_tuples && is_tuple_object(&o) => (*o).clone(),
                     other => {
+                        let value = match &other {
+                            JValue::Object(o) if is_tuple_object(o) => tuple_focus_value(&other),
+                            _ => other,
+                        };
                         let mut m = IndexMap::new();
-                        m.insert("@".to_string(), other);
+                        m.insert("@".to_string(), value);
                         if let Some(index_var) = &step.index_var {
                             m.insert(format!("${}", index_var), JValue::from(ss as i64));
                         }

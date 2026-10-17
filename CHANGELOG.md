@@ -56,6 +56,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   positions and so tested the wrong field on objects ordered differently.
 - **Index binding on a sort numbers the sorted items**: `arr^($)#$i` is the sorted array and
   `$i` its positions, where it used to return the input object.
+- **Object keys that are null or repeated raise jsonata-js's errors**: a null key is `T1003`
+  (it used to be skipped), and two pairs with the same literal key are `D1009` (the later
+  value used to win).
 
 - **`unknown(function)` now reports `T1006`** ("Attempted to invoke a non-function") instead of
   `S0202`. The `function` keyword in argument position used to commit the parser to a lambda,

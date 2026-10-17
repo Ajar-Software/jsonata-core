@@ -114,6 +114,15 @@ const EXTRA = [
   // Object constructors over arrays group their items.
   'n.{"x": $}', 'het.[a].{"x": $}', 'o.t.{"x": $}', '[[1, 2], [3]].{"x": $}', 'n{"x": $}',
   'het.{"k": $string(a)}.k', '$.{"x": het.a}', '[$].{"x": v}',
+  // Keys that are null or repeated.
+  '{null: 1}', 'objs.{(p = 1 ? null : "k"): p}', '{"a": 1, "a": 2}', 'objs.{"a": p, "a": 2}',
+  '{"a": 1, "b": 2, "a": nope}', 'false ? {"a": 1, "a": 2} : 0', 'objs{"a": p, "a": 1}',
+  // A builtin shadowed by a binding, over several items.
+  '($string := function($x) { "z" }; objs.{"r": $string(p)})',
+  '($sum := function($x) { 0 }; objs.($sum(p)))', '($k := 2; objs.{"r": p * $k})',
+  // Tuple-producing paths inside a sort with an index.
+  'objs^(>p)#$i[$i = 0].p', '(o.(t#$k[$k = 0]))^($)#$i.{"v": $, "i": $i}',
+  'o^(>t#$k[$k = 0])#$i.{"i": $i}', 'o.{"r": t#$k[$k = 0]}^(>r)#$i.{"r": r, "i": $i}',
 ];
 
 // The same questions with a top-level array as input. jsonata-js wraps that

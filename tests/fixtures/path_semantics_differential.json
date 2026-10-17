@@ -5259,6 +5259,116 @@
    }
   },
   {
+   "expression": "{null: 1}",
+   "result": {
+    "$error": "T1003"
+   }
+  },
+  {
+   "expression": "objs.{(p = 1 ? null : \"k\"): p}",
+   "result": {
+    "$error": "T1003"
+   }
+  },
+  {
+   "expression": "{\"a\": 1, \"a\": 2}",
+   "result": {
+    "$error": "D1009"
+   }
+  },
+  {
+   "expression": "objs.{\"a\": p, \"a\": 2}",
+   "result": {
+    "$error": "D1009"
+   }
+  },
+  {
+   "expression": "{\"a\": 1, \"b\": 2, \"a\": nope}",
+   "result": {
+    "$error": "D1009"
+   }
+  },
+  {
+   "expression": "false ? {\"a\": 1, \"a\": 2} : 0",
+   "result": 0
+  },
+  {
+   "expression": "objs{\"a\": p, \"a\": 1}",
+   "result": {
+    "$error": "D1009"
+   }
+  },
+  {
+   "expression": "($string := function($x) { \"z\" }; objs.{\"r\": $string(p)})",
+   "result": [
+    {
+     "r": "z"
+    },
+    {
+     "r": "z"
+    }
+   ]
+  },
+  {
+   "expression": "($sum := function($x) { 0 }; objs.($sum(p)))",
+   "result": [
+    0,
+    0
+   ]
+  },
+  {
+   "expression": "($k := 2; objs.{\"r\": p * $k})",
+   "result": [
+    {
+     "r": 2
+    },
+    {
+     "r": 4
+    }
+   ]
+  },
+  {
+   "expression": "objs^(>p)#$i[$i = 0].p",
+   "result": 2
+  },
+  {
+   "expression": "(o.(t#$k[$k = 0]))^($)#$i.{\"v\": $, \"i\": $i}",
+   "result": [
+    {
+     "v": "x",
+     "i": 0
+    },
+    {
+     "v": "y",
+     "i": 1
+    }
+   ]
+  },
+  {
+   "expression": "o^(>t#$k[$k = 0])#$i.{\"i\": $i}",
+   "result": [
+    {
+     "i": 0
+    },
+    {
+     "i": 1
+    }
+   ]
+  },
+  {
+   "expression": "o.{\"r\": t#$k[$k = 0]}^(>r)#$i.{\"r\": r, \"i\": $i}",
+   "result": [
+    {
+     "r": "y",
+     "i": 0
+    },
+    {
+     "r": "x",
+     "i": 1
+    }
+   ]
+  },
+  {
    "expression": "a",
    "root": true,
    "result": [
