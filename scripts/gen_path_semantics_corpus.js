@@ -156,6 +156,10 @@ const EXTRA = [
   '$match("abc", function($s) { {"match": "x", "start": 0, "groups": [], "next": function() { undefined }} })',
   '$match("abc", function($s) { {"match": "x", "start": 0, "groups": [], "next": function() { "str" }} }, 1)',
   '($o := {"f": function($s) { {"match": "b", "start": 1, "groups": [], "next": function() { undefined }} }}; $match("abc", $o.f))',
+  // `a ?? b` is `$exists(a) ? a : b` (#195): errors on the left propagate.
+  '$error("x") ?? 1', '(($x := 5; $error("e")) ?? $x)', 'nope.(1/0) ?? 2', '$string(nope) ?? 1',
+  '(nope) ?? 2', '$lookup({}, "a") ?? 3', 'null ?? 4', '[nope][0] ?? 5', 'false ?? 6', '0 ?? 7',
+  '"" ?? 8', '[] ?? 9', 'nope ?? nope2 ?? 10', 'e.x ?? v', 'a.b ?? 0', 'arr[$ > 5] ?? "none"',
 ];
 
 // The same questions with a top-level array as input. jsonata-js wraps that

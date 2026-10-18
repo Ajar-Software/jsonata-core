@@ -49,6 +49,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`??` propagates errors and coalesces any undefined value**, as jsonata-js does
+  ([#195](https://github.com/txjmb/jsonata-core/issues/195)). jsonata-js reads `a ?? b` as
+  `$exists(a) ? a : b`. `$error("x") ?? 1` used to swallow the error and give `1`, and the right
+  side could then see variables left bound by the failed left side. An undefined left side that
+  isn't a path or a variable, such as `$lookup({}, "a") ?? 3`, used to give undefined instead of
+  `3`.
+- **A failed evaluation leaves an `Evaluator` as it found it.** Scopes and temporary bindings
+  that an error skipped popping are restored, so an evaluator reused through the Rust API
+  doesn't see variables, or a stale `$`, from an earlier evaluation that failed.
 - **`$match` returns every match**, as jsonata-js does ([#194](https://github.com/txjmb/jsonata-core/issues/194)).
   jsonata-js regexes are always global, so `$match("aba", /a/)` gives both matches, not only
   the first, and the limit argument caps how many are returned. Each match object now always

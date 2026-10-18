@@ -2598,6 +2598,7 @@ impl StoredLambda {
 }
 
 /// A single scope in the scope stack
+#[derive(Clone)]
 struct Scope {
     bindings: HashMap<String, JValue>,
 }
@@ -2614,6 +2615,7 @@ impl Scope {
 ///
 /// Holds variable bindings and other state needed during evaluation.
 /// Uses a scope stack for efficient push/pop instead of clone/restore.
+#[derive(Clone)]
 pub struct Context {
     scope_stack: Vec<Scope>,
     parent_data: Option<JValue>,
@@ -3728,7 +3730,27 @@ impl Evaluator {
     /// a bare (or object/array-nested) tuple-producing expression would leak
     /// that internal representation into user-visible output instead of the
     /// plain value.
+    ///
+    /// A failed evaluation leaves the evaluator as it found it. The scopes and
+    /// temporary bindings an evaluation pushes are popped on its normal path
+    /// only, but nothing inside an evaluation catches an error, so restoring
+    /// the context here, the one place every error passes, undoes whatever
+    /// an error skipped.
     pub fn evaluate(&mut self, node: &AstNode, data: &JValue) -> Result<JValue, EvaluatorError> {
+        let entry_context = self.context.clone();
+        let result = self.evaluate_from_entry(node, data);
+        if result.is_err() {
+            self.context = entry_context;
+            self.keep_tuple_stream = false;
+        }
+        result
+    }
+
+    fn evaluate_from_entry(
+        &mut self,
+        node: &AstNode,
+        data: &JValue,
+    ) -> Result<JValue, EvaluatorError> {
         // Set parent context to root data if not already set
         if self.context.get_parent().is_none() {
             self.context.set_parent(data.clone());
@@ -5380,33 +5402,15 @@ impl Evaluator {
     ) -> Result<JValue, EvaluatorError> {
         use crate::ast::BinaryOp;
 
-        // Special handling for coalescing operator (??)
-        // Returns right side if left is undefined (produces no value)
-        // Note: literal null is a value, so it's NOT replaced
+        // Coalescing (`??`): jsonata-js parses `a ?? b` as
+        // `$exists(a) ? a : b`, so an undefined left side gives the right
+        // one, null included as a value, and an error on the left propagates.
         if op == BinaryOp::Coalesce {
-            // Try to evaluate the left side
-            return match self.evaluate_internal(lhs, data) {
-                Ok(value) => {
-                    // Successfully evaluated to a value (even if it's null)
-                    // Check if LHS is a literal null - keep it (null is a value, not undefined)
-                    if matches!(lhs, AstNode::Null) {
-                        Ok(value)
-                    }
-                    // For paths and variables, undefined (no match/unbound) - use RHS
-                    else if value.is_undefined()
-                        && (matches!(lhs, AstNode::Path { .. })
-                            || matches!(lhs, AstNode::String(_))
-                            || matches!(lhs, AstNode::Variable(_)))
-                    {
-                        self.evaluate_internal(rhs, data)
-                    } else {
-                        Ok(value)
-                    }
-                }
-                Err(_) => {
-                    // Evaluation failed (e.g., undefined variable) - use RHS
-                    self.evaluate_internal(rhs, data)
-                }
+            let value = self.evaluate_internal(lhs, data)?;
+            return if value.is_undefined() {
+                self.evaluate_internal(rhs, data)
+            } else {
+                Ok(value)
             };
         }
 
