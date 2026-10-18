@@ -4433,16 +4433,19 @@ impl Evaluator {
                 // the function is invoked (`invoke_transform`). Being an
                 // ordinary value, it can be bound to a variable, passed
                 // around, and applied via `~>`.
+                // Like a lambda, it closes over the variables it uses.
+                let body = AstNode::Transform {
+                    location: location.clone(),
+                    update: update.clone(),
+                    delete: delete.clone(),
+                };
+                let captured_env = self.capture_environment_for(&body, &[]);
                 let transform_lambda = StoredLambda {
                     params: vec![TRANSFORM_INPUT.to_string()],
-                    body: AstNode::Transform {
-                        location: location.clone(),
-                        update: update.clone(),
-                        delete: delete.clone(),
-                    },
+                    body,
                     compiled_body: None, // Transform is not a pure compilable expr
                     signature: None,
-                    captured_env: HashMap::new(),
+                    captured_env,
                     captured_data: None, // Transform takes $ as parameter
                     thunk: false,
                     self_name: None,
@@ -4576,9 +4579,10 @@ impl Evaluator {
     /// `f ~> g` for two functions: the function `λ($x) { g(f($x)) }`, as
     /// jsonata-js builds from its `chainAST`.
     fn compose_functions(f: JValue, g: JValue) -> JValue {
+        // Names no expression binds: `$x` would be visible to f and g.
         const F: &str = "__chain_f";
         const G: &str = "__chain_g";
-        const X: &str = "x";
+        const X: &str = "__chain_x";
         let call = |name: &str, arg: AstNode| AstNode::Function {
             name: name.to_string(),
             args: vec![arg],
@@ -7008,6 +7012,23 @@ impl Evaluator {
                     }
                 }
             }
+            // A composition (`$sum ~> $string`) or a transform evaluates to a
+            // function value, which is called. A `~>` that doesn't give a
+            // function falls back to the arm below.
+            AstNode::Binary {
+                op: BinaryOp::ChainPipe,
+                ..
+            }
+            | AstNode::Transform { .. } => {
+                let value = self.evaluate_internal(func_node, data)?;
+                if value.is_function() {
+                    return self.call_function_value(&value, values, data);
+                }
+                match values.first() {
+                    Some(first) => self.evaluate_internal(func_node, first),
+                    None => Ok(value),
+                }
+            }
             _ => {
                 // For non-lambda expressions, evaluate with first value as context
                 if values.is_empty() {
@@ -7020,7 +7041,8 @@ impl Evaluator {
     }
 
     /// Run a transform's function value (built by the `Transform` arm) on
-    /// its argument, with `$` bound to it. `None` for any other lambda.
+    /// its argument, in a scope holding the variables it closed over and
+    /// with `$` bound to the argument. `None` for any other lambda.
     fn invoke_transform(
         &mut self,
         stored: &StoredLambda,
@@ -7038,9 +7060,15 @@ impl Evaluator {
             return None;
         }
         let input = args.first().cloned().unwrap_or(JValue::Undefined);
-        Some(self.with_dollar(&input, |ev| {
+        self.context.push_scope();
+        for (name, value) in &stored.captured_env {
+            self.context.bind(name.clone(), value.clone());
+        }
+        let result = self.with_dollar(&input, |ev| {
             ev.execute_transform(location, update, delete.as_deref(), &input)
-        }))
+        });
+        self.context.pop_scope();
+        Some(result)
     }
 
     /// Execute a transform operator on `input`, following jsonata-js
@@ -7979,15 +8007,37 @@ impl Evaluator {
 
         // The other nine ($map, $filter, $reduce, $single, $sift, $each,
         // $sort, $match, $replace) take AST arguments and call back into
-        // evaluation, so they cannot run from already-evaluated values. That
-        // is not a gap: each needs a *function* argument, and a higher-order
-        // function hands its callback a value and an index, so jsonata-js
-        // rejects these on the signature too. It raises T0410 -- which is
-        // what this used to get wrong, reporting an uncoded error instead.
-        Err(EvaluatorError::TypeError(format!(
-            "T0410: Argument 2 of function {} does not match function signature",
-            name
-        )))
+        // evaluation. Called by value (`[3,1,2] ~> $sort`, `$f := $single`),
+        // they go through the same call a direct `$sort(...)` makes, so they
+        // validate their arguments the same way.
+        self.call_named_with_values(name, true, values, context)
+    }
+
+    /// Call the function `name` by name with already-evaluated `values`,
+    /// exactly as a direct call would: builtins, host functions, shadowing
+    /// bindings and per-function special cases included. The call takes AST
+    /// arguments, so the values are passed through temporary bindings in a
+    /// scope of their own.
+    fn call_named_with_values(
+        &mut self,
+        name: &str,
+        is_builtin: bool,
+        values: &[JValue],
+        data: &JValue,
+    ) -> Result<JValue, EvaluatorError> {
+        self.context.push_scope();
+        let temp_args: Vec<AstNode> = values
+            .iter()
+            .enumerate()
+            .map(|(i, value)| {
+                let temp_name = format!("__temp_arg_{i}");
+                self.context.bind(temp_name.clone(), value.clone());
+                AstNode::Variable(temp_name)
+            })
+            .collect();
+        let result = self.evaluate_function_call(name, &temp_args, is_builtin, data);
+        self.context.pop_scope();
+        result
     }
 
     /// `$eval(expression [, focus])` -- parse and evaluate a JSONata
@@ -8727,20 +8777,7 @@ impl Evaluator {
                 self.invoke_stored_lambda(&stored, &full_args, data)
             }
             PartialTarget::Named { name, is_builtin } => {
-                // Route through evaluate_function_call so builtins, host fns,
-                // late shadowing bindings and per-function special cases all
-                // behave exactly as a direct call would. It takes AST
-                // arguments, so pass the values via temporary bindings.
-                self.context.push_scope();
-                let mut temp_args: Vec<AstNode> = Vec::with_capacity(full_args.len());
-                for (i, value) in full_args.iter().enumerate() {
-                    let temp_name = format!("__temp_arg_{}", i);
-                    self.context.bind(temp_name.clone(), value.clone());
-                    temp_args.push(AstNode::Variable(temp_name));
-                }
-                let result = self.evaluate_function_call(name, &temp_args, *is_builtin, data);
-                self.context.pop_scope();
-                result
+                self.call_named_with_values(name, *is_builtin, &full_args, data)
             }
         }
     }

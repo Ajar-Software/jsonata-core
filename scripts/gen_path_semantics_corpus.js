@@ -189,6 +189,12 @@ const EXTRA = [
   'm ~> |k|{"c": $$.x ~> |$|{"d": 1}|}|',
   'objs.(|$|{"q": 1}|) ~> $type()', '[1].($ ~> |x|{}|)',
   '($t := |$|{"w": 1}|; $f := function($v) { $t($v) }; $f(x))',
+  '($mk := function($n) { |$|{"w": $n}| }; $t := $mk(5); x ~> $t)', '$map([x], |$|{"w": 1}|)',
+  '($t := |$|{"w": $v}|; $f := function($v) { $t(x) }; $f(1))',
+  // A builtin applied by value runs as a direct call does.
+  '[3, 1, 2] ~> $sort', 'arr ~> $sort ~> $reverse', '[3] ~> $single', '($f := $sort; $f([2, 1]))',
+  '$map([1, 2], $sort)', '$map(n, $sum ~> $string)', '$filter(n, $count ~> function($c) { $c > 1 })',
+  '($f := function($v) { $exists($x) }; arr ~> ($sum ~> $f))',
 ];
 
 // The same questions with a top-level array as input. jsonata-js wraps that

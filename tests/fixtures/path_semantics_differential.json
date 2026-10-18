@@ -6684,6 +6684,83 @@
    }
   },
   {
+   "expression": "($mk := function($n) { |$|{\"w\": $n}| }; $t := $mk(5); x ~> $t)",
+   "result": {
+    "y": [
+     1
+    ],
+    "w": 5
+   }
+  },
+  {
+   "expression": "$map([x], |$|{\"w\": 1}|)",
+   "result": {
+    "y": [
+     1
+    ],
+    "w": 1
+   }
+  },
+  {
+   "expression": "($t := |$|{\"w\": $v}|; $f := function($v) { $t(x) }; $f(1))",
+   "result": {
+    "y": [
+     1
+    ]
+   }
+  },
+  {
+   "expression": "[3, 1, 2] ~> $sort",
+   "result": [
+    1,
+    2,
+    3
+   ]
+  },
+  {
+   "expression": "arr ~> $sort ~> $reverse",
+   "result": [
+    3,
+    2,
+    1
+   ]
+  },
+  {
+   "expression": "[3] ~> $single",
+   "result": 3
+  },
+  {
+   "expression": "($f := $sort; $f([2, 1]))",
+   "result": [
+    1,
+    2
+   ]
+  },
+  {
+   "expression": "$map([1, 2], $sort)",
+   "result": {
+    "$error": "T0410"
+   }
+  },
+  {
+   "expression": "$map(n, $sum ~> $string)",
+   "result": [
+    "3",
+    "3"
+   ]
+  },
+  {
+   "expression": "$filter(n, $count ~> function($c) { $c > 1 })",
+   "result": [
+    1,
+    2
+   ]
+  },
+  {
+   "expression": "($f := function($v) { $exists($x) }; arr ~> ($sum ~> $f))",
+   "result": false
+  },
+  {
    "expression": "a",
    "root": true,
    "result": [

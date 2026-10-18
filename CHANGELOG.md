@@ -63,7 +63,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **A transform is always a function value that runs when invoked**, as in jsonata-js. It used
   to run at once wherever `$` was bound, so a `~>` into a transform inside another transform's
   update, or `a.(|x|{}|)`, ran it on the wrong input. `$` in a transform's update is now the
-  matched object, not the transform's input.
+  matched object, not the transform's input. Like a lambda, it closes over the variables it
+  uses, and written directly as a higher-order function's argument it is called, as a
+  composition such as `$map(n, $sum ~> $string)` now is.
+- **`$sort`, `$single` and the other higher-order builtins can be called by value**:
+  `[3,1,2] ~> $sort`, `$f := $single` and `$sort ~> $reverse` used to raise T0410. They now run
+  as a direct call does, validating their arguments the same way.
 - **A host function named without a call is a function value**, as a builtin is, so
   `5 ~> $dbl`, `$f := $dbl` and `$map(arr, $dbl)` work for a function registered with
   `register`.
