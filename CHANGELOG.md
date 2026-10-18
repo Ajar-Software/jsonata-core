@@ -55,13 +55,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   side could then see variables left bound by the failed left side. An undefined left side that
   isn't a path or a variable, such as `$lookup({}, "a") ?? 3`, used to give undefined instead of
   `3`.
-- **A failed evaluation leaves an `Evaluator` as it found it.** Scopes and temporary bindings
-  that an error skipped popping are restored, so an evaluator reused through the Rust API
-  doesn't see variables, or a stale `$`, from an earlier evaluation that failed. `$$` is each
-  evaluation's own input; a reused evaluator used to keep answering it from the first.
-- **A builtin's path argument is evaluated once.** A leftover check evaluated it a first time
-  and discarded any error, so `$string(a.($x := 1; $error("e")))`-style arguments could
-  succeed with bindings left over from the failed pass, where jsonata-js raises the error.
+- **Each evaluation runs in a scope of its own**, as jsonata-js runs each in a new frame. An
+  `Evaluator` reused through the Rust API used to keep what an earlier evaluation bound: a
+  top-level `$x := 1`, and on a failed evaluation any scope or temporary `$` an error skipped
+  popping. Bindings set on the `Context` beforehand are still visible. `$$` is each evaluation's
+  own input; a reused evaluator used to keep answering it from the first.
+- **A `.(...)` step's `:=` bindings stay in the step.** `($y := 1; a.($y := 5); $y)` is `1`, as
+  in jsonata-js; it used to be `5`.
+- **A builtin's arguments are all evaluated.** Two leftover checks returned early: one for an
+  unbound variable argument, which skipped the other arguments' errors and signature checks and
+  gave `null` rather than undefined (`{"x": $string($nope)}` is now `{}`); and one that
+  evaluated a path argument a first time, discarding any error, before evaluating it again.
 - **`$match` returns every match**, as jsonata-js does ([#194](https://github.com/txjmb/jsonata-core/issues/194)).
   jsonata-js regexes are always global, so `$match("aba", /a/)` gives both matches, not only
   the first, and the limit argument caps how many are returned. Each match object now always

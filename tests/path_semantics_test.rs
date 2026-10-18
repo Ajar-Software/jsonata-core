@@ -49,19 +49,29 @@ fn encode(v: &JValue) -> Value {
     }
 }
 
-fn is_error(v: &Value) -> bool {
-    v.get("$error").is_some()
+/// True for a jsonata-js error code such as `D3137`.
+fn is_code(s: &str) -> bool {
+    s.len() == 5
+        && s.starts_with(|c: char| c.is_ascii_uppercase())
+        && s[1..].bytes().all(|b| b.is_ascii_digit())
 }
 
-/// The jsonata-js error code a case expects (`D3137`), if it has one. Some
-/// expected errors are jsonata-js crashes with only a message; any error
-/// matches those.
-fn expected_code(v: &Value) -> Option<&str> {
-    let code = v.get("$error")?.as_str()?;
-    let is_code = code.len() == 5
-        && code.starts_with(|c: char| c.is_ascii_uppercase())
-        && code[1..].bytes().all(|b| b.is_ascii_digit());
-    is_code.then_some(code)
+/// The first error code in an error message (`Evaluation error: D3137: ...`).
+fn error_code(message: &str) -> Option<&str> {
+    message
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .find(|word| is_code(word))
+}
+
+/// Whether an error with `message` is the error a case expects. Some
+/// expected errors are jsonata-js crashes with only a message, not a code;
+/// any error matches those.
+fn error_matches(expected: &Value, message: &str) -> bool {
+    match expected.get("$error").and_then(Value::as_str) {
+        Some(code) if is_code(code) => error_code(message) == Some(code),
+        Some(_) => true,
+        None => false,
+    }
 }
 
 #[test]
@@ -84,7 +94,7 @@ fn path_semantics_match_jsonata_js() {
         let expr = match Expression::compile(src) {
             Ok(expr) => expr,
             Err(e) => {
-                if !is_error(&expected) {
+                if !error_matches(&expected, &e.to_string()) {
                     divergences.push(("compile", src.to_string()));
                     if verbose {
                         println!("compile  {src}\n    expected {expected}\n    error    {e}");
@@ -98,10 +108,7 @@ fn path_semantics_match_jsonata_js() {
         for (engine, result) in [("compiled", compiled), ("tree", tree)] {
             let matches = match &result {
                 Ok(v) => norm(&encode(v)) == expected,
-                Err(e) => match expected_code(&expected) {
-                    Some(code) => e.to_string().contains(code),
-                    None => is_error(&expected),
-                },
+                Err(e) => error_matches(&expected, &e.to_string()),
             };
             if !matches {
                 if verbose {

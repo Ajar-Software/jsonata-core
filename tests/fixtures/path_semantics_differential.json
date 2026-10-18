@@ -6360,6 +6360,58 @@
    "result": "none"
   },
   {
+   "expression": "$substring($nope, $error(\"e\"))",
+   "result": {
+    "$error": "D3137"
+   }
+  },
+  {
+   "expression": "$string($nope, $error(\"e\"))",
+   "result": {
+    "$error": "D3137"
+   }
+  },
+  {
+   "expression": "$substring($nope, \"x\")",
+   "result": {
+    "$error": "T0410"
+   }
+  },
+  {
+   "expression": "{\"x\": $string($nope)}",
+   "result": {}
+  },
+  {
+   "expression": "$type($not($nope))",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "$string(objs.(p).q)",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "(arr.($z := 3); $z)",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "arr.($z := $; $z * 2)",
+   "result": [
+    2,
+    4,
+    6
+   ]
+  },
+  {
+   "expression": "($y := 1; arr.($y := 5); $y)",
+   "result": 1
+  },
+  {
    "expression": "a",
    "root": true,
    "result": [

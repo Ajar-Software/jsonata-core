@@ -2598,7 +2598,6 @@ impl StoredLambda {
 }
 
 /// A single scope in the scope stack
-#[derive(Clone)]
 struct Scope {
     bindings: HashMap<String, JValue>,
 }
@@ -2615,7 +2614,6 @@ impl Scope {
 ///
 /// Holds variable bindings and other state needed during evaluation.
 /// Uses a scope stack for efficient push/pop instead of clone/restore.
-#[derive(Clone)]
 pub struct Context {
     scope_stack: Vec<Scope>,
     parent_data: Option<JValue>,
@@ -3731,28 +3729,28 @@ impl Evaluator {
     /// that internal representation into user-visible output instead of the
     /// plain value.
     ///
-    /// A failed evaluation leaves the evaluator as it found it. The scopes and
-    /// temporary bindings an evaluation pushes are popped on its normal path
-    /// only, but nothing inside an evaluation catches an error, so restoring
-    /// the context here, the one place every error passes, undoes whatever
-    /// an error skipped. `$$` is the evaluation's input unless the caller set
-    /// a parent on the context, so it doesn't outlive the evaluation either.
+    /// Each evaluation runs in a scope of its own, as jsonata-js runs each in
+    /// a new frame of its environment, so nothing it binds outlives it:
+    /// bindings made with `Context::bind` beforehand are visible, and those
+    /// the evaluation makes are gone afterwards, whether it succeeded or
+    /// failed. Bindings only ever go into the top scope, so dropping every
+    /// scope above the entry depth undoes all of them, including any an error
+    /// skipped popping. `$$` is the evaluation's input unless the caller set a
+    /// parent on the context.
     pub fn evaluate(&mut self, node: &AstNode, data: &JValue) -> Result<JValue, EvaluatorError> {
-        let entry_context = self.context.clone();
+        let entry_depth = self.context.scope_stack.len();
+        let caller_parent = self.context.get_parent().is_some();
+        self.context.push_scope();
         let result = self.evaluate_from_entry(node, data);
-        if result.is_err() {
-            self.context = entry_context;
-            self.keep_tuple_stream = false;
-            return result;
-        }
-        debug_assert_eq!(
-            self.context.scope_stack.len(),
-            entry_context.scope_stack.len(),
+        debug_assert!(
+            result.is_err() || self.context.scope_stack.len() == entry_depth + 1,
             "a successful evaluation pops every scope it pushes"
         );
-        if entry_context.get_parent().is_none() {
+        self.context.scope_stack.truncate(entry_depth);
+        if !caller_parent {
             self.context.parent_data = None;
         }
+        self.keep_tuple_stream = false;
         result
     }
 
@@ -4931,15 +4929,15 @@ impl Evaluator {
         match node {
             AstNode::Variable(name) if name.is_empty() => Ok(item.bare()),
             AstNode::FunctionApplication(expr) => {
-                // Always bound, not only over an outer `$`: the lambda-step
-                // desugaring (`x.function($v){...}()`) passes `$` explicitly.
-                let saved = self.context.lookup("$").cloned();
+                // A `.(...)` block runs in a scope of its own, as jsonata-js
+                // gives a block a frame, so its `:=` bindings don't reach the
+                // enclosing scope. `$` is bound there too, not only over an
+                // outer `$`: the lambda-step desugaring
+                // (`x.function($v){...}()`) passes `$` explicitly.
+                self.context.push_scope();
                 self.context.bind("$".to_string(), item.clone());
                 let result = self.evaluate_internal(expr, item);
-                match saved {
-                    Some(value) => self.context.bind("$".to_string(), value),
-                    None => self.context.unbind("$"),
-                }
+                self.context.pop_scope();
                 result
             }
             AstNode::ArrayGroup(elements) => {
@@ -6191,41 +6189,6 @@ impl Evaluator {
             // the literal form.
             let value = self.evaluate_internal(arg, data)?;
             return Ok(JValue::Bool(!value.is_undefined()));
-        }
-
-        // Check if any arguments are undefined variables or undefined paths
-        // Functions like $not() should return undefined when given undefined values
-        for arg in args {
-            // Check for undefined variable (e.g., $undefined_var)
-            if let AstNode::Variable(var_name) = arg {
-                // Skip built-in function names - they're function references, not undefined variables
-                if !var_name.is_empty()
-                    && !self.is_builtin_function(var_name)
-                    && self.context.lookup(var_name).is_none()
-                {
-                    // Undefined variable - for functions that should propagate undefined
-                    if propagates_undefined(name) {
-                        return Ok(JValue::Null); // Return undefined
-                    }
-                }
-            }
-            // Check for simple field name (e.g., blah) that evaluates to undefined
-            if let AstNode::Name(field_name) = arg {
-                let field_exists = matches!(data, JValue::Object(obj) if obj.contains_key(field_name))
-                    || {
-                        #[cfg(feature = "python")]
-                        {
-                            matches!(data, JValue::LazyPyDict(l) if l.contains_field(field_name))
-                        }
-                        #[cfg(not(feature = "python"))]
-                        {
-                            false
-                        }
-                    };
-                if !field_exists && propagates_undefined(name) {
-                    return Ok(JValue::Null);
-                }
-            }
         }
 
         // Fused aggregate pipeline: for $sum/$max/$min/$average with a single Path argument,

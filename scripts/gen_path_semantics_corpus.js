@@ -160,6 +160,11 @@ const EXTRA = [
   '$error("x") ?? 1', '(($x := 5; $error("e")) ?? $x)', 'nope.(1/0) ?? 2', '$string(nope) ?? 1',
   '(nope) ?? 2', '$lookup({}, "a") ?? 3', 'null ?? 4', '[nope][0] ?? 5', 'false ?? 6', '0 ?? 7',
   '"" ?? 8', '[] ?? 9', 'nope ?? nope2 ?? 10', 'e.x ?? v', 'a.b ?? 0', 'arr[$ > 5] ?? "none"',
+  // A builtin's arguments are all evaluated, so their errors surface.
+  '$substring($nope, $error("e"))', '$string($nope, $error("e"))', '$substring($nope, "x")',
+  '{"x": $string($nope)}', '$type($not($nope))', '$string(objs.(p).q)',
+  // A `.(...)` block's `:=` bindings stay in the block.
+  '(arr.($z := 3); $z)', 'arr.($z := $; $z * 2)', '($y := 1; arr.($y := 5); $y)',
 ];
 
 // The same questions with a top-level array as input. jsonata-js wraps that

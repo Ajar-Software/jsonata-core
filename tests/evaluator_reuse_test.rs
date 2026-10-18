@@ -73,6 +73,15 @@ fn an_error_inside_a_successful_evaluation_leaves_no_bindings() {
 }
 
 #[test]
+fn bindings_from_a_successful_evaluation_do_not_outlive_it() {
+    // jsonata-js runs each evaluation in a new frame of its environment.
+    let data = JValue::Null;
+    let mut ev = Evaluator::new();
+    assert_eq!(eval(&mut ev, "$x := 1", &data), Ok(JValue::from(1i64)));
+    assert_eq!(eval(&mut ev, "$x", &data), Ok(JValue::Undefined));
+}
+
+#[test]
 fn parent_is_each_evaluation_s_own_input() {
     let mut ev = Evaluator::new();
     let first = JValue::from(serde_json::json!({"k": 1}));
