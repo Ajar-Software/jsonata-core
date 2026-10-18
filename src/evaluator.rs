@@ -2941,57 +2941,52 @@ fn group_context(items: &[JValue]) -> JValue {
     }
 }
 
-/// `$match` with a regex, following jsonata-js `match` and its regex
-/// closure (`evaluateRegex`): every match from the start of the string, up
-/// to `limit`, each as `{match, index, groups}`, in a sequence. jsonata-js
-/// regexes are always global, so a `g` flag changes nothing. As in jsonata-js,
-/// the next match is looked for after each one, even when the limit has
-/// been reached, and a zero-length match found that way is D1004, since
-/// matching would never move on. `index` counts UTF-16 code units, as
-/// JavaScript strings do.
-fn regex_matches(
-    re: &regex::Regex,
-    s: &str,
-    limit: Option<usize>,
-) -> Result<JValue, EvaluatorError> {
-    let mut results = Vec::new();
-    if limit == Some(0) {
-        return Ok(JValue::sequence(results));
+/// The `limit` argument of `$match` and `$replace`: how many matches to
+/// take. jsonata-js loops while `count < limit`, so a fractional limit
+/// rounds up; a negative one is the function's error (`negative_limit`).
+fn match_limit(
+    value: Option<&JValue>,
+    negative_limit: &str,
+) -> Result<Option<usize>, EvaluatorError> {
+    match value {
+        None | Some(JValue::Undefined) | Some(JValue::Null) => Ok(None),
+        Some(JValue::Number(n)) if *n < 0.0 => {
+            Err(EvaluatorError::EvaluationError(negative_limit.to_string()))
+        }
+        // `as` saturates, and a NaN limit matches nothing, as in jsonata-js.
+        Some(JValue::Number(n)) => Ok(Some(n.ceil() as usize)),
+        Some(_) => Err(EvaluatorError::TypeError(
+            "The limit argument must be a number".to_string(),
+        )),
     }
-    // The UTF-16 offset of `counted_to`, kept as the search moves forward.
-    let (mut counted_to, mut utf16_index) = (0, 0);
-    let mut next = re.captures(s);
-    while let Some(caps) = next {
-        let found = caps.get(0).expect("group 0 is the whole match");
-        utf16_index += s[counted_to..found.start()].encode_utf16().count();
-        counted_to = found.start();
-        let groups = (1..caps.len())
-            .map(|i| match caps.get(i) {
-                Some(group) => JValue::string(group.as_str()),
-                None => JValue::Undefined,
-            })
-            .collect();
-        let mut match_obj = IndexMap::with_capacity(3);
-        match_obj.insert("match".to_string(), JValue::string(found.as_str()));
-        match_obj.insert("index".to_string(), JValue::from(utf16_index as i64));
-        match_obj.insert("groups".to_string(), JValue::array(groups));
-        results.push(JValue::object(match_obj));
+}
 
-        next = if found.end() >= s.len() {
-            None
-        } else {
-            re.captures_at(s, found.end())
-        };
-        if next.as_ref().is_some_and(|caps| caps[0].is_empty()) {
-            return Err(EvaluatorError::EvaluationError(
-                "D1004: Regular expression matches zero length string".to_string(),
-            ));
-        }
-        if limit.is_some_and(|limit| results.len() >= limit) {
-            break;
-        }
+const MATCH_NEGATIVE_LIMIT: &str =
+    "D3040: Third argument of match function must evaluate to a positive number";
+const REPLACE_NEGATIVE_LIMIT: &str =
+    "D3011: Fourth argument of replace function must evaluate to a positive number";
+
+/// jsonata-js `evaluateMatcher`'s check on a custom matcher's result: a
+/// value that isn't falsy must have a numeric `start`, an array `groups` or
+/// a function `next`, else T1010. A falsy result ends the matches.
+fn check_matcher_result(result: &JValue) -> Result<(), EvaluatorError> {
+    let falsy = match result {
+        JValue::Undefined | JValue::Null | JValue::Bool(false) => true,
+        JValue::Number(n) => *n == 0.0 || n.is_nan(),
+        JValue::String(s) => s.is_empty(),
+        _ => false,
+    };
+    let well_formed = matches!(result, JValue::Object(obj) if
+        matches!(obj.get("start"), Some(JValue::Number(_)))
+            || matches!(obj.get("groups"), Some(JValue::Array(_)))
+            || matches!(obj.get("next"), Some(JValue::Lambda(_) | JValue::Builtin { .. })));
+    if falsy || well_formed {
+        Ok(())
+    } else {
+        Err(EvaluatorError::TypeError(
+            "T1010: The matcher function argument passed to function match does not return the correct object structure".to_string(),
+        ))
     }
-    Ok(JValue::sequence(results))
 }
 
 /// True for a tuple-stream wrapper object (see `create_tuple_stream`). Every
@@ -6378,27 +6373,7 @@ impl Evaluator {
                 // String replacement mode
                 match (&evaluated_args[0], &evaluated_args[2]) {
                     (JValue::String(s), JValue::String(replacement)) => {
-                        let limit = if evaluated_args.len() == 4 {
-                            match &evaluated_args[3] {
-                                JValue::Number(n) => {
-                                    let lim_f64 = *n;
-                                    if lim_f64 < 0.0 {
-                                        return Err(EvaluatorError::EvaluationError(format!(
-                                            "D3011: Limit must be non-negative, got {}",
-                                            lim_f64
-                                        )));
-                                    }
-                                    Some(lim_f64 as usize)
-                                }
-                                _ => {
-                                    return Err(EvaluatorError::TypeError(
-                                        "replace() limit must be a number".to_string(),
-                                    ))
-                                }
-                            }
-                        } else {
-                            None
-                        };
+                        let limit = match_limit(evaluated_args.get(3), REPLACE_NEGATIVE_LIMIT)?;
                         Ok(functions::string::replace(
                             s,
                             &evaluated_args[1],
@@ -6419,9 +6394,6 @@ impl Evaluator {
                         "match() requires 1 to 3 arguments".to_string(),
                     ));
                 }
-                if evaluated_args[0].is_null() {
-                    return Ok(JValue::Null);
-                }
                 if evaluated_args[0].is_undefined() {
                     return Ok(JValue::Undefined);
                 }
@@ -6435,22 +6407,7 @@ impl Evaluator {
                     }
                 };
 
-                // Optional limit; jsonata-js rejects a negative one (D3040).
-                let limit = match evaluated_args.get(2) {
-                    None | Some(JValue::Null) | Some(JValue::Undefined) => None,
-                    Some(JValue::Number(n)) if *n < 0.0 => {
-                        return Err(EvaluatorError::EvaluationError(format!(
-                            "D3040: Third argument of match function must evaluate to a positive number; got: {}",
-                            n
-                        )));
-                    }
-                    Some(JValue::Number(n)) => Some(*n as usize),
-                    Some(_) => {
-                        return Err(EvaluatorError::TypeError(
-                            "match() limit must be a number".to_string(),
-                        ))
-                    }
-                };
+                let limit = match_limit(evaluated_args.get(2), MATCH_NEGATIVE_LIMIT)?;
 
                 // Check if second argument is a custom matcher function (lambda)
                 let pattern_value = evaluated_args.get(1);
@@ -6479,7 +6436,7 @@ impl Evaluator {
                 // use the same helper, so i/m/s behave identically everywhere)
                 let re = crate::functions::string::build_regex(&pattern, &flags)
                     .map_err(|e| EvaluatorError::EvaluationError(e.to_string()))?;
-                regex_matches(&re, &s, limit)
+                Ok(crate::functions::string::match_regex(&re, &s, limit)?)
             }
             "sift" => {
                 // $sift(object, function) or $sift(function) - filter object by predicate
@@ -7832,79 +7789,42 @@ impl Evaluator {
         limit: Option<usize>,
         data: &JValue,
     ) -> Result<JValue, EvaluatorError> {
+        // Following jsonata-js `match`: a limit of 0 doesn't call the matcher,
+        // and after each match the next one is asked for (and checked) before
+        // the limit is.
         let mut results = Vec::new();
-        let mut count = 0;
-
-        // Call the matcher function with the string
+        if limit == Some(0) {
+            return Ok(JValue::sequence(results));
+        }
         let str_val = JValue::string(str_value.to_string());
-        let mut current_match = self.apply_function(matcher_node, &[str_val], data)?;
-
-        // Iterate through matches following the 'next' chain
-        while !current_match.is_undefined() && !current_match.is_null() {
-            // Check limit
-            if let Some(lim) = limit {
-                if count >= lim {
-                    break;
+        let mut current = self.apply_function(matcher_node, &[str_val], data)?;
+        loop {
+            check_matcher_result(&current)?;
+            let JValue::Object(match_obj) = &current else {
+                break;
+            };
+            let mut result_obj = IndexMap::with_capacity(3);
+            for (from, to) in [("match", "match"), ("start", "index"), ("groups", "groups")] {
+                if let Some(value) = match_obj.get(from) {
+                    result_obj.insert(to.to_string(), value.clone());
                 }
             }
+            results.push(JValue::object(result_obj));
 
-            // Extract match information from the result object
-            if let JValue::Object(ref match_obj) = current_match {
-                // Validate that this is a proper match object
-                let has_match = match_obj.contains_key("match");
-                let has_start = match_obj.contains_key("start");
-                let has_end = match_obj.contains_key("end");
-                let has_groups = match_obj.contains_key("groups");
-                let has_next = match_obj.contains_key("next");
-
-                if !has_match && !has_start && !has_end && !has_groups && !has_next {
-                    // Invalid matcher result - T1010 error
-                    return Err(EvaluatorError::EvaluationError(
-                        "T1010: The matcher function did not return the correct object structure"
-                            .to_string(),
-                    ));
-                }
-
-                // Build the result match object (match, index, groups)
-                let mut result_obj = IndexMap::new();
-
-                if let Some(match_val) = match_obj.get("match") {
-                    result_obj.insert("match".to_string(), match_val.clone());
-                }
-
-                if let Some(start_val) = match_obj.get("start") {
-                    result_obj.insert("index".to_string(), start_val.clone());
-                }
-
-                if let Some(groups_val) = match_obj.get("groups") {
-                    result_obj.insert("groups".to_string(), groups_val.clone());
-                }
-
-                results.push(JValue::object(result_obj));
-                count += 1;
-
-                // Get the next match by calling the 'next' function
-                if let Some(next_func) = match_obj.get("next") {
-                    if let Some(stored) = self.lookup_lambda_from_value(next_func) {
-                        current_match = self.invoke_stored_lambda(&stored, &[], data)?;
-                        continue;
-                    }
-                }
-
-                // No next function or couldn't call it - stop iteration
-                break;
-            } else {
-                // Not a valid match object
+            let next = match match_obj
+                .get("next")
+                .and_then(|next| self.lookup_lambda_from_value(next))
+            {
+                Some(next) => self.invoke_stored_lambda(&next, &[], data)?,
+                None => break,
+            };
+            current = next;
+            if limit.is_some_and(|limit| results.len() >= limit) {
+                check_matcher_result(&current)?;
                 break;
             }
         }
-
-        // Return results
-        if results.is_empty() {
-            Ok(JValue::Undefined)
-        } else {
-            Ok(JValue::sequence(results))
-        }
+        Ok(JValue::sequence(results))
     }
 
     /// Replace with lambda/function callback
@@ -7941,27 +7861,7 @@ impl Evaluator {
         let re = crate::functions::string::build_regex(&pattern, &flags)?;
 
         // Parse limit
-        let limit = if let Some(lim_val) = limit_value {
-            match lim_val {
-                JValue::Number(n) => {
-                    let lim_f64 = *n;
-                    if lim_f64 < 0.0 {
-                        return Err(EvaluatorError::EvaluationError(format!(
-                            "D3011: Limit must be non-negative, got {}",
-                            lim_f64
-                        )));
-                    }
-                    Some(lim_f64 as usize)
-                }
-                _ => {
-                    return Err(EvaluatorError::TypeError(
-                        "replace() limit must be a number".to_string(),
-                    ))
-                }
-            }
-        } else {
-            None
-        };
+        let limit = match_limit(limit_value, REPLACE_NEGATIVE_LIMIT)?;
 
         // Iterate through matches and replace using lambda
         let mut result = String::new();

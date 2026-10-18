@@ -616,6 +616,55 @@ pub mod string {
         result
     }
 
+    /// $match(str, regex, limit) with a regex, following jsonata-js `match` and its regex
+    /// closure (`evaluateRegex`): every match from the start of the string, up
+    /// to `limit`, each as `{match, index, groups}`, in a sequence. jsonata-js
+    /// regexes are always global, so a `g` flag changes nothing. As in jsonata-js,
+    /// the next match is looked for after each one, even when the limit has
+    /// been reached, and a zero-length match found that way is D1004, since
+    /// matching would never move on. `index` counts UTF-16 code units, as
+    /// JavaScript strings do.
+    pub fn match_regex(re: &Regex, s: &str, limit: Option<usize>) -> Result<JValue, FunctionError> {
+        let mut results = Vec::new();
+        if limit == Some(0) {
+            return Ok(JValue::sequence(results));
+        }
+        // The UTF-16 offset of `counted_to`, kept as the search moves forward.
+        let (mut counted_to, mut utf16_index) = (0, 0);
+        let mut next = re.captures(s);
+        while let Some(caps) = next {
+            let found = caps.get(0).expect("group 0 is the whole match");
+            utf16_index += s[counted_to..found.start()].encode_utf16().count();
+            counted_to = found.start();
+            let groups = (1..caps.len())
+                .map(|i| match caps.get(i) {
+                    Some(group) => JValue::string(group.as_str()),
+                    None => JValue::Undefined,
+                })
+                .collect();
+            let mut match_obj = IndexMap::with_capacity(3);
+            match_obj.insert("match".to_string(), JValue::string(found.as_str()));
+            match_obj.insert("index".to_string(), JValue::from(utf16_index as i64));
+            match_obj.insert("groups".to_string(), JValue::array(groups));
+            results.push(JValue::object(match_obj));
+
+            next = if found.end() >= s.len() {
+                None
+            } else {
+                re.captures_at(s, found.end())
+            };
+            if next.as_ref().is_some_and(|caps| caps[0].is_empty()) {
+                return Err(FunctionError::RuntimeError(
+                    "D1004: Regular expression matches zero length string".to_string(),
+                ));
+            }
+            if limit.is_some_and(|limit| results.len() >= limit) {
+                break;
+            }
+        }
+        Ok(JValue::sequence(results))
+    }
+
     /// $replace(str, pattern, replacement, limit) - Replace substring or regex matches
     pub fn replace(
         s: &str,

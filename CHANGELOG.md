@@ -55,7 +55,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   has `groups`, and an unmatched capture group in it is undefined, not null. `index` counts
   UTF-16 code units like JavaScript strings, not bytes, so it changes for text before the match
   that isn't ASCII. A negative limit raises `D3040`, and a regex that would match a zero-length
-  string again raises `D1004`.
+  string again raises `D1004`. A custom matcher's results are checked as jsonata-js checks them,
+  so a malformed result raises `T1010`, and a limit of 0 no longer calls the matcher.
+- **A fractional limit in `$match` and `$replace` rounds up**, as in jsonata-js, which keeps
+  matching while the count is below the limit. `$replace("aaa", "a", "b", 1.5)` is now `"bba"`.
 - **Field paths in lambda bodies map over arrays.** `($f := function() { objs.p }; $f())` was
   undefined when `objs` held an array; it is now `[1, 2]` as in jsonata-js.
 - **Compiled predicates read the right field from objects with different key orders.** A

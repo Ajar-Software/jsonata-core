@@ -6177,6 +6177,111 @@
    }
   },
   {
+   "expression": "$exists($match(\"ab\", /(a)(c)?/).groups[1])",
+   "result": false
+  },
+  {
+   "expression": "$count($match(\"ab\", /(a)(c)?/).groups)",
+   "result": 2
+  },
+  {
+   "expression": "$match(\"aba\", /a/, 1.5)",
+   "result": [
+    {
+     "match": "a",
+     "index": 0,
+     "groups": []
+    },
+    {
+     "match": "a",
+     "index": 2,
+     "groups": []
+    }
+   ]
+  },
+  {
+   "expression": "$match(\"aba\", /a/, 0.5)",
+   "result": {
+    "match": "a",
+    "index": 0,
+    "groups": []
+   }
+  },
+  {
+   "expression": "$replace(\"aaa\", \"a\", \"b\", 1.5)",
+   "result": "bba"
+  },
+  {
+   "expression": "$replace(\"aaa\", /a/, \"b\", 0.5)",
+   "result": "baa"
+  },
+  {
+   "expression": "$replace(\"aaa\", /a/, function($m) { \"x\" }, 1.5)",
+   "result": "xxa"
+  },
+  {
+   "expression": "$replace(\"aaa\", \"a\", \"b\", -1)",
+   "result": {
+    "$error": "D3011"
+   }
+  },
+  {
+   "expression": "$match(\"abc\", function($s) { \"str\" })",
+   "result": {
+    "$error": "T1010"
+   }
+  },
+  {
+   "expression": "$match(\"abc\", function($s) { {\"match\": \"x\"} })",
+   "result": {
+    "$error": "T1010"
+   }
+  },
+  {
+   "expression": "$match(\"abc\", function($s) { {\"end\": 1} })",
+   "result": {
+    "$error": "T1010"
+   }
+  },
+  {
+   "expression": "$match(\"abc\", function($s) { $error(\"boom\") }, 0)",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "$match(\"abc\", function($s) { undefined })",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "$match(\"abc\", function($s) { {\"match\": \"x\", \"start\": 0, \"groups\": [], \"next\": function() { \"str\" }} })",
+   "result": {
+    "$error": "T1010"
+   }
+  },
+  {
+   "expression": "$match(\"abc\", function($s) { {\"match\": \"x\", \"start\": 0, \"groups\": [], \"next\": function() { {\"foo\": 1} }} })",
+   "result": {
+    "$error": "T1010"
+   }
+  },
+  {
+   "expression": "$match(\"abc\", function($s) { {\"match\": \"x\", \"start\": 0, \"groups\": [], \"next\": function() { undefined }} })",
+   "result": {
+    "match": "x",
+    "index": 0,
+    "groups": []
+   }
+  },
+  {
+   "expression": "$match(\"abc\", function($s) { {\"match\": \"x\", \"start\": 0, \"groups\": [], \"next\": function() { \"str\" }} }, 1)",
+   "result": {
+    "$error": "T1010"
+   }
+  },
+  {
    "expression": "a",
    "root": true,
    "result": [
