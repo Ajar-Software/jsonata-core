@@ -23,7 +23,7 @@
   non-negotiable), `Result<T, E>` for fallible ops, rustdoc `///` on public APIs, comments should
   explain *deviations from JS behavior*, not restate what code does.
 - **Python style**: PEP 8 via ruff, type hints required on public APIs (mypy strict), ruff
-  double-quote/100-col formatting — no black despite CLAUDE.MD mentioning it (ruff format is
+  double-quote/100-col formatting — no black despite CLAUDE.md mentioning it (ruff format is
   what's actually configured in pyproject.toml).
 - **Test-driven against the JS suite**: the JSONata-js reference suite
   (`tests/python/test_reference_suite.py` over the `tests/jsonata-js` submodule) is the

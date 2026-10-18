@@ -3,8 +3,8 @@
 Rust-based Python extension implementing JSONata (JSON query/transform language), targeting
 near-100% compatibility with the reference `jsonata-js` v2.2.2 test suite (1686/1686 passing).
 Two published artifacts from one codebase: `jsonata-core` (crates.io, pure Rust) and
-`jsonatapy` (PyPI, PyO3 wrapper). See root `CLAUDE.MD` for full project charter/design goals —
-this memory only covers what CLAUDE.MD omits or what changes faster than that doc.
+`jsonatapy` (PyPI, PyO3 wrapper). See root `CLAUDE.md` for full project charter/design goals —
+this memory only covers what CLAUDE.md omits or what changes faster than that doc.
 
 ### Layout
 - `src/` — Rust crate (`jsonata-core`). Core files: `ast.rs`, `parser.rs` (+ `src/parser/README.md`),
