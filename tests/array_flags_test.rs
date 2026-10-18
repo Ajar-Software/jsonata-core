@@ -20,11 +20,7 @@ use common::norm;
 /// Cases whose *value* still differs from jsonata-js, so their flags cannot
 /// be compared yet. Each entry is `(engine, expression)`. The list must stay
 /// exact: a case that starts matching has to be removed from it.
-const KNOWN_VALUE_DIVERGENCES: &[(&str, &str)] = &[
-    // `$match` without `g` returns only the first match.
-    ("compiled", "$match(s, /a/)"),
-    ("tree", "$match(s, /a/)"),
-];
+const KNOWN_VALUE_DIVERGENCES: &[(&str, &str)] = &[];
 
 /// Mirror of `annotate` in scripts/gen_array_flags_corpus.js.
 fn annotate(v: &JValue) -> Value {

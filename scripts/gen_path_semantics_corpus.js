@@ -134,6 +134,28 @@ const EXTRA = [
   '($x := 1; acct.Order.P)^(>%.id).N', 'acct.Order.(P).{"n": N, "o": %.id}',
   'acct.Order#$k.(P#$i.%).{"i": $i, "k": $k}', 'o#$i.(t#$i.%).{"i": $i}',
   'acct.Order.P{%.id: N}', 'acct.Order.(P)#$i.{"n": N, "i": $i, "o": %.id}',
+  // `$match` returns every match as a sequence (#194).
+  '$match("aba", /a/)', '$match("aba", /a/, 1)', '$match("aba", /a/, 0)', '$match("aba", /z/)',
+  '$match("xay", /a/)', '$match("ab", /(a)(c)?/)', '$match("abc", /x*/)', '$match("abc", /x*/, 1)',
+  '$match("", /x*/)', '$match("ab", /a|/)', '$match("aBa", /b/i)', '$match("aba", /a/, -1)',
+  '$match(nope, /a/)', '$match("aba", /a/)[1].index', '[$match("a", /a/)]',
+  '$count($match("aba", /a/))', '$match("a1b22", /\\d+/).match', '$match("éa😀a", /a/)',
+  '$match("aaa", /^a/)', '$match("a\\nb", /^\\w/m)', '$match("ab", /(?<x>a)/)',
+  'o.t.$match($, /[a-z]/)', '$match(o.t[0], /x/).groups',
+  '$exists($match("ab", /(a)(c)?/).groups[1])', '$count($match("ab", /(a)(c)?/).groups)',
+  // A fractional limit rounds up: jsonata-js loops while count < limit.
+  '$match("aba", /a/, 1.5)', '$match("aba", /a/, 0.5)', '$replace("aaa", "a", "b", 1.5)',
+  '$replace("aaa", /a/, "b", 0.5)', '$replace("aaa", /a/, function($m) { "x" }, 1.5)',
+  '$replace("aaa", "a", "b", -1)',
+  // Custom matchers go through jsonata-js's evaluateMatcher checks.
+  '$match("abc", function($s) { "str" })', '$match("abc", function($s) { {"match": "x"} })',
+  '$match("abc", function($s) { {"end": 1} })', '$match("abc", function($s) { $error("boom") }, 0)',
+  '$match("abc", function($s) { undefined })',
+  '$match("abc", function($s) { {"match": "x", "start": 0, "groups": [], "next": function() { "str" }} })',
+  '$match("abc", function($s) { {"match": "x", "start": 0, "groups": [], "next": function() { {"foo": 1} }} })',
+  '$match("abc", function($s) { {"match": "x", "start": 0, "groups": [], "next": function() { undefined }} })',
+  '$match("abc", function($s) { {"match": "x", "start": 0, "groups": [], "next": function() { "str" }} }, 1)',
+  '($o := {"f": function($s) { {"match": "b", "start": 1, "groups": [], "next": function() { undefined }} }}; $match("abc", $o.f))',
 ];
 
 // The same questions with a top-level array as input. jsonata-js wraps that
