@@ -29,6 +29,12 @@ const KNOWN_DIVERGENCES: &[(&str, &str)] = &[
     // whole array comes back. We apply the filter, as for any other call.
     ("compiled", "arr ~> $map(function($v) { $v * 2 })[0]"),
     ("tree", "arr ~> $map(function($v) { $v * 2 })[0]"),
+    // Deliberate: jsonata-js matches a regex on the right of `~>` against
+    // its left side converted to a string, so an undefined left side is the
+    // text "undefined" and `/n/` matches it. An undefined left side gives
+    // undefined here.
+    ("compiled", "nope ~> /n/"),
+    ("tree", "nope ~> /n/"),
 ];
 
 /// Mirror of `encode` in scripts/gen_path_semantics_corpus.js.

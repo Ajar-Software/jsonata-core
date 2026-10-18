@@ -6594,6 +6594,96 @@
    "result": 0
   },
   {
+   "expression": "nope ~> /n/",
+   "result": {
+    "match": "n",
+    "start": 1,
+    "end": 2,
+    "groups": []
+   }
+  },
+  {
+   "expression": "arr ~> function($v) { $count($v) }",
+   "result": 3
+  },
+  {
+   "expression": "$sum ~> function($v) { $v + 1 }",
+   "result": {
+    "$function": true
+   }
+  },
+  {
+   "expression": "m ~> |k|{\"w\": $keys($)}|",
+   "result": {
+    "k": {
+     "b": [
+      [
+       1
+      ]
+     ],
+     "w": "b"
+    }
+   }
+  },
+  {
+   "expression": "x ~> |$|{\"w\": $keys($)}|",
+   "result": {
+    "y": [
+     1
+    ],
+    "w": "y"
+   }
+  },
+  {
+   "expression": "m ~> |k|{\"c\": x ~> |$|{\"d\": 1}|}|",
+   "result": {
+    "k": {
+     "b": [
+      [
+       1
+      ]
+     ]
+    }
+   }
+  },
+  {
+   "expression": "m ~> |k|{\"c\": $$.x ~> |$|{\"d\": 1}|}|",
+   "result": {
+    "k": {
+     "b": [
+      [
+       1
+      ]
+     ],
+     "c": {
+      "y": [
+       1
+      ],
+      "d": 1
+     }
+    }
+   }
+  },
+  {
+   "expression": "objs.(|$|{\"q\": 1}|) ~> $type()",
+   "result": "array"
+  },
+  {
+   "expression": "[1].($ ~> |x|{}|)",
+   "result": {
+    "$error": "T0410"
+   }
+  },
+  {
+   "expression": "($t := |$|{\"w\": 1}|; $f := function($v) { $t($v) }; $f(x))",
+   "result": {
+    "y": [
+     1
+    ],
+    "w": 1
+   }
+  },
+  {
    "expression": "a",
    "root": true,
    "result": [

@@ -182,6 +182,13 @@ const EXTRA = [
   '"abc" ~> $substring(?, ?)', '5 ~> nope', '5 ~> "x"', 'arr ~> $f.g', 'arr ~> $sum[0]',
   'arr ~> $map(function($v) { $v * 2 })[0]', 'arr ~> $map(function($v) { $v * 2 })[]',
   '($n := 0; $f := function($v) { $v }; ($n := $n + 1; arr) ~> $f; $n)',
+  'nope ~> /n/', 'arr ~> function($v) { $count($v) }', '$sum ~> function($v) { $v + 1 }',
+  // A transform is a function value that runs only when invoked, and `$` in
+  // its update is the matched object.
+  'm ~> |k|{"w": $keys($)}|', 'x ~> |$|{"w": $keys($)}|', 'm ~> |k|{"c": x ~> |$|{"d": 1}|}|',
+  'm ~> |k|{"c": $$.x ~> |$|{"d": 1}|}|',
+  'objs.(|$|{"q": 1}|) ~> $type()', '[1].($ ~> |x|{}|)',
+  '($t := |$|{"w": 1}|; $f := function($v) { $t($v) }; $f(x))',
 ];
 
 // The same questions with a top-level array as input. jsonata-js wraps that

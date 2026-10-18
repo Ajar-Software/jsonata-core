@@ -57,7 +57,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   wherever they appear, so `arr ~> ($sum ~> $string)` and `$type($sum ~> $string)` now work, and
   `5 ~> nope` raises T2006 instead of giving undefined. A partial application is applied like
   any function, so `"abc" ~> $substring(?, ?)` is `"abc"`. The left side used to be evaluated
-  twice, calling a host function on it twice.
+  twice, calling a host function on it twice. Two jsonata-js behaviours are deliberately not
+  followed: it drops the filter on a call (`arr ~> $map($f)[0]` gives the whole array there),
+  and it matches a regex against an undefined left side as the text `"undefined"`.
+- **A transform is always a function value that runs when invoked**, as in jsonata-js. It used
+  to run at once wherever `$` was bound, so a `~>` into a transform inside another transform's
+  update, or `a.(|x|{}|)`, ran it on the wrong input. `$` in a transform's update is now the
+  matched object, not the transform's input.
+- **A host function named without a call is a function value**, as a builtin is, so
+  `5 ~> $dbl`, `$f := $dbl` and `$map(arr, $dbl)` work for a function registered with
+  `register`.
 - **`$single`, transforms and partial applications handle undefined as jsonata-js does**
   ([#193](https://github.com/txjmb/jsonata-core/issues/193)). `$single` gives undefined for an
   undefined input and treats `null` as a one-item sequence. A transform gives undefined for an
