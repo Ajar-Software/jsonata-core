@@ -6444,6 +6444,156 @@
    "result": 40
   },
   {
+   "expression": "nope ~> $count()",
+   "result": 0
+  },
+  {
+   "expression": "nope ~> $exists()",
+   "result": false
+  },
+  {
+   "expression": "nope ~> $count",
+   "result": 0
+  },
+  {
+   "expression": "nope ~> $single()",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "nope ~> $single(function($v) { true })",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "$single(null, function($v) { false })",
+   "result": {
+    "$error": "D3139"
+   }
+  },
+  {
+   "expression": "nope ~> function($v) { $exists($v) }",
+   "result": false
+  },
+  {
+   "expression": "nope ~> $substring(?, 1)",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "nope ~> |x|{\"a\": 1}|",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "($t := |x|{\"a\": 1}|; $t(nope))",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "($t := |x|{\"a\": 1}|; $t(5))",
+   "result": {
+    "$error": "T0410"
+   }
+  },
+  {
+   "expression": "5 ~> |x|{\"a\": 1}|",
+   "result": {
+    "$error": "T0410"
+   }
+  },
+  {
+   "expression": "nope ~> /a/",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "nope ~> $sum ~> $string",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "arr ~> $append(nope)",
+   "result": [
+    1,
+    2,
+    3
+   ]
+  },
+  {
+   "expression": "arr ~> ($sum ~> $string)",
+   "result": "6"
+  },
+  {
+   "expression": "$type($sum ~> $string)",
+   "result": "function"
+  },
+  {
+   "expression": "($f := $sum ~> $string; arr ~> $f)",
+   "result": "6"
+  },
+  {
+   "expression": "($c := $sum ~> $string ~> $length; $c(arr))",
+   "result": 1
+  },
+  {
+   "expression": "\"abc\" ~> ($substring(?, 1) ~> $uppercase)",
+   "result": "BC"
+  },
+  {
+   "expression": "\"abc\" ~> $substring(?, ?)",
+   "result": "abc"
+  },
+  {
+   "expression": "5 ~> nope",
+   "result": {
+    "$error": "T2006"
+   }
+  },
+  {
+   "expression": "5 ~> \"x\"",
+   "result": {
+    "$error": "T2006"
+   }
+  },
+  {
+   "expression": "arr ~> $f.g",
+   "result": {
+    "$error": "T2006"
+   }
+  },
+  {
+   "expression": "arr ~> $sum[0]",
+   "result": 6
+  },
+  {
+   "expression": "arr ~> $map(function($v) { $v * 2 })[0]",
+   "result": [
+    2,
+    4,
+    6
+   ]
+  },
+  {
+   "expression": "arr ~> $map(function($v) { $v * 2 })[]",
+   "result": [
+    2,
+    4,
+    6
+   ]
+  },
+  {
+   "expression": "($n := 0; $f := function($v) { $v }; ($n := $n + 1; arr) ~> $f; $n)",
+   "result": 0
+  },
+  {
    "expression": "a",
    "root": true,
    "result": [

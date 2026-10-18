@@ -170,6 +170,18 @@ const EXTRA = [
   'arr.(1; 2)', 'arr.()',
   // Recursion through a `.(...)` step.
   '($f := function($n) { $n <= 0 ? 0 : [$n].($f($n - 1)) + 1 }; $f(40))',
+  // `~>` passes an undefined left side on to the function (#193).
+  'nope ~> $count()', 'nope ~> $exists()', 'nope ~> $count', 'nope ~> $single()',
+  'nope ~> $single(function($v) { true })', '$single(null, function($v) { false })',
+  'nope ~> function($v) { $exists($v) }', 'nope ~> $substring(?, 1)', 'nope ~> |x|{"a": 1}|',
+  '($t := |x|{"a": 1}|; $t(nope))', '($t := |x|{"a": 1}|; $t(5))', '5 ~> |x|{"a": 1}|',
+  'nope ~> /a/', 'nope ~> $sum ~> $string', 'arr ~> $append(nope)',
+  // A right side that is not a call is evaluated, and must be a function.
+  'arr ~> ($sum ~> $string)', '$type($sum ~> $string)', '($f := $sum ~> $string; arr ~> $f)',
+  '($c := $sum ~> $string ~> $length; $c(arr))', '"abc" ~> ($substring(?, 1) ~> $uppercase)',
+  '"abc" ~> $substring(?, ?)', '5 ~> nope', '5 ~> "x"', 'arr ~> $f.g', 'arr ~> $sum[0]',
+  'arr ~> $map(function($v) { $v * 2 })[0]', 'arr ~> $map(function($v) { $v * 2 })[]',
+  '($n := 0; $f := function($v) { $v }; ($n := $n + 1; arr) ~> $f; $n)',
 ];
 
 // The same questions with a top-level array as input. jsonata-js wraps that

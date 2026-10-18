@@ -52,6 +52,19 @@ class TestRegister:
         expr.register("greet", lambda n: "HOST")
         assert expr.evaluate(None) == "local x"
 
+    @pytest.mark.parametrize(
+        "source",
+        ["$tick() ~> $string()", "$tick() ~> $string", "$tick() ~> $string(?, false)"],
+    )
+    def test_chain_left_side_evaluated_once(self, source):
+        # `~>` used to evaluate its left side twice: once to check for
+        # undefined and again as the function's argument (#193).
+        calls = []
+        expr = jsonatapy.compile(source)
+        expr.register("tick", lambda: calls.append(1) or len(calls))
+        assert expr.evaluate(None) == "1"
+        assert len(calls) == 1
+
 
 class TestRegisterErrors:
     def test_collision_with_builtin_rejected(self):

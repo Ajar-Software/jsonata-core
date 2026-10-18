@@ -21,17 +21,14 @@ use common::norm;
 /// `(engine, expression)`. The list must stay exact: a case that starts
 /// matching has to be removed from it.
 const KNOWN_DIVERGENCES: &[(&str, &str)] = &[
-    // `~>` returns undefined early when its left side is undefined; jsonata-js
-    // passes undefined to the function, and `$append(undefined, [])` is `[]`.
-    // Removing the early return needs `$single` and transforms to handle an
-    // undefined first argument as jsonata-js does first.
-    ("compiled", "e.x ~> $append([])"),
-    ("tree", "e.x ~> $append([])"),
-    ("compiled", "nope ~> $append([])"),
-    ("tree", "nope ~> $append([])"),
     // A `%` in a group-by's key raises S0217 here; jsonata-js resolves it
     // and gives `{}`. Tracked separately from #184.
     ("compile", "acct.Order.P{%.id: N}"),
+    // Deliberate: jsonata-js calls the function on the right of `~>` without
+    // applying the call's own filter, so `[0]` is silently dropped and the
+    // whole array comes back. We apply the filter, as for any other call.
+    ("compiled", "arr ~> $map(function($v) { $v * 2 })[0]"),
+    ("tree", "arr ~> $map(function($v) { $v * 2 })[0]"),
 ];
 
 /// Mirror of `encode` in scripts/gen_path_semantics_corpus.js.

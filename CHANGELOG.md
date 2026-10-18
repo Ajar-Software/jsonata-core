@@ -49,6 +49,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`~>` follows jsonata-js `evaluateApplyExpression`**
+  ([#193](https://github.com/txjmb/jsonata-core/issues/193)). The left side is evaluated once
+  and passed on even when undefined, so `nope ~> $count()` is `0` and `nope ~> $append([])` is
+  `[]` (both used to be undefined). A call on the right gets the left side as its first
+  argument. Any other right side is evaluated and must be a function: two functions compose
+  wherever they appear, so `arr ~> ($sum ~> $string)` and `$type($sum ~> $string)` now work, and
+  `5 ~> nope` raises T2006 instead of giving undefined. A partial application is applied like
+  any function, so `"abc" ~> $substring(?, ?)` is `"abc"`. The left side used to be evaluated
+  twice, calling a host function on it twice.
+- **`$single`, transforms and partial applications handle undefined as jsonata-js does**
+  ([#193](https://github.com/txjmb/jsonata-core/issues/193)). `$single` gives undefined for an
+  undefined input and treats `null` as a one-item sequence. A transform gives undefined for an
+  undefined input and raises T0410 for one that is not an object or array, however it is
+  invoked (`$t(5)` used to return `5`). A placeholder left without an argument is undefined, not
+  `null`.
 - **`??` propagates errors and coalesces any undefined value**, as jsonata-js does
   ([#195](https://github.com/txjmb/jsonata-core/issues/195)). jsonata-js reads `a ?? b` as
   `$exists(a) ? a : b`. `$error("x") ?? 1` used to swallow the error and give `1`, and the right

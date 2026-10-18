@@ -2707,18 +2707,6 @@ impl Context {
     pub fn get_parent(&self) -> Option<&JValue> {
         self.parent_data.as_ref()
     }
-
-    /// Collect all bindings across all scopes (for environment capture).
-    /// Higher scopes shadow lower scopes.
-    fn all_bindings(&self) -> HashMap<String, JValue> {
-        let mut result = HashMap::new();
-        for scope in &self.scope_stack {
-            for (k, v) in &scope.bindings {
-                result.insert(k.clone(), v.clone());
-            }
-        }
-        result
-    }
 }
 
 impl Default for Context {
@@ -4511,6 +4499,96 @@ impl Evaluator {
         Ok(items)
     }
 
+    /// `lhs ~> rhs`, following jsonata-js `evaluateApplyExpression`.
+    ///
+    /// A function call on the right is invoked with the left side as its
+    /// first argument. Anything else must evaluate to a function: it is
+    /// composed with the left side when that is a function too, and applied
+    /// to the left side otherwise. An undefined left side is passed on like
+    /// any other value (`nope ~> $count()` is 0).
+    fn evaluate_apply_expression(
+        &mut self,
+        lhs: &AstNode,
+        rhs: &AstNode,
+        data: &JValue,
+    ) -> Result<JValue, EvaluatorError> {
+        // jsonata-js parses a call with a `?` argument as a partial
+        // application, not a call, so it is applied like any function value.
+        let is_call = |args: &[AstNode]| !args.iter().any(|a| matches!(a, AstNode::Placeholder));
+        match rhs {
+            AstNode::Function {
+                name,
+                args,
+                is_builtin,
+            } if is_call(args) => {
+                let mut all_args = Vec::with_capacity(args.len() + 1);
+                all_args.push(lhs.clone());
+                all_args.extend_from_slice(args);
+                return self
+                    .evaluate_function_call(name, &all_args, *is_builtin, data)
+                    .map(JValue::unwrap_sequence);
+            }
+            // A call with a filter or `[]`: `x ~> $map($f)[0]`.
+            AstNode::Path { steps } if steps.len() == 1 => {
+                if let AstNode::Function {
+                    name,
+                    args,
+                    is_builtin,
+                } = &steps[0].node
+                {
+                    if is_call(args) {
+                        let mut all_args = Vec::with_capacity(args.len() + 1);
+                        all_args.push(lhs.clone());
+                        all_args.extend_from_slice(args);
+                        let result =
+                            self.evaluate_function_call(name, &all_args, *is_builtin, data)?;
+                        return self.finish_chained_path(steps, result);
+                    }
+                }
+            }
+            _ => {}
+        }
+
+        let lhs_value = self.evaluate_internal(lhs, data)?;
+        let func = self.evaluate_internal(rhs, data)?;
+        if !func.is_function() {
+            return Err(EvaluatorError::TypeError(
+                "T2006: The right side of the function application operator ~> must be a function"
+                    .to_string(),
+            ));
+        }
+        if lhs_value.is_function() {
+            return Ok(Self::compose_functions(lhs_value, func));
+        }
+        self.call_function_value(&func, &[lhs_value], data)
+            .map(JValue::unwrap_sequence)
+    }
+
+    /// `f ~> g` for two functions: the function `λ($x) { g(f($x)) }`, as
+    /// jsonata-js builds from its `chainAST`.
+    fn compose_functions(f: JValue, g: JValue) -> JValue {
+        const F: &str = "__chain_f";
+        const G: &str = "__chain_g";
+        const X: &str = "x";
+        let call = |name: &str, arg: AstNode| AstNode::Function {
+            name: name.to_string(),
+            args: vec![arg],
+            is_builtin: false,
+        };
+        JValue::Lambda(Rc::new(StoredLambda {
+            params: vec![X.to_string()],
+            body: call(G, call(F, AstNode::Variable(X.to_string()))),
+            compiled_body: None,
+            signature: None,
+            captured_env: HashMap::from([(F.to_string(), f), (G.to_string(), g)]),
+            captured_data: None,
+            thunk: false,
+            self_name: None,
+            partial: None,
+            live_token: LiveLambdaToken::new(),
+        }))
+    }
+
     /// Finish a `~>` whose right side is a path headed by a function call
     /// (`x ~> $f()[0].y`), given that call's result: the call step's filter
     /// stages, then the rest of the path, then `[]`, as for any path.
@@ -5525,203 +5603,14 @@ impl Evaluator {
                         }
                     }
                     JValue::Null => Ok(JValue::Null),
+                    JValue::Undefined => Ok(JValue::Undefined),
                     _ => Err(EvaluatorError::TypeError(
                         "Left side of ~> /regex/ must be a string".to_string(),
                     )),
                 };
             }
 
-            // Early check: if LHS evaluates to undefined, return undefined.
-            // This matches JSONata behavior where undefined ~> anyFunc returns
-            // undefined. An explicit null LHS is NOT short-circuited here
-            // (issue #116): null is an ordinary value in jsonata-js, and each
-            // RHS kind below evaluates `lhs` again on its own terms -- as a
-            // function argument (`nul ~> $string()` == `$string(nul)` ==
-            // "null"), as a transform's `$` binding, etc. -- so it gets the
-            // same null-vs-undefined handling a direct call would.
-            let lhs_value_for_check = self.evaluate_internal(lhs, data)?;
-            if lhs_value_for_check.is_undefined() {
-                return Ok(JValue::Undefined);
-            }
-
-            // Handle different RHS types
-            match rhs {
-                AstNode::Function {
-                    name,
-                    args,
-                    is_builtin,
-                } => {
-                    // RHS is a function call
-                    // Check if the function call has placeholder arguments (partial application)
-                    let has_placeholder =
-                        args.iter().any(|arg| matches!(arg, AstNode::Placeholder));
-
-                    if has_placeholder {
-                        // Partial application: replace the first placeholder with LHS value
-                        let lhs_value = self.evaluate_internal(lhs, data)?;
-                        let mut filled_args = Vec::new();
-                        let mut lhs_used = false;
-
-                        for arg in args.iter() {
-                            if matches!(arg, AstNode::Placeholder) && !lhs_used {
-                                // Replace first placeholder with evaluated LHS
-                                // We need to create a temporary binding to pass the value
-                                let temp_name = format!("__pipe_arg_{}", filled_args.len());
-                                self.context.bind(temp_name.clone(), lhs_value.clone());
-                                filled_args.push(AstNode::Variable(temp_name));
-                                lhs_used = true;
-                            } else {
-                                filled_args.push(arg.clone());
-                            }
-                        }
-
-                        // Evaluate the function with filled args
-                        let result =
-                            self.evaluate_function_call(name, &filled_args, *is_builtin, data);
-
-                        // Clean up temp bindings
-                        for (i, arg) in args.iter().enumerate() {
-                            if matches!(arg, AstNode::Placeholder) {
-                                self.context.unbind(&format!("__pipe_arg_{}", i));
-                            }
-                        }
-
-                        // Unwrap singleton results from chain operator
-                        return result.map(JValue::unwrap_sequence);
-                    } else {
-                        // No placeholders: build args list with LHS as first argument
-                        let mut all_args = vec![lhs.clone()];
-                        all_args.extend_from_slice(args);
-                        // Unwrap singleton results from chain operator
-                        return self
-                            .evaluate_function_call(name, &all_args, *is_builtin, data)
-                            .map(JValue::unwrap_sequence);
-                    }
-                }
-                AstNode::Variable(var_name) => {
-                    // RHS is a function reference (no parens)
-                    // e.g., $average($tempReadings) ~> $round
-                    let all_args = vec![lhs.clone()];
-                    // Unwrap singleton results from chain operator
-                    return self
-                        .evaluate_function_call(var_name, &all_args, true, data)
-                        .map(JValue::unwrap_sequence);
-                }
-                AstNode::Binary {
-                    op: BinaryOp::ChainPipe,
-                    ..
-                } => {
-                    // RHS is another chain pipe - evaluate LHS first, then pipe through RHS
-                    // e.g., x ~> (f1 ~> f2) => (x ~> f1) ~> f2
-                    let lhs_value = self.evaluate_internal(lhs, data)?;
-                    return self.evaluate_internal(rhs, &lhs_value);
-                }
-                AstNode::Transform { .. } => {
-                    // RHS is a transform - invoke it with LHS as input
-                    // Evaluate LHS first
-                    let lhs_value = self.evaluate_internal(lhs, data)?;
-
-                    // jsonata-js compiles the transform operator into a
-                    // function with signature `<(oa):o>` (first argument:
-                    // object or array), so piping any other type into it --
-                    // including an explicit null (issue #116) -- is a type
-                    // error, not a silent passthrough.
-                    if !matches!(lhs_value, JValue::Object(_) | JValue::Array(_)) {
-                        #[cfg(feature = "python")]
-                        let is_lazy = matches!(lhs_value, JValue::LazyPyDict(_));
-                        #[cfg(not(feature = "python"))]
-                        let is_lazy = false;
-                        if !is_lazy {
-                            return Err(EvaluatorError::TypeError(
-                                "T0410: Argument 1 of function undefined does not match function signature".to_string(),
-                            ));
-                        }
-                    }
-
-                    // Bind $ to the LHS value, then evaluate the transform
-                    let saved_binding = self.context.lookup("$").cloned();
-                    self.context.bind("$".to_string(), lhs_value.clone());
-
-                    let result = self.evaluate_internal(rhs, data);
-
-                    // Restore $ binding
-                    if let Some(saved) = saved_binding {
-                        self.context.bind("$".to_string(), saved);
-                    } else {
-                        self.context.unbind("$");
-                    }
-
-                    // Unwrap singleton results from chain operator
-                    return result.map(JValue::unwrap_sequence);
-                }
-                AstNode::Lambda {
-                    params,
-                    body,
-                    signature,
-                    thunk,
-                } => {
-                    // RHS is a lambda - invoke it with LHS as argument
-                    let lhs_value = self.evaluate_internal(lhs, data)?;
-                    // Unwrap singleton results from chain operator
-                    return self
-                        .invoke_lambda(params, body, signature.as_ref(), &[lhs_value], data, *thunk)
-                        .map(JValue::unwrap_sequence);
-                }
-                AstNode::Path { steps } => {
-                    // RHS is a path expression (e.g., function call with predicate: $map($f)[])
-                    // If the first step is a function call, we need to add LHS as first argument
-                    if let Some(first_step) = steps.first() {
-                        match &first_step.node {
-                            AstNode::Function {
-                                name,
-                                args,
-                                is_builtin,
-                            } => {
-                                // Prepend LHS to the function arguments
-                                let mut all_args = vec![lhs.clone()];
-                                all_args.extend_from_slice(args);
-
-                                // Call the function
-                                let result = self.evaluate_function_call(
-                                    name,
-                                    &all_args,
-                                    *is_builtin,
-                                    data,
-                                )?;
-
-                                return self.finish_chained_path(steps, result);
-                            }
-                            AstNode::Variable(var_name) => {
-                                // Variable that should resolve to a function
-                                let all_args = vec![lhs.clone()];
-                                let result =
-                                    self.evaluate_function_call(var_name, &all_args, true, data)?;
-
-                                return self.finish_chained_path(steps, result);
-                            }
-                            _ => {
-                                // Other path types - just evaluate normally with LHS as context
-                                let lhs_value = self.evaluate_internal(lhs, data)?;
-                                return self
-                                    .evaluate_internal(rhs, &lhs_value)
-                                    .map(JValue::unwrap_sequence);
-                            }
-                        }
-                    }
-
-                    // Empty path? Shouldn't happen, but handle it
-                    let lhs_value = self.evaluate_internal(lhs, data)?;
-                    return self
-                        .evaluate_internal(rhs, &lhs_value)
-                        .map(JValue::unwrap_sequence);
-                }
-                _ => {
-                    return Err(EvaluatorError::TypeError(
-                        "T2006: The right side of the function application operator ~> must be a function"
-                            .to_string(),
-                    ));
-                }
-            }
+            return self.evaluate_apply_expression(lhs, rhs, data);
         }
 
         // Special handling for variable binding (:=)
@@ -5772,82 +5661,6 @@ impl Evaluator {
                 let lambda_value = JValue::Lambda(Rc::new(stored_lambda));
                 self.context.bind(var_name, lambda_value.clone());
                 return Ok(lambda_value);
-            }
-
-            // Check if RHS is a pure function composition (ChainPipe between function references)
-            // e.g., $uppertrim := $trim ~> $uppercase
-            // This creates a lambda that composes the functions.
-            // But NOT for data ~> function, which should be evaluated immediately.
-            // e.g., $result := data ~> $map($fn) should evaluate the pipe
-            if let AstNode::Binary {
-                op: BinaryOp::ChainPipe,
-                lhs: chain_lhs,
-                rhs: chain_rhs,
-            } = rhs
-            {
-                // Only wrap in lambda if LHS is a function reference (Variable pointing to a function)
-                // If LHS is data (array, object, function call result, etc.), evaluate the pipe
-                let is_function_composition = match chain_lhs.as_ref() {
-                    // LHS is a function reference like $trim or $sum
-                    AstNode::Variable(name)
-                        if self.is_builtin_function(name)
-                            || self.context.lookup_lambda_value(name).is_some() =>
-                    {
-                        true
-                    }
-                    // LHS is another ChainPipe (nested composition like $f ~> $g ~> $h)
-                    AstNode::Binary {
-                        op: BinaryOp::ChainPipe,
-                        ..
-                    } => true,
-                    // A function call with placeholder creates a partial application
-                    // e.g., $substringAfter(?, "@") ~> $substringBefore(?, ".")
-                    AstNode::Function { args, .. }
-                        if args.iter().any(|a| matches!(a, AstNode::Placeholder)) =>
-                    {
-                        true
-                    }
-                    // Anything else (data, function calls, arrays, etc.) is not pure composition
-                    _ => false,
-                };
-
-                if is_function_composition {
-                    // Create a lambda: function($) { ($ ~> firstFunc) ~> restOfChain }
-                    // The original chain is $trim ~> $uppercase (left-associative)
-                    // We want to create: ($ ~> $trim) ~> $uppercase
-                    let param_name = "$".to_string();
-
-                    // First create $ ~> $trim
-                    let first_pipe = AstNode::Binary {
-                        op: BinaryOp::ChainPipe,
-                        lhs: Box::new(AstNode::Variable(param_name.clone())),
-                        rhs: chain_lhs.clone(),
-                    };
-
-                    // Then wrap with ~> $uppercase (or the rest of the chain)
-                    let composed_body = AstNode::Binary {
-                        op: BinaryOp::ChainPipe,
-                        lhs: Box::new(first_pipe),
-                        rhs: chain_rhs.clone(),
-                    };
-
-                    let stored_lambda = StoredLambda {
-                        params: vec![param_name],
-                        body: composed_body,
-                        compiled_body: None, // ChainPipe body is not compilable
-                        signature: None,
-                        captured_env: self.capture_current_environment(),
-                        captured_data: Some(data.clone()),
-                        thunk: false,
-                        self_name: Some(var_name.clone()),
-                        partial: None,
-                        live_token: LiveLambdaToken::new(),
-                    };
-                    let lambda_value = JValue::Lambda(Rc::new(stored_lambda));
-                    self.context.bind(var_name, lambda_value.clone());
-                    return Ok(lambda_value);
-                }
-                // If not function composition, fall through to normal evaluation below
             }
 
             // Evaluate the RHS. A lambda value carries its own closure, so
@@ -6969,11 +6782,13 @@ impl Evaluator {
                 // Evaluate the array argument
                 let array = self.evaluate_internal(&args[0], data)?;
 
-                // A single value is a one-item sequence.
+                // As in jsonata-js, an undefined input gives undefined, and
+                // any other single value, null included, is a one-item
+                // sequence.
                 let single_holder;
                 let arr: &[JValue] = match &array {
                     JValue::Array(arr) => arr.as_slice(),
-                    JValue::Null => return Ok(JValue::Null),
+                    JValue::Undefined => return Ok(JValue::Undefined),
                     _ => {
                         single_holder = [array.clone()];
                         &single_holder[..]
@@ -7216,6 +7031,22 @@ impl Evaluator {
                 EvaluatorError::EvaluationError("Transform requires $ binding".to_string())
             })?
             .clone();
+
+        // jsonata-js compiles the transform into a function with signature
+        // `<(oa):o>` that returns undefined for an undefined input.
+        if input.is_undefined() {
+            return Ok(JValue::Undefined);
+        }
+        #[cfg(feature = "python")]
+        let is_lazy = matches!(input, JValue::LazyPyDict(_));
+        #[cfg(not(feature = "python"))]
+        let is_lazy = false;
+        if !is_lazy && !matches!(input, JValue::Object(_) | JValue::Array(_)) {
+            return Err(EvaluatorError::TypeError(
+                "T0410: Argument 1 of function undefined does not match function signature"
+                    .to_string(),
+            ));
+        }
 
         // Evaluate location expression on the input to get objects to transform
         let located_objects = self.evaluate_internal(location, &input)?;
@@ -7874,11 +7705,6 @@ impl Evaluator {
         result.push_str(&s[last_end..]);
 
         Ok(JValue::string(result))
-    }
-
-    /// Capture the current environment bindings for closure support
-    fn capture_current_environment(&self) -> HashMap<String, JValue> {
-        self.context.all_bindings()
     }
 
     /// Capture only the variables referenced by a lambda body (selective capture).
@@ -8855,7 +8681,9 @@ impl Evaluator {
         values: &[JValue],
         data: &JValue,
     ) -> Result<JValue, EvaluatorError> {
-        let mut full_args: Vec<JValue> = vec![JValue::Null; partial.total_args];
+        // As in jsonata-js, a placeholder left without an argument is
+        // undefined.
+        let mut full_args: Vec<JValue> = vec![JValue::Undefined; partial.total_args];
         for (pos, value) in &partial.bound_args {
             if *pos < partial.total_args {
                 full_args[*pos] = value.clone();
@@ -8863,7 +8691,7 @@ impl Evaluator {
         }
         for (i, &pos) in partial.placeholder_positions.iter().enumerate() {
             if pos < partial.total_args {
-                full_args[pos] = values.get(i).cloned().unwrap_or(JValue::Null);
+                full_args[pos] = values.get(i).cloned().unwrap_or(JValue::Undefined);
             }
         }
 
