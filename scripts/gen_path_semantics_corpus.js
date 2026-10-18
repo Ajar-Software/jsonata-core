@@ -191,6 +191,9 @@ const EXTRA = [
   '($t := |$|{"w": 1}|; $f := function($v) { $t($v) }; $f(x))',
   '($mk := function($n) { |$|{"w": $n}| }; $t := $mk(5); x ~> $t)', '$map([x], |$|{"w": 1}|)',
   '($t := |$|{"w": $v}|; $f := function($v) { $t(x) }; $f(1))',
+  // The delete clause is evaluated per matched object, with `$` bound to it.
+  'm ~> |k|{}, $keys($)|', 'het ~> |$|{}, $keys($)[0]|', 'm ~> |k|{}, ["b", 1]|', 'm ~> |k|{}, null|',
+  'm ~> |k|{}, nope|', '($t := |k|{"x": 1}|; $t(m, 2))',
   // A builtin applied by value runs as a direct call does.
   '[3, 1, 2] ~> $sort', 'arr ~> $sort ~> $reverse', '[3] ~> $single', '($f := $sort; $f([2, 1]))',
   '$map([1, 2], $sort)', '$map(n, $sum ~> $string)', '$filter(n, $count ~> function($c) { $c > 1 })',

@@ -3454,6 +3454,8 @@ impl Evaluator {
     fn get_callback_param_count(&self, func_node: &AstNode) -> usize {
         match func_node {
             AstNode::Lambda { params, .. } => params.len(),
+            // A transform's function takes the one input it transforms.
+            AstNode::Transform { .. } => 1,
             AstNode::Variable(var_name) => {
                 // Check if this variable holds a lambda value (user-defined
                 // function, closure, or partial application)
@@ -6027,8 +6029,8 @@ impl Evaluator {
 
             // Check if it's a function reference
             if let AstNode::Variable(var_name) = arg {
-                if self.is_builtin_function(var_name) {
-                    return Ok(JValue::Bool(true)); // Built-in function exists
+                if self.is_function_name(var_name) {
+                    return Ok(JValue::Bool(true)); // Builtin or host function exists
                 }
 
                 // Check if the variable is defined (lambda values are ordinary
@@ -7065,6 +7067,13 @@ impl Evaluator {
         if stored.params.len() != 1 || stored.params[0] != TRANSFORM_INPUT {
             return None;
         }
+        // The transform's signature, `<(oa):o>`, takes one argument.
+        if args.len() > 1 {
+            return Some(Err(EvaluatorError::TypeError(
+                "T0410: Argument 2 of function undefined does not match function signature"
+                    .to_string(),
+            )));
+        }
         let input = args.first().cloned().unwrap_or(JValue::Undefined);
         self.context.push_scope();
         for (name, value) in &stored.captured_env {
@@ -7075,6 +7084,35 @@ impl Evaluator {
         });
         self.context.pop_scope();
         Some(result)
+    }
+
+    /// The field names a transform's delete clause gives for one matched
+    /// object, evaluated with `$` bound to it, as jsonata-js does: a string
+    /// or an array of strings, or undefined for none.
+    fn transform_deletions(
+        &mut self,
+        delete: &AstNode,
+        matched: &JValue,
+    ) -> Result<Vec<String>, EvaluatorError> {
+        let deletions = self.with_dollar(matched, |ev| ev.evaluate_internal(delete, matched))?;
+        let not_strings = || {
+            EvaluatorError::EvaluationError(
+                "T2012: The third argument of the transform operator must be an array of strings"
+                    .to_string(),
+            )
+        };
+        match deletions {
+            JValue::Undefined => Ok(Vec::new()),
+            JValue::String(s) => Ok(vec![s.to_string()]),
+            JValue::Array(arr) => arr
+                .iter()
+                .map(|v| match v {
+                    JValue::String(s) => Ok(s.to_string()),
+                    _ => Err(not_strings()),
+                })
+                .collect(),
+            _ => Err(not_strings()),
+        }
     }
 
     /// Execute a transform operator on `input`, following jsonata-js
@@ -7115,41 +7153,13 @@ impl Evaluator {
             other => vec![other],
         };
 
-        // Validate update parameter - must be an object constructor
-        // We need to check this before evaluation in case of errors
-        // For now, we'll validate after evaluation in the transform helper
-
-        // Parse delete field names if provided
-        let delete_fields: Vec<String> = if let Some(delete_node) = delete {
-            let delete_val = self.evaluate_internal(delete_node, input)?;
-            match delete_val {
-                JValue::Array(arr) => arr
-                    .iter()
-                    .filter_map(|v| match v {
-                        JValue::String(s) => Some(s.to_string()),
-                        _ => None,
-                    })
-                    .collect(),
-                JValue::String(s) => vec![s.to_string()],
-                JValue::Null | JValue::Undefined => Vec::new(), // Undefined variable is treated as no deletion
-                _ => {
-                    // Delete parameter must be an array of strings or a string
-                    return Err(EvaluatorError::EvaluationError(
-                        "T2012: The third argument of the transform operator must be an array of strings".to_string()
-                    ));
-                }
-            }
-        } else {
-            Vec::new()
-        };
-
         // Recursive helper to apply transformation throughout the structure
         fn apply_transform_deep(
             evaluator: &mut Evaluator,
             value: &JValue,
             targets: &[JValue],
             update: &AstNode,
-            delete_fields: &[String],
+            delete: Option<&AstNode>,
         ) -> Result<JValue, EvaluatorError> {
             // Check if this value is one of the targets to transform
             // Use JValue's PartialEq for semantic equality comparison
@@ -7178,8 +7188,10 @@ impl Evaluator {
                             ));
                         }
                     }
-                    for field in delete_fields {
-                        map.shift_remove(field);
+                    if let Some(delete) = delete {
+                        for field in evaluator.transform_deletions(delete, value)? {
+                            map.shift_remove(&field);
+                        }
                     }
                     return Ok(JValue::object(map));
                 }
@@ -7193,7 +7205,7 @@ impl Evaluator {
                     for (k, v) in map.iter() {
                         new_map.insert(
                             k.clone(),
-                            apply_transform_deep(evaluator, v, targets, update, delete_fields)?,
+                            apply_transform_deep(evaluator, v, targets, update, delete)?,
                         );
                     }
                     Ok(JValue::object(new_map))
@@ -7201,17 +7213,13 @@ impl Evaluator {
                 #[cfg(feature = "python")]
                 JValue::LazyPyDict(lazy) => {
                     let obj = JValue::Object(lazy.to_object().map_err(EvaluatorError::from)?);
-                    apply_transform_deep(evaluator, &obj, targets, update, delete_fields)
+                    apply_transform_deep(evaluator, &obj, targets, update, delete)
                 }
                 JValue::Array(arr) => {
                     let mut new_arr = Vec::new();
                     for item in arr.iter() {
                         new_arr.push(apply_transform_deep(
-                            evaluator,
-                            item,
-                            targets,
-                            update,
-                            delete_fields,
+                            evaluator, item, targets, update, delete,
                         )?);
                     }
                     Ok(JValue::array(new_arr))
@@ -7221,7 +7229,7 @@ impl Evaluator {
         }
 
         // Apply transformation recursively starting from input
-        apply_transform_deep(self, input, &targets, update, &delete_fields)
+        apply_transform_deep(self, input, &targets, update, delete)
     }
 
     /// Helper to invoke a lambda with given parameters

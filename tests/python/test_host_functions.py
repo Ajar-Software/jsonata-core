@@ -74,6 +74,7 @@ class TestRegister:
             ("5 ~> ($dbl ~> $string)", "10"),
             ("$map([1, 2], $dbl)", [2, 4]),
             ("$type($dbl)", "function"),
+            ("$exists($dbl)", True),
         ],
     )
     def test_host_function_as_value(self, source, expected):

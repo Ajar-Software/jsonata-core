@@ -63,7 +63,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **A transform is always a function value that runs when invoked**, as in jsonata-js. It used
   to run at once wherever `$` was bound, so a `~>` into a transform inside another transform's
   update, or `a.(|x|{}|)`, ran it on the wrong input. `$` in a transform's update is now the
-  matched object, not the transform's input. Like a lambda, it closes over the variables it
+  matched object, not the transform's input, and so it is in the delete clause, which is
+  evaluated for each matched object as jsonata-js does (it used to be evaluated once, against
+  the input). A delete clause that is not a string or an array of strings raises T2012, as
+  does one with a non-string item, which used to be skipped, and a transform called with more
+  than one argument raises T0410. Like a lambda, it closes over the variables it
   uses, and written directly as a higher-order function's argument it is called, as a
   composition such as `$map(n, $sum ~> $string)` now is.
 - **`$sort`, `$single` and the other higher-order builtins can be called by value**:

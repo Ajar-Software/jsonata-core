@@ -6710,6 +6710,53 @@
    }
   },
   {
+   "expression": "m ~> |k|{}, $keys($)|",
+   "result": {
+    "k": {}
+   }
+  },
+  {
+   "expression": "het ~> |$|{}, $keys($)[0]|",
+   "result": [
+    {
+     "b": 5
+    },
+    {
+     "a": 4
+    }
+   ]
+  },
+  {
+   "expression": "m ~> |k|{}, [\"b\", 1]|",
+   "result": {
+    "$error": "T2012"
+   }
+  },
+  {
+   "expression": "m ~> |k|{}, null|",
+   "result": {
+    "$error": "T2012"
+   }
+  },
+  {
+   "expression": "m ~> |k|{}, nope|",
+   "result": {
+    "k": {
+     "b": [
+      [
+       1
+      ]
+     ]
+    }
+   }
+  },
+  {
+   "expression": "($t := |k|{\"x\": 1}|; $t(m, 2))",
+   "result": {
+    "$error": "T0410"
+   }
+  },
+  {
    "expression": "[3, 1, 2] ~> $sort",
    "result": [
     1,
