@@ -61,6 +61,27 @@ fn failed_evaluation_leaves_no_bindings() {
 }
 
 #[test]
+fn an_error_inside_a_successful_evaluation_leaves_no_bindings() {
+    // A builtin's path argument used to be evaluated twice, the first time
+    // discarding any error, so the failed first pass left `$x` bound for the
+    // second pass and for later evaluations. jsonata-js raises the error.
+    let data = JValue::from(serde_json::json!({"a": [1, 2]}));
+    let mut ev = Evaluator::new();
+    let src = r#"$string(a.($exists($x) ? "ok" : ($x := 1; $error("e"))))"#;
+    assert!(eval(&mut ev, src, &data).is_err(), "{src} should fail");
+    assert_eq!(eval(&mut ev, "$x", &data), Ok(JValue::Undefined));
+}
+
+#[test]
+fn parent_is_each_evaluation_s_own_input() {
+    let mut ev = Evaluator::new();
+    let first = JValue::from(serde_json::json!({"k": 1}));
+    let second = JValue::from(serde_json::json!({"k": 2}));
+    assert_eq!(eval(&mut ev, "$$.k", &first), Ok(JValue::from(1i64)));
+    assert_eq!(eval(&mut ev, "$$.k", &second), Ok(JValue::from(2i64)));
+}
+
+#[test]
 fn many_failed_evaluations_do_not_grow_the_scope_stack() {
     // Each failure inside a lambda used to leave its scope pushed, so an
     // evaluator reused after many failures carried a growing stack of stale

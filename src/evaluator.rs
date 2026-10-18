@@ -3735,13 +3735,23 @@ impl Evaluator {
     /// temporary bindings an evaluation pushes are popped on its normal path
     /// only, but nothing inside an evaluation catches an error, so restoring
     /// the context here, the one place every error passes, undoes whatever
-    /// an error skipped.
+    /// an error skipped. `$$` is the evaluation's input unless the caller set
+    /// a parent on the context, so it doesn't outlive the evaluation either.
     pub fn evaluate(&mut self, node: &AstNode, data: &JValue) -> Result<JValue, EvaluatorError> {
         let entry_context = self.context.clone();
         let result = self.evaluate_from_entry(node, data);
         if result.is_err() {
             self.context = entry_context;
             self.keep_tuple_stream = false;
+            return result;
+        }
+        debug_assert_eq!(
+            self.context.scope_stack.len(),
+            entry_context.scope_stack.len(),
+            "a successful evaluation pops every scope it pushes"
+        );
+        if entry_context.get_parent().is_none() {
+            self.context.parent_data = None;
         }
         result
     }
@@ -5405,6 +5415,8 @@ impl Evaluator {
         // Coalescing (`??`): jsonata-js parses `a ?? b` as
         // `$exists(a) ? a : b`, so an undefined left side gives the right
         // one, null included as a value, and an error on the left propagates.
+        // jsonata-js evaluates `a` twice that way; once gives the same value
+        // unless `a` isn't deterministic (`$random()`), and does half the work.
         if op == BinaryOp::Coalesce {
             let value = self.evaluate_internal(lhs, data)?;
             return if value.is_undefined() {
@@ -6212,87 +6224,6 @@ impl Evaluator {
                     };
                 if !field_exists && propagates_undefined(name) {
                     return Ok(JValue::Null);
-                }
-            }
-            // Note: AstNode::String represents string literals (e.g., "hello"), not field accesses.
-            // Field accesses are represented as AstNode::Path. String literals should never
-            // be checked for undefined propagation.
-            // Check for Path expressions that evaluate to undefined
-            if let AstNode::Path { steps } = arg {
-                // For paths that evaluate to null, we need to determine if it's because:
-                // 1. A field doesn't exist (undefined) - should propagate as undefined
-                // 2. A field exists with value null - should throw T0410
-                //
-                // We can distinguish these by checking if the path is accessing a field
-                // that doesn't exist on an object vs one that has an explicit null value.
-                if let Ok(JValue::Null) = self.evaluate_internal(arg, data) {
-                    // Path evaluated to null - now check if it's truly undefined
-                    // For single-step paths, check if the field exists
-                    if steps.len() == 1 {
-                        // Get field name - could be Name (identifier) or String (quoted)
-                        let field_name = match &steps[0].node {
-                            AstNode::Name(n) => Some(n.as_str()),
-                            AstNode::String(s) => Some(s.as_str()),
-                            _ => None,
-                        };
-                        if let Some(field) = field_name {
-                            match data {
-                                JValue::Object(obj) => {
-                                    if !obj.contains_key(field) {
-                                        // Field doesn't exist - return undefined
-                                        if propagates_undefined(name) {
-                                            return Ok(JValue::Null);
-                                        }
-                                    }
-                                    // Field exists with value null - continue to throw T0410
-                                }
-                                // Trying to access field on null data - return undefined
-                                JValue::Null if propagates_undefined(name) => {
-                                    return Ok(JValue::Null);
-                                }
-                                _ => {}
-                            }
-                        }
-                    }
-                    // For multi-step paths, check if any intermediate step failed
-                    else if steps.len() > 1 {
-                        // Evaluate each step to find where it breaks
-                        let mut current = data;
-                        let mut failed_due_to_missing_field = false;
-
-                        for (i, step) in steps.iter().enumerate() {
-                            if let AstNode::Name(field_name) = &step.node {
-                                match current {
-                                    JValue::Object(obj) => {
-                                        if let Some(val) = obj.get(field_name) {
-                                            current = val;
-                                        } else {
-                                            // Field doesn't exist
-                                            failed_due_to_missing_field = true;
-                                            break;
-                                        }
-                                    }
-                                    JValue::Array(_) => {
-                                        // Array access - evaluate normally
-                                        break;
-                                    }
-                                    JValue::Null => {
-                                        // Hit null in the middle of the path
-                                        if i > 0 {
-                                            // Previous field had null value - not undefined
-                                            failed_due_to_missing_field = false;
-                                        }
-                                        break;
-                                    }
-                                    _ => break,
-                                }
-                            }
-                        }
-
-                        if failed_due_to_missing_field && propagates_undefined(name) {
-                            return Ok(JValue::Null);
-                        }
-                    }
                 }
             }
         }

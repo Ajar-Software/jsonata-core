@@ -53,6 +53,17 @@ fn is_error(v: &Value) -> bool {
     v.get("$error").is_some()
 }
 
+/// The jsonata-js error code a case expects (`D3137`), if it has one. Some
+/// expected errors are jsonata-js crashes with only a message; any error
+/// matches those.
+fn expected_code(v: &Value) -> Option<&str> {
+    let code = v.get("$error")?.as_str()?;
+    let is_code = code.len() == 5
+        && code.starts_with(|c: char| c.is_ascii_uppercase())
+        && code[1..].bytes().all(|b| b.is_ascii_digit());
+    is_code.then_some(code)
+}
+
 #[test]
 fn path_semantics_match_jsonata_js() {
     let fixture: Value =
@@ -87,7 +98,10 @@ fn path_semantics_match_jsonata_js() {
         for (engine, result) in [("compiled", compiled), ("tree", tree)] {
             let matches = match &result {
                 Ok(v) => norm(&encode(v)) == expected,
-                Err(_) => is_error(&expected),
+                Err(e) => match expected_code(&expected) {
+                    Some(code) => e.to_string().contains(code),
+                    None => is_error(&expected),
+                },
             };
             if !matches {
                 if verbose {

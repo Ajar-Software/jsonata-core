@@ -57,7 +57,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `3`.
 - **A failed evaluation leaves an `Evaluator` as it found it.** Scopes and temporary bindings
   that an error skipped popping are restored, so an evaluator reused through the Rust API
-  doesn't see variables, or a stale `$`, from an earlier evaluation that failed.
+  doesn't see variables, or a stale `$`, from an earlier evaluation that failed. `$$` is each
+  evaluation's own input; a reused evaluator used to keep answering it from the first.
+- **A builtin's path argument is evaluated once.** A leftover check evaluated it a first time
+  and discarded any error, so `$string(a.($x := 1; $error("e")))`-style arguments could
+  succeed with bindings left over from the failed pass, where jsonata-js raises the error.
 - **`$match` returns every match**, as jsonata-js does ([#194](https://github.com/txjmb/jsonata-core/issues/194)).
   jsonata-js regexes are always global, so `$match("aba", /a/)` gives both matches, not only
   the first, and the limit argument caps how many are returned. Each match object now always
