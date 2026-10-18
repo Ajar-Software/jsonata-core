@@ -2941,6 +2941,59 @@ fn group_context(items: &[JValue]) -> JValue {
     }
 }
 
+/// `$match` with a regex, following jsonata-js `match` and its regex
+/// closure (`evaluateRegex`): every match from the start of the string, up
+/// to `limit`, each as `{match, index, groups}`, in a sequence. jsonata-js
+/// regexes are always global, so a `g` flag changes nothing. As in jsonata-js,
+/// the next match is looked for after each one, even when the limit has
+/// been reached, and a zero-length match found that way is D1004, since
+/// matching would never move on. `index` counts UTF-16 code units, as
+/// JavaScript strings do.
+fn regex_matches(
+    re: &regex::Regex,
+    s: &str,
+    limit: Option<usize>,
+) -> Result<JValue, EvaluatorError> {
+    let mut results = Vec::new();
+    if limit == Some(0) {
+        return Ok(JValue::sequence(results));
+    }
+    // The UTF-16 offset of `counted_to`, kept as the search moves forward.
+    let (mut counted_to, mut utf16_index) = (0, 0);
+    let mut next = re.captures(s);
+    while let Some(caps) = next {
+        let found = caps.get(0).expect("group 0 is the whole match");
+        utf16_index += s[counted_to..found.start()].encode_utf16().count();
+        counted_to = found.start();
+        let groups = (1..caps.len())
+            .map(|i| match caps.get(i) {
+                Some(group) => JValue::string(group.as_str()),
+                None => JValue::Undefined,
+            })
+            .collect();
+        let mut match_obj = IndexMap::with_capacity(3);
+        match_obj.insert("match".to_string(), JValue::string(found.as_str()));
+        match_obj.insert("index".to_string(), JValue::from(utf16_index as i64));
+        match_obj.insert("groups".to_string(), JValue::array(groups));
+        results.push(JValue::object(match_obj));
+
+        next = if found.end() >= s.len() {
+            None
+        } else {
+            re.captures_at(s, found.end())
+        };
+        if next.as_ref().is_some_and(|caps| caps[0].is_empty()) {
+            return Err(EvaluatorError::EvaluationError(
+                "D1004: Regular expression matches zero length string".to_string(),
+            ));
+        }
+        if limit.is_some_and(|limit| results.len() >= limit) {
+            break;
+        }
+    }
+    Ok(JValue::sequence(results))
+}
+
 /// True for a tuple-stream wrapper object (see `create_tuple_stream`). Every
 /// wrapper is built with `@` as its first key, which rules out most plain
 /// objects without hashing.
@@ -6382,19 +6435,21 @@ impl Evaluator {
                     }
                 };
 
-                // Get optional limit
-                let limit = if evaluated_args.len() == 3 {
-                    match &evaluated_args[2] {
-                        JValue::Number(n) => Some(*n as usize),
-                        JValue::Null => None,
-                        _ => {
-                            return Err(EvaluatorError::TypeError(
-                                "match() limit must be a number".to_string(),
-                            ))
-                        }
+                // Optional limit; jsonata-js rejects a negative one (D3040).
+                let limit = match evaluated_args.get(2) {
+                    None | Some(JValue::Null) | Some(JValue::Undefined) => None,
+                    Some(JValue::Number(n)) if *n < 0.0 => {
+                        return Err(EvaluatorError::EvaluationError(format!(
+                            "D3040: Third argument of match function must evaluate to a positive number; got: {}",
+                            n
+                        )));
                     }
-                } else {
-                    None
+                    Some(JValue::Number(n)) => Some(*n as usize),
+                    Some(_) => {
+                        return Err(EvaluatorError::TypeError(
+                            "match() limit must be a number".to_string(),
+                        ))
+                    }
                 };
 
                 // Check if second argument is a custom matcher function (lambda)
@@ -6422,61 +6477,9 @@ impl Evaluator {
 
                 // Build regex via the shared flag translation ($split/$replace
                 // use the same helper, so i/m/s behave identically everywhere)
-                let is_global = flags.contains('g');
                 let re = crate::functions::string::build_regex(&pattern, &flags)
                     .map_err(|e| EvaluatorError::EvaluationError(e.to_string()))?;
-
-                let mut results = Vec::new();
-                let mut count = 0;
-
-                for caps in re.captures_iter(&s) {
-                    if let Some(lim) = limit {
-                        if count >= lim {
-                            break;
-                        }
-                    }
-
-                    let full_match = caps.get(0).unwrap();
-                    let mut match_obj = IndexMap::new();
-                    match_obj.insert(
-                        "match".to_string(),
-                        JValue::string(full_match.as_str().to_string()),
-                    );
-                    match_obj.insert(
-                        "index".to_string(),
-                        JValue::Number(full_match.start() as f64),
-                    );
-
-                    // Collect capture groups
-                    let mut groups: Vec<JValue> = Vec::new();
-                    for i in 1..caps.len() {
-                        if let Some(group) = caps.get(i) {
-                            groups.push(JValue::string(group.as_str().to_string()));
-                        } else {
-                            groups.push(JValue::Null);
-                        }
-                    }
-                    if !groups.is_empty() {
-                        match_obj.insert("groups".to_string(), JValue::array(groups));
-                    }
-
-                    results.push(JValue::object(match_obj));
-                    count += 1;
-
-                    // If not global, only return first match
-                    if !is_global {
-                        break;
-                    }
-                }
-
-                if results.is_empty() {
-                    Ok(JValue::Undefined)
-                } else if results.len() == 1 && !is_global {
-                    // Single match (non-global) returns the match object directly
-                    Ok(results.into_iter().next().unwrap())
-                } else {
-                    Ok(JValue::sequence(results))
-                }
+                regex_matches(&re, &s, limit)
             }
             "sift" => {
                 // $sift(object, function) or $sift(function) - filter object by predicate

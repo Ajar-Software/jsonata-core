@@ -5976,6 +5976,207 @@
    ]
   },
   {
+   "expression": "$match(\"aba\", /a/)",
+   "result": [
+    {
+     "match": "a",
+     "index": 0,
+     "groups": []
+    },
+    {
+     "match": "a",
+     "index": 2,
+     "groups": []
+    }
+   ]
+  },
+  {
+   "expression": "$match(\"aba\", /a/, 1)",
+   "result": {
+    "match": "a",
+    "index": 0,
+    "groups": []
+   }
+  },
+  {
+   "expression": "$match(\"aba\", /a/, 0)",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "$match(\"aba\", /z/)",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "$match(\"xay\", /a/)",
+   "result": {
+    "match": "a",
+    "index": 1,
+    "groups": []
+   }
+  },
+  {
+   "expression": "$match(\"ab\", /(a)(c)?/)",
+   "result": {
+    "match": "a",
+    "index": 0,
+    "groups": [
+     "a",
+     {
+      "$undefined": true
+     }
+    ]
+   }
+  },
+  {
+   "expression": "$match(\"abc\", /x*/)",
+   "result": {
+    "$error": "D1004"
+   }
+  },
+  {
+   "expression": "$match(\"abc\", /x*/, 1)",
+   "result": {
+    "$error": "D1004"
+   }
+  },
+  {
+   "expression": "$match(\"\", /x*/)",
+   "result": {
+    "match": "",
+    "index": 0,
+    "groups": []
+   }
+  },
+  {
+   "expression": "$match(\"ab\", /a|/)",
+   "result": {
+    "$error": "D1004"
+   }
+  },
+  {
+   "expression": "$match(\"aBa\", /b/i)",
+   "result": {
+    "match": "B",
+    "index": 1,
+    "groups": []
+   }
+  },
+  {
+   "expression": "$match(\"aba\", /a/, -1)",
+   "result": {
+    "$error": "D3040"
+   }
+  },
+  {
+   "expression": "$match(nope, /a/)",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "$match(\"aba\", /a/)[1].index",
+   "result": 2
+  },
+  {
+   "expression": "[$match(\"a\", /a/)]",
+   "result": [
+    {
+     "match": "a",
+     "index": 0,
+     "groups": []
+    }
+   ]
+  },
+  {
+   "expression": "$count($match(\"aba\", /a/))",
+   "result": 2
+  },
+  {
+   "expression": "$match(\"a1b22\", /\\d+/).match",
+   "result": [
+    "1",
+    "22"
+   ]
+  },
+  {
+   "expression": "$match(\"éa😀a\", /a/)",
+   "result": [
+    {
+     "match": "a",
+     "index": 1,
+     "groups": []
+    },
+    {
+     "match": "a",
+     "index": 4,
+     "groups": []
+    }
+   ]
+  },
+  {
+   "expression": "$match(\"aaa\", /^a/)",
+   "result": {
+    "match": "a",
+    "index": 0,
+    "groups": []
+   }
+  },
+  {
+   "expression": "$match(\"a\\nb\", /^\\w/m)",
+   "result": [
+    {
+     "match": "a",
+     "index": 0,
+     "groups": []
+    },
+    {
+     "match": "b",
+     "index": 2,
+     "groups": []
+    }
+   ]
+  },
+  {
+   "expression": "$match(\"ab\", /(?<x>a)/)",
+   "result": {
+    "match": "a",
+    "index": 0,
+    "groups": [
+     "a"
+    ]
+   }
+  },
+  {
+   "expression": "o.t.$match($, /[a-z]/)",
+   "result": [
+    {
+     "match": "x",
+     "index": 0,
+     "groups": []
+    },
+    {
+     "match": "y",
+     "index": 0,
+     "groups": []
+    },
+    {
+     "match": "z",
+     "index": 0,
+     "groups": []
+    }
+   ]
+  },
+  {
+   "expression": "$match(o.t[0], /x/).groups",
+   "result": {
+    "$error": "T0410"
+   }
+  },
+  {
    "expression": "a",
    "root": true,
    "result": [

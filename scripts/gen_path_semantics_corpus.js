@@ -134,6 +134,14 @@ const EXTRA = [
   '($x := 1; acct.Order.P)^(>%.id).N', 'acct.Order.(P).{"n": N, "o": %.id}',
   'acct.Order#$k.(P#$i.%).{"i": $i, "k": $k}', 'o#$i.(t#$i.%).{"i": $i}',
   'acct.Order.P{%.id: N}', 'acct.Order.(P)#$i.{"n": N, "i": $i, "o": %.id}',
+  // `$match` returns every match as a sequence (#194).
+  '$match("aba", /a/)', '$match("aba", /a/, 1)', '$match("aba", /a/, 0)', '$match("aba", /z/)',
+  '$match("xay", /a/)', '$match("ab", /(a)(c)?/)', '$match("abc", /x*/)', '$match("abc", /x*/, 1)',
+  '$match("", /x*/)', '$match("ab", /a|/)', '$match("aBa", /b/i)', '$match("aba", /a/, -1)',
+  '$match(nope, /a/)', '$match("aba", /a/)[1].index', '[$match("a", /a/)]',
+  '$count($match("aba", /a/))', '$match("a1b22", /\\d+/).match', '$match("éa😀a", /a/)',
+  '$match("aaa", /^a/)', '$match("a\\nb", /^\\w/m)', '$match("ab", /(?<x>a)/)',
+  'o.t.$match($, /[a-z]/)', '$match(o.t[0], /x/).groups',
 ];
 
 // The same questions with a top-level array as input. jsonata-js wraps that
