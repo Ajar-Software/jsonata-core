@@ -74,8 +74,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `[3,1,2] ~> $sort`, `$f := $single` and `$sort ~> $reverse` used to raise T0410. They now run
   as a direct call does, validating their arguments the same way.
 - **A host function named without a call is a function value**, as a builtin is, so
-  `5 ~> $dbl`, `$f := $dbl` and `$map(arr, $dbl)` work for a function registered with
-  `register`.
+  `5 ~> $dbl`, `$f := $dbl`, `$map(arr, $dbl)` and `$exists($dbl)` work for a function
+  registered with `register`. `$exists` on a variable checks its binding first, so a bound
+  name that shadows a builtin, such as `($sort := nope; $exists($sort))`, is `false`.
+- **A lambda parameter without an argument is undefined**, not `null`, on every path:
+  `($f := function($v) { $type($v) }; $f())` used to be `"null"` when the body was simple
+  enough to compile, and a tail-recursive lambda bound it as `null` too.
 - **`$single`, transforms and partial applications handle undefined as jsonata-js does**
   ([#193](https://github.com/txjmb/jsonata-core/issues/193)). `$single` gives undefined for an
   undefined input and treats `null` as a one-item sequence. A transform gives undefined for an

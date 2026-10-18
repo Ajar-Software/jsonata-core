@@ -6824,6 +6824,40 @@
    ]
   },
   {
+   "expression": "($sort := nope; $exists($sort))",
+   "result": false
+  },
+  {
+   "expression": "$exists($sort)",
+   "result": true
+  },
+  {
+   "expression": "($sort := null; $exists($sort))",
+   "result": true
+  },
+  {
+   "expression": "(function($sort) { $exists($sort) })()",
+   "result": false
+  },
+  {
+   "expression": "($f := function($v) { $type($v) }; $f())",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "($f := function($v, $w) { [$v, $w] }; $f(1))",
+   "result": [
+    1
+   ]
+  },
+  {
+   "expression": "($f := function($n, $acc) { $n = 0 ? $type($acc) : $f($n - 1) }; $f(3))",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
    "expression": "a",
    "root": true,
    "result": [

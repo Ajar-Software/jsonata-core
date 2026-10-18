@@ -3410,11 +3410,14 @@ impl Evaluator {
                     .any(|v| matches!(v, JValue::Lambda { .. } | JValue::Builtin { .. }))
             {
                 let call_data = stored.captured_data.as_ref().unwrap_or(data);
+                // A parameter without an argument is undefined, as on the
+                // tree-walking path.
+                let undefined = JValue::Undefined;
                 let vars: HashMap<&str, &JValue> = stored
                     .params
                     .iter()
-                    .zip(args.iter())
-                    .map(|(p, v)| (p.as_str(), v))
+                    .enumerate()
+                    .map(|(i, p)| (p.as_str(), args.get(i).unwrap_or(&undefined)))
                     .chain(stored.captured_env.iter().map(|(k, v)| (k.as_str(), v)))
                     .collect();
                 return eval_compiled(ce, call_data, Some(&vars), &self.options, self.start_time);
@@ -6029,21 +6032,13 @@ impl Evaluator {
 
             // Check if it's a function reference
             if let AstNode::Variable(var_name) = arg {
-                if self.is_function_name(var_name) {
-                    return Ok(JValue::Bool(true)); // Builtin or host function exists
-                }
-
-                // Check if the variable is defined (lambda values are ordinary
-                // bindings, so this covers user-defined functions too)
+                // A binding (lambda values are ordinary bindings, so this
+                // covers user-defined functions too) shadows a builtin or
+                // host function of the same name.
                 if let Some(val) = self.context.lookup(var_name) {
-                    // A variable bound to the undefined marker doesn't "exist"
-                    if val.is_undefined() {
-                        return Ok(JValue::Bool(false));
-                    }
-                    return Ok(JValue::Bool(true)); // Variable is defined (even if null)
-                } else {
-                    return Ok(JValue::Bool(false)); // Variable is undefined
+                    return Ok(JValue::Bool(!val.is_undefined()));
                 }
+                return Ok(JValue::Bool(self.is_function_name(var_name)));
             }
 
             // For other expressions, evaluate and check whether anything is
@@ -7442,7 +7437,7 @@ impl Evaluator {
 
         // Bind parameters
         for (i, param) in lambda.params.iter().enumerate() {
-            let value = coerced_values.get(i).cloned().unwrap_or(JValue::Null);
+            let value = coerced_values.get(i).cloned().unwrap_or(JValue::Undefined);
             self.context.bind(param.clone(), value);
         }
 

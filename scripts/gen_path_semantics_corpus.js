@@ -200,6 +200,11 @@ const EXTRA = [
   '($f := function($v) { $exists($x) }; arr ~> ($sum ~> $f))',
   '(function($sort) { $sort([3, 1, 2]) })($sort)',
   '($s := $sort; $sort := function($x) { "user" }; $s([3, 1, 2]))',
+  '($sort := nope; $exists($sort))', '$exists($sort)', '($sort := null; $exists($sort))',
+  // A parameter without an argument is undefined.
+  '(function($sort) { $exists($sort) })()', '($f := function($v) { $type($v) }; $f())',
+  '($f := function($v, $w) { [$v, $w] }; $f(1))',
+  '($f := function($n, $acc) { $n = 0 ? $type($acc) : $f($n - 1) }; $f(3))',
 ];
 
 // The same questions with a top-level array as input. jsonata-js wraps that
