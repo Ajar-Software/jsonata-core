@@ -11,6 +11,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Rust API: `JValue::Array` holds a `JArray`** instead of an `Rc<Vec<JValue>>` (#184). `JArray`
+  dereferences to `Vec<JValue>`, so code that reads arrays is unaffected. Code that builds them
+  calls `JValue::array(vec)`, and `JArray::make_mut`, `into_vec` and `ptr_eq` replace
+  `Rc::make_mut`, `Rc::try_unwrap` and `Rc::ptr_eq`. `JArray` also carries the `sequence`, `cons`
+  and `keep_singleton` flags jsonata-js keeps on arrays; nothing reads them yet.
 - **`function` and `λ` are names, not keywords.** They open a lambda only when immediately
   followed by `(`, matching jsonata-js, which has no such keyword and decides lambda-ness from
   the callee of a call. Anywhere else they are ordinary path steps, so `function` now reads a

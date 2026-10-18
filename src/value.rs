@@ -2,6 +2,7 @@
 // Replaces serde_json::Value for internal use
 
 use std::fmt;
+use std::ops::Deref;
 use std::rc::Rc;
 
 use indexmap::IndexMap;
@@ -20,7 +21,7 @@ pub enum JValue {
     Bool(bool),
     Number(f64),
     String(Rc<str>),
-    Array(Rc<Vec<JValue>>),
+    Array(JArray),
     Object(Rc<IndexMap<String, JValue>>),
 
     // Internal types (previously tagged objects)
@@ -41,6 +42,136 @@ pub enum JValue {
     /// Lazily-converted Python dict (see src/lazy.rs). Python-builds only.
     #[cfg(feature = "python")]
     LazyPyDict(Rc<crate::lazy::LazyPyDict>),
+}
+
+// ── JArray ───────────────────────────────────────────────────────────────────
+
+/// The payload of `JValue::Array`: a shared, reference-counted list of items
+/// plus the flags jsonata-js keeps on array values to decide singleton
+/// unwrapping and flattening (issue #184).
+///
+/// - `sequence`: built by the evaluator (jsonata-js `createSequence()`), as
+///   opposed to an array read from the input or built by `[...]`.
+/// - `cons`: built by the `[...]` array constructor; never flattened.
+/// - `keep_singleton`: produced under the `[]` keep-array modifier; a one-item
+///   sequence is not unwrapped.
+///
+/// The flags sit beside the `Rc`, not inside it, so flagging an array that is
+/// shared (an input array, a bound variable) is O(1) and never copies the
+/// items. They belong to this value, not to the allocation: two `JValue`s may
+/// share items and differ in flags. jsonata-js gets the same effect by
+/// mutating the array object in place.
+///
+/// The flags are metadata only: equality, serialization, and conversion to
+/// host values ignore them. `JArray` dereferences to `Vec<JValue>`.
+#[derive(Clone, Default)]
+pub struct JArray {
+    items: Rc<Vec<JValue>>,
+    pub sequence: bool,
+    pub cons: bool,
+    pub keep_singleton: bool,
+}
+
+impl JArray {
+    /// A plain array with no flags set.
+    #[inline]
+    pub fn new(items: Vec<JValue>) -> Self {
+        JArray {
+            items: Rc::new(items),
+            sequence: false,
+            cons: false,
+            keep_singleton: false,
+        }
+    }
+
+    /// A mutable reference to the items, cloning them first if they are
+    /// shared (`Rc::make_mut`).
+    #[inline]
+    pub fn make_mut(&mut self) -> &mut Vec<JValue> {
+        Rc::make_mut(&mut self.items)
+    }
+
+    /// Consume the array and return its items, dropping the flags. Clones the
+    /// items only if they are shared.
+    #[inline]
+    pub fn into_vec(self) -> Vec<JValue> {
+        Rc::try_unwrap(self.items).unwrap_or_else(|rc| (*rc).clone())
+    }
+
+    /// A new array holding `items`, carrying this array's flags. Use it to
+    /// rebuild an array from its items; `into_vec` and `JValue::array` drop
+    /// the flags.
+    #[inline]
+    pub fn with_items(&self, items: Vec<JValue>) -> JArray {
+        JArray {
+            items: Rc::new(items),
+            ..*self
+        }
+    }
+
+    /// True when both arrays share the same items allocation.
+    #[inline]
+    pub fn ptr_eq(a: &JArray, b: &JArray) -> bool {
+        Rc::ptr_eq(&a.items, &b.items)
+    }
+}
+
+impl Deref for JArray {
+    type Target = Vec<JValue>;
+
+    #[inline]
+    fn deref(&self) -> &Vec<JValue> {
+        &self.items
+    }
+}
+
+/// Prints the items only, as `Rc<Vec<JValue>>` did, so that error messages
+/// formatting a value with `{:?}` don't change with the flags.
+impl fmt::Debug for JArray {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Debug::fmt(&*self.items, f)
+    }
+}
+
+impl PartialEq for JArray {
+    #[inline]
+    fn eq(&self, other: &Self) -> bool {
+        self.items == other.items
+    }
+}
+
+impl From<Vec<JValue>> for JArray {
+    #[inline]
+    fn from(items: Vec<JValue>) -> Self {
+        JArray::new(items)
+    }
+}
+
+impl From<JArray> for Vec<JValue> {
+    #[inline]
+    fn from(arr: JArray) -> Self {
+        arr.into_vec()
+    }
+}
+
+impl<'a> IntoIterator for &'a JArray {
+    type Item = &'a JValue;
+    type IntoIter = std::slice::Iter<'a, JValue>;
+
+    #[inline]
+    fn into_iter(self) -> Self::IntoIter {
+        self.items.iter()
+    }
+}
+
+impl IntoIterator for JArray {
+    type Item = JValue;
+    type IntoIter = std::vec::IntoIter<JValue>;
+
+    #[inline]
+    fn into_iter(self) -> Self::IntoIter {
+        self.into_vec().into_iter()
+    }
 }
 
 // ── Type checks ──────────────────────────────────────────────────────────────
@@ -186,7 +317,7 @@ impl JValue {
     #[inline]
     pub fn as_array_mut(&mut self) -> Option<&mut Vec<JValue>> {
         match self {
-            JValue::Array(arr) => Some(Rc::make_mut(arr)),
+            JValue::Array(arr) => Some(arr.make_mut()),
             _ => None,
         }
     }
@@ -248,7 +379,25 @@ impl JValue {
 
     #[inline]
     pub fn array(v: Vec<JValue>) -> Self {
-        JValue::Array(Rc::new(v))
+        JValue::Array(JArray::new(v))
+    }
+
+    /// An array built by the evaluator (jsonata-js `createSequence()`).
+    #[inline]
+    pub fn sequence(v: Vec<JValue>) -> Self {
+        JValue::Array(JArray {
+            sequence: true,
+            ..JArray::new(v)
+        })
+    }
+
+    /// An array built by the `[...]` array constructor.
+    #[inline]
+    pub fn cons(v: Vec<JValue>) -> Self {
+        JValue::Array(JArray {
+            cons: true,
+            ..JArray::new(v)
+        })
     }
 
     #[inline]
@@ -338,7 +487,7 @@ impl From<Rc<str>> for JValue {
 impl From<Vec<JValue>> for JValue {
     #[inline]
     fn from(v: Vec<JValue>) -> Self {
-        JValue::Array(Rc::new(v))
+        JValue::array(v)
     }
 }
 
@@ -693,7 +842,7 @@ impl From<serde_json::Value> for JValue {
             serde_json::Value::Number(n) => JValue::Number(n.as_f64().unwrap_or(0.0)),
             serde_json::Value::String(s) => JValue::String(s.into()),
             serde_json::Value::Array(arr) => {
-                JValue::Array(Rc::new(arr.into_iter().map(JValue::from).collect()))
+                JValue::array(arr.into_iter().map(JValue::from).collect())
             }
             serde_json::Value::Object(map) => {
                 let m: IndexMap<String, JValue> =
@@ -768,7 +917,7 @@ impl From<&JValue> for serde_json::Value {
 ///   jvalue!(42)             → JValue::Number(42.0)
 ///   jvalue!(3.14)           → JValue::Number(3.14)
 ///   jvalue!("hello")        → JValue::String(Rc::from("hello"))
-///   jvalue!([1, 2, 3])      → JValue::Array(Rc::new(vec![...]))
+///   jvalue!([1, 2, 3])      → JValue::array(vec![...])
 ///   jvalue!({"k": v, ...})  → JValue::Object(Rc::new(IndexMap from pairs))
 ///   jvalue!(expr)           → JValue::from(expr)
 #[macro_export]
@@ -790,7 +939,7 @@ macro_rules! jvalue {
 
     // Array
     ([ $($elem:tt),* $(,)? ]) => {
-        $crate::value::JValue::Array(std::rc::Rc::new(vec![ $( jvalue!($elem) ),* ]))
+        $crate::value::JValue::array(vec![ $( jvalue!($elem) ),* ])
     };
 
     // Object
@@ -826,7 +975,7 @@ mod tests {
         ]);
         let arr2 = arr.clone();
         if let (JValue::Array(a), JValue::Array(b)) = (&arr, &arr2) {
-            assert!(Rc::ptr_eq(a, b));
+            assert!(JArray::ptr_eq(a, b));
         } else {
             panic!("expected arrays");
         }
@@ -937,5 +1086,81 @@ mod tests {
         // arr2 should be unchanged
         assert_eq!(arr.as_array().unwrap().len(), 3);
         assert_eq!(arr2.as_array().unwrap().len(), 2);
+    }
+
+    fn flags(v: &JValue) -> (bool, bool, bool) {
+        match v {
+            JValue::Array(a) => (a.sequence, a.cons, a.keep_singleton),
+            _ => panic!("not an array"),
+        }
+    }
+
+    #[test]
+    fn test_array_constructors_set_flags() {
+        let items = || vec![JValue::from(1i64)];
+        assert_eq!(flags(&JValue::array(items())), (false, false, false));
+        assert_eq!(flags(&JValue::sequence(items())), (true, false, false));
+        assert_eq!(flags(&JValue::cons(items())), (false, true, false));
+        assert_eq!(flags(&JValue::from(items())), (false, false, false));
+        assert_eq!(flags(&jvalue!([1, 2])), (false, false, false));
+    }
+
+    #[test]
+    fn test_array_flags_ignored_by_eq_and_serialization() {
+        let items = || vec![JValue::from(1i64), JValue::from("a")];
+        let plain = JValue::array(items());
+        let seq = JValue::sequence(items());
+        let cons = JValue::cons(items());
+        assert_eq!(plain, seq);
+        assert_eq!(plain, cons);
+        let json = serde_json::to_string(&plain).unwrap();
+        assert_eq!(serde_json::to_string(&seq).unwrap(), json);
+        assert_eq!(serde_json::to_string(&cons).unwrap(), json);
+        assert_eq!(
+            serde_json::Value::from(&seq),
+            serde_json::Value::from(&plain)
+        );
+    }
+
+    #[test]
+    fn test_array_make_mut_keeps_flags() {
+        let mut seq = JValue::sequence(vec![JValue::from(1i64)]);
+        let shared = seq.clone();
+        seq.as_array_mut().unwrap().push(JValue::from(2i64));
+        assert_eq!(flags(&seq), (true, false, false));
+        assert_eq!(shared.as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn test_flagging_a_shared_array_does_not_copy() {
+        let input = JValue::array(vec![JValue::from(1i64), JValue::from(2i64)]);
+        let mut flagged = input.clone();
+        if let JValue::Array(a) = &mut flagged {
+            a.sequence = true;
+        }
+        match (&input, &flagged) {
+            (JValue::Array(a), JValue::Array(b)) => {
+                assert!(JArray::ptr_eq(a, b), "items should still be shared");
+                assert!(!a.sequence && b.sequence, "flags belong to each value");
+            }
+            _ => panic!("expected arrays"),
+        }
+    }
+
+    #[test]
+    fn test_array_debug_hides_flags() {
+        let seq = JValue::sequence(vec![JValue::from(1i64)]);
+        assert_eq!(format!("{seq:?}"), "Array([Number(1.0)])");
+    }
+
+    #[test]
+    fn test_with_items_keeps_flags() {
+        let seq = JValue::sequence(vec![JValue::from(1i64)]);
+        let JValue::Array(arr) = &seq else {
+            unreachable!()
+        };
+        let rebuilt = arr.with_items(vec![JValue::from(2i64)]);
+        assert!(rebuilt.sequence && !rebuilt.cons && !rebuilt.keep_singleton);
+        assert_eq!(*rebuilt, vec![JValue::from(2i64)]);
     }
 }
