@@ -2948,16 +2948,14 @@ fn match_limit(
     value: Option<&JValue>,
     negative_limit: &str,
 ) -> Result<Option<usize>, EvaluatorError> {
+    // The function's signature (`n?`) has already rejected any other value.
     match value {
-        None | Some(JValue::Undefined) | Some(JValue::Null) => Ok(None),
         Some(JValue::Number(n)) if *n < 0.0 => {
             Err(EvaluatorError::EvaluationError(negative_limit.to_string()))
         }
         // `as` saturates, and a NaN limit matches nothing, as in jsonata-js.
         Some(JValue::Number(n)) => Ok(Some(n.ceil() as usize)),
-        Some(_) => Err(EvaluatorError::TypeError(
-            "The limit argument must be a number".to_string(),
-        )),
+        _ => Ok(None),
     }
 }
 
@@ -2968,7 +2966,10 @@ const REPLACE_NEGATIVE_LIMIT: &str =
 
 /// jsonata-js `evaluateMatcher`'s check on a custom matcher's result: a
 /// value that isn't falsy must have a numeric `start`, an array `groups` or
-/// a function `next`, else T1010. A falsy result ends the matches.
+/// a function `next`, else T1010. Undefined ends the matches, as in
+/// jsonata-js. jsonata-js then crashes on any other falsy result, or on a
+/// match with no `next` function, by reading a property of it; those end
+/// the matches here instead.
 fn check_matcher_result(result: &JValue) -> Result<(), EvaluatorError> {
     let falsy = match result {
         JValue::Undefined | JValue::Null | JValue::Bool(false) => true,
@@ -6418,7 +6419,8 @@ impl Evaluator {
                 if is_custom_matcher {
                     // Custom matcher function support
                     // Call the matcher with the string, get match objects with {match, start, end, groups, next}
-                    return self.match_with_custom_matcher(&s, &args[1], limit, data);
+                    let matcher = evaluated_args[1].clone();
+                    return self.match_with_custom_matcher(&s, &matcher, limit, data);
                 }
 
                 // Get regex pattern from second argument
@@ -7782,10 +7784,31 @@ impl Evaluator {
     /// The matcher function is called with the string and returns:
     /// { match: string, start: number, end: number, groups: [], next: function }
     /// The next function is called repeatedly to get subsequent matches
+    /// Call a function value (a lambda or a builtin) with `values`, or
+    /// `None` when `function` is not a function.
+    fn call_function_value(
+        &mut self,
+        function: &JValue,
+        values: &[JValue],
+        data: &JValue,
+    ) -> Result<Option<JValue>, EvaluatorError> {
+        match function {
+            JValue::Lambda(stored) => {
+                let stored = Rc::clone(stored);
+                self.invoke_stored_lambda(&stored, values, data).map(Some)
+            }
+            JValue::Builtin { name } => {
+                let name = name.to_string();
+                self.call_builtin_with_values(&name, values, data).map(Some)
+            }
+            _ => Ok(None),
+        }
+    }
+
     fn match_with_custom_matcher(
         &mut self,
         str_value: &str,
-        matcher_node: &AstNode,
+        matcher: &JValue,
         limit: Option<usize>,
         data: &JValue,
     ) -> Result<JValue, EvaluatorError> {
@@ -7797,8 +7820,11 @@ impl Evaluator {
             return Ok(JValue::sequence(results));
         }
         let str_val = JValue::string(str_value.to_string());
-        let mut current = self.apply_function(matcher_node, &[str_val], data)?;
+        let mut current = self
+            .call_function_value(matcher, &[str_val], data)?
+            .unwrap_or(JValue::Undefined);
         loop {
+            current = normalize_lazy(&current)?;
             check_matcher_result(&current)?;
             let JValue::Object(match_obj) = &current else {
                 break;
@@ -7811,14 +7837,14 @@ impl Evaluator {
             }
             results.push(JValue::object(result_obj));
 
-            let next = match match_obj
-                .get("next")
-                .and_then(|next| self.lookup_lambda_from_value(next))
-            {
-                Some(next) => self.invoke_stored_lambda(&next, &[], data)?,
-                None => break,
+            let next = match match_obj.get("next") {
+                Some(next) => self.call_function_value(next, &[], data)?,
+                None => None,
             };
-            current = next;
+            let Some(next) = next else {
+                break;
+            };
+            current = normalize_lazy(&next)?;
             if limit.is_some_and(|limit| results.len() >= limit) {
                 check_matcher_result(&current)?;
                 break;

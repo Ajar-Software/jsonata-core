@@ -155,6 +155,7 @@ const EXTRA = [
   '$match("abc", function($s) { {"match": "x", "start": 0, "groups": [], "next": function() { {"foo": 1} }} })',
   '$match("abc", function($s) { {"match": "x", "start": 0, "groups": [], "next": function() { undefined }} })',
   '$match("abc", function($s) { {"match": "x", "start": 0, "groups": [], "next": function() { "str" }} }, 1)',
+  '($o := {"f": function($s) { {"match": "b", "start": 1, "groups": [], "next": function() { undefined }} }}; $match("abc", $o.f))',
 ];
 
 // The same questions with a top-level array as input. jsonata-js wraps that

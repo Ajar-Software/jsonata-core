@@ -6282,6 +6282,14 @@
    }
   },
   {
+   "expression": "($o := {\"f\": function($s) { {\"match\": \"b\", \"start\": 1, \"groups\": [], \"next\": function() { undefined }} }}; $match(\"abc\", $o.f))",
+   "result": {
+    "match": "b",
+    "index": 1,
+    "groups": []
+   }
+  },
+  {
    "expression": "a",
    "root": true,
    "result": [
