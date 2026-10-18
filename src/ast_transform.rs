@@ -1489,7 +1489,7 @@ fn seek_parent_step_impl(
         // slot.level++` (which notably does NOT set `.tuple` here).
         AstNode::Parent(_) => Ok(level + 1),
         // Parenthesized sub-path as a path step (e.g. `Account.(Order.Product).%`
-        // parses `(Order.Product)` as `FunctionApplication(Path{...})`) --
+        // parses `(Order.Product)` as `FunctionApplication(Block([Path{...}]))`) --
         // mirrors seekParent's 'block'/'path' cases layered together: this
         // outer step becomes tuple-producing regardless of where inside the
         // parens the actual ancestor tag lands, and we recurse inward to
@@ -1523,8 +1523,9 @@ fn seek_parent_step_impl(
     }
 }
 
-/// Recurse into a "wrapped" target (a `FunctionApplication`'s sole inner
-/// expression, or a `Block`'s last expression) that must itself resolve to
+/// Recurse into a "wrapped" target (a `FunctionApplication`'s inner node,
+/// for a `.(...)` step a `Block`, or a `Block`'s last expression) that must
+/// itself resolve to
 /// a nested `Path` for us to walk backward through it -- mirrors how
 /// jsonata-js's block/path seekParent cases can be layered on top of each
 /// other for doubly-nested parens (e.g. `Account.(Order.(Product)).%`).

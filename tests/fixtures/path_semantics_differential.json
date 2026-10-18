@@ -6440,6 +6440,10 @@
    }
   },
   {
+   "expression": "($f := function($n) { $n <= 0 ? 0 : [$n].($f($n - 1)) + 1 }; $f(70))",
+   "result": 70
+  },
+  {
    "expression": "a",
    "root": true,
    "result": [

@@ -1421,8 +1421,9 @@ impl Parser {
                         // Empty block `.()`: a parenthesised step with no
                         // expression (e.g. `Account.Order.().%`). jsonata-js
                         // treats `()` as an empty block that evaluates to
-                        // undefined; keep it as a `FunctionApplication` of an
-                        // empty `Block` so the ancestry pass can walk past it.
+                        // undefined; like every `.(...)` step it is a
+                        // `FunctionApplication` of a `Block`, here an empty one,
+                        // which the ancestry pass walks past.
                         if self.current_token == Token::RightParen {
                             self.advance()?;
                             let mut steps = match lhs {
@@ -1452,8 +1453,9 @@ impl Parser {
 
                         // Always a Block, even with one expression: a `.(...)` step
                         // is a jsonata-js block, which gets a frame of its own, and
-                        // the Block is what tells it apart from the `.$fn(...)` and
-                        // `.function(){...}(...)` steps, which share this node.
+                        // the Block is what tells it apart from a `.$fn(...)` step,
+                        // whose FunctionApplication holds the call itself. (The
+                        // `.function(){...}(...)` desugaring is a Block too.)
                         let expr = AstNode::Block(expressions);
 
                         // Create FunctionApplication node as a path step

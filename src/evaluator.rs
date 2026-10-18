@@ -668,7 +668,8 @@ fn try_compile_expr_inner(node: &AstNode, allowed_vars: Option<&[&str]>) -> Opti
 
         // ── Block (sequential evaluation) ───────────────────────────────
         // A block's scope only matters for `:=`, which doesn't compile, so a
-        // one-expression block (every `.(expr)` step) is its expression.
+        // one-expression block (every `.(expr)` step) compiles to its
+        // expression, without a one-element `CompiledExpr::Block` around it.
         AstNode::Block(exprs) if exprs.len() == 1 => {
             try_compile_expr_inner(&exprs[0], allowed_vars)
         }
@@ -2603,7 +2604,6 @@ impl StoredLambda {
 }
 
 /// A single scope in the scope stack
-#[derive(Clone)]
 struct Scope {
     bindings: HashMap<String, JValue>,
 }
@@ -2620,7 +2620,6 @@ impl Scope {
 ///
 /// Holds variable bindings and other state needed during evaluation.
 /// Uses a scope stack for efficient push/pop instead of clone/restore.
-#[derive(Clone)]
 pub struct Context {
     scope_stack: Vec<Scope>,
     parent_data: Option<JValue>,
@@ -2658,6 +2657,22 @@ impl Context {
             .unwrap()
             .bindings
             .insert(name, value);
+    }
+
+    /// Bind `name` in the top scope, returning what the top scope held for
+    /// it, for `restore_top`.
+    fn bind_top(&mut self, name: &str, value: JValue) -> Option<JValue> {
+        let top = self.scope_stack.last_mut().unwrap();
+        top.bindings.insert(name.to_string(), value)
+    }
+
+    /// Put back what `bind_top` replaced in the top scope.
+    fn restore_top(&mut self, name: &str, previous: Option<JValue>) {
+        let top = self.scope_stack.last_mut().unwrap();
+        match previous {
+            Some(value) => top.bindings.insert(name.to_string(), value),
+            None => top.bindings.remove(name),
+        };
     }
 
     pub fn unbind(&mut self, name: &str) {
@@ -4306,35 +4321,7 @@ impl Evaluator {
                 }
             }
 
-            AstNode::Block(expressions) => {
-                // Blocks create a new scope - push scope instead of clone/restore
-                self.context.push_scope();
-
-                // An empty block (`()`) is undefined in jsonata-js, not null.
-                // A non-empty block always overwrites this before it's read,
-                // so this default only matters for the empty case -- reachable
-                // via `.()` as a path step (parser.rs routes a bare top-level
-                // `()` around this arm entirely, straight to
-                // `AstNode::Undefined`, but a `.()` step keeps it as an empty
-                // `Block` so the ancestry pass can walk past it; see #114).
-                let mut result = JValue::Undefined;
-                // Only the last expression is the block's value, so only it
-                // may keep a tuple stream.
-                let keep = std::mem::replace(&mut self.keep_tuple_stream, false);
-                for (index, expr) in expressions.iter().enumerate() {
-                    if index + 1 == expressions.len() {
-                        self.keep_tuple_stream = keep;
-                    }
-                    result = self.evaluate_internal(expr, data)?;
-                }
-                self.keep_tuple_stream = keep;
-
-                // Closures escaping the block (IIFE pattern) carry their own
-                // storage inside the value, so popping is unconditional.
-                self.context.pop_scope();
-
-                Ok(result)
-            }
+            AstNode::Block(expressions) => self.evaluate_block(expressions, data, None),
 
             // Lambda: capture current environment for closure support
             AstNode::Lambda {
@@ -4935,20 +4922,15 @@ impl Evaluator {
     ) -> Result<JValue, EvaluatorError> {
         match node {
             AstNode::Variable(name) if name.is_empty() => Ok(item.bare()),
-            AstNode::FunctionApplication(expr) => {
-                // Always bound, not only over an outer `$`: the lambda-step
-                // desugaring (`x.function($v){...}()`) passes `$` explicitly.
-                // A `.(...)` step's expression is a Block, which gives its
-                // `:=` bindings a scope of their own.
-                let saved = self.context.lookup("$").cloned();
-                self.context.bind("$".to_string(), item.clone());
-                let result = self.evaluate_internal(expr, item);
-                match saved {
-                    Some(value) => self.context.bind("$".to_string(), value),
-                    None => self.context.unbind("$"),
-                }
-                result
-            }
+            // `$` is the item there, bound even with no outer `$`: the
+            // lambda-step desugaring (`x.function($v){...}()`) passes `$`
+            // explicitly. A block (`.(...)`, and that desugaring) is evaluated
+            // here rather than through `evaluate_internal`, so a step costs no
+            // recursion depth of its own, and `$` goes in the block's scope.
+            AstNode::FunctionApplication(expr) => match expr.as_ref() {
+                AstNode::Block(expressions) => self.evaluate_block(expressions, item, Some(item)),
+                expr => self.with_dollar(item, |ev| ev.evaluate_internal(expr, item)),
+            },
             AstNode::ArrayGroup(elements) => {
                 let items =
                     self.with_dollar_bound(item, |ev| ev.construct_array(elements, item))?;
@@ -4970,12 +4952,58 @@ impl Evaluator {
         item: &JValue,
         f: impl FnOnce(&mut Self) -> Result<T, EvaluatorError>,
     ) -> Result<T, EvaluatorError> {
-        let Some(saved) = self.context.lookup("$").cloned() else {
+        if self.context.lookup("$").is_none() {
             return f(self);
-        };
-        self.context.bind("$".to_string(), item.clone());
+        }
+        self.with_dollar(item, f)
+    }
+
+    /// Run `f` with `$` bound to `item` in the top scope, leaving the top
+    /// scope as it was afterwards.
+    fn with_dollar<T>(
+        &mut self,
+        item: &JValue,
+        f: impl FnOnce(&mut Self) -> Result<T, EvaluatorError>,
+    ) -> Result<T, EvaluatorError> {
+        let previous = self.context.bind_top("$", item.clone());
         let result = f(self);
-        self.context.bind("$".to_string(), saved);
+        self.context.restore_top("$", previous);
+        result
+    }
+
+    /// A block: its expressions in order, in a scope of their own, giving the
+    /// last one's value. `dollar`, if given, is bound as `$` in that scope.
+    /// The scope is popped however the block ends.
+    fn evaluate_block(
+        &mut self,
+        expressions: &[AstNode],
+        data: &JValue,
+        dollar: Option<&JValue>,
+    ) -> Result<JValue, EvaluatorError> {
+        self.context.push_scope();
+        if let Some(item) = dollar {
+            self.context.bind("$".to_string(), item.clone());
+        }
+        // An empty block (`()`) is undefined in jsonata-js, not null. A bare
+        // top-level `()` never gets here (the parser makes it
+        // `AstNode::Undefined`), but a `.()` step does.
+        let mut result = Ok(JValue::Undefined);
+        // Only the last expression is the block's value, so only it may keep
+        // a tuple stream.
+        let keep = std::mem::replace(&mut self.keep_tuple_stream, false);
+        for (index, expr) in expressions.iter().enumerate() {
+            if index + 1 == expressions.len() {
+                self.keep_tuple_stream = keep;
+            }
+            result = self.evaluate_internal(expr, data);
+            if result.is_err() {
+                break;
+            }
+        }
+        self.keep_tuple_stream = keep;
+        // Closures escaping the block (IIFE pattern) carry their own storage
+        // inside the value, so popping is unconditional.
+        self.context.pop_scope();
         result
     }
 
