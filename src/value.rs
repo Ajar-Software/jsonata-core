@@ -303,6 +303,15 @@ impl JValue {
         }
     }
 
+    /// The array payload, flags included, if this is an array.
+    #[inline]
+    pub fn as_jarray(&self) -> Option<&JArray> {
+        match self {
+            JValue::Array(arr) => Some(arr),
+            _ => None,
+        }
+    }
+
     #[inline]
     pub fn as_object(&self) -> Option<&IndexMap<String, JValue>> {
         match self {
@@ -319,6 +328,24 @@ impl JValue {
         match self {
             JValue::Array(arr) => Some(arr.make_mut()),
             _ => None,
+        }
+    }
+
+    /// Set `sequence` on an array. A no-op on non-arrays. O(1): the items are
+    /// never copied, even when shared.
+    #[inline]
+    pub fn mark_sequence(&mut self) {
+        if let JValue::Array(arr) = self {
+            arr.sequence = true;
+        }
+    }
+
+    /// Set `keep_singleton` on an array (the `[]` keep-array modifier). A
+    /// no-op on non-arrays. O(1), like `mark_sequence`.
+    #[inline]
+    pub fn mark_keep_singleton(&mut self) {
+        if let JValue::Array(arr) = self {
+            arr.keep_singleton = true;
         }
     }
 

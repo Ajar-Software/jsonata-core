@@ -563,7 +563,7 @@ fn run_inner(
                             }
                             _ => {
                                 check_sequence_length(kept.len(), options)?;
-                                JValue::array(kept)
+                                JValue::sequence(kept)
                             }
                         }
                     }
@@ -579,7 +579,7 @@ fn run_inner(
                         // A singleton sequence repeats like any other when the
                         // selector names position 0 more than once.
                         if repeats > 1 {
-                            JValue::array(vec![other; repeats])
+                            JValue::sequence(vec![other; repeats])
                         } else if repeats == 1 {
                             other
                         } else {
@@ -665,7 +665,7 @@ fn get_field_cached(
             Ok(match results.len() {
                 0 => JValue::Undefined,
                 1 => results.pop().unwrap(),
-                _ => JValue::array(results),
+                _ => JValue::sequence(results),
             })
         }
         _ => Ok(JValue::Undefined),
