@@ -4025,9 +4025,7 @@ impl Evaluator {
                 // A builtin or host function named by reference (only if not
                 // shadowed) is a function value. Calling it dispatches host
                 // functions first, as a call by name does.
-                if self.is_builtin_function(name)
-                    || (!self.host_fns.is_empty() && self.host_fns.contains_key(name))
-                {
+                if self.is_function_name(name) {
                     // Return a marker for built-in functions
                     // This allows built-in functions to be passed to higher-order functions
                     let builtin_repr = JValue::builtin(name.as_str());
@@ -5936,8 +5934,6 @@ impl Evaluator {
         is_builtin: bool,
         data: &JValue,
     ) -> Result<JValue, EvaluatorError> {
-        use crate::functions;
-
         // Check for partial application (any argument is a Placeholder)
         let has_placeholder = args.iter().any(|arg| matches!(arg, AstNode::Placeholder));
         if has_placeholder {
@@ -6003,6 +5999,21 @@ impl Evaluator {
                 )
             });
         }
+
+        self.evaluate_builtin_call(name, args, data)
+    }
+
+    /// Call the builtin `name` with AST arguments, skipping the variable
+    /// and host-function lookups `evaluate_function_call` makes first. A
+    /// builtin called by value (`$s := $sort; $s(x)`) comes here, so it is
+    /// the builtin it names whatever `$sort` is bound to by then.
+    fn evaluate_builtin_call(
+        &mut self,
+        name: &str,
+        args: &[AstNode],
+        data: &JValue,
+    ) -> Result<JValue, EvaluatorError> {
+        use crate::functions;
 
         // Special handling for $exists function
         // It needs to know if the argument is explicit null vs undefined
@@ -6997,9 +7008,7 @@ impl Evaluator {
                     } else {
                         self.evaluate_internal(func_node, &values[0])
                     }
-                } else if self.is_builtin_function(var_name)
-                    || (!self.host_fns.is_empty() && self.host_fns.contains_key(var_name))
-                {
+                } else if self.is_function_name(var_name) {
                     // A builtin or host function reference (e.g., $string)
                     // passed as a callback to another function.
                     self.call_builtin_with_values(var_name, values, data)
@@ -7013,8 +7022,8 @@ impl Evaluator {
                 }
             }
             // A composition (`$sum ~> $string`) or a transform evaluates to a
-            // function value, which is called. A `~>` that doesn't give a
-            // function falls back to the arm below.
+            // function value, which is called. The higher-order function's
+            // signature has already rejected a `~>` that gives anything else.
             AstNode::Binary {
                 op: BinaryOp::ChainPipe,
                 ..
@@ -7024,10 +7033,7 @@ impl Evaluator {
                 if value.is_function() {
                     return self.call_function_value(&value, values, data);
                 }
-                match values.first() {
-                    Some(first) => self.evaluate_internal(func_node, first),
-                    None => Ok(value),
-                }
+                Ok(value)
             }
             _ => {
                 // For non-lambda expressions, evaluate with first value as context
@@ -7926,6 +7932,12 @@ impl Evaluator {
         }
     }
 
+    /// Whether `name` names a builtin or a host function, which a variable
+    /// of that name gives as a function value unless it is bound.
+    fn is_function_name(&self, name: &str) -> bool {
+        self.is_builtin_function(name) || self.host_fns.contains_key(name)
+    }
+
     /// Check if a name refers to a built-in function
     fn is_builtin_function(&self, name: &str) -> bool {
         matches!(
@@ -8008,22 +8020,20 @@ impl Evaluator {
         // The other nine ($map, $filter, $reduce, $single, $sift, $each,
         // $sort, $match, $replace) take AST arguments and call back into
         // evaluation. Called by value (`[3,1,2] ~> $sort`, `$f := $single`),
-        // they go through the same call a direct `$sort(...)` makes, so they
-        // validate their arguments the same way.
-        self.call_named_with_values(name, true, values, context)
+        // they run the builtin a direct `$sort(...)` runs, so they validate
+        // their arguments the same way.
+        self.with_value_args(values, |ev, args| {
+            ev.evaluate_builtin_call(name, args, context)
+        })
     }
 
-    /// Call the function `name` by name with already-evaluated `values`,
-    /// exactly as a direct call would: builtins, host functions, shadowing
-    /// bindings and per-function special cases included. The call takes AST
-    /// arguments, so the values are passed through temporary bindings in a
-    /// scope of their own.
-    fn call_named_with_values(
+    /// Run `call` with AST arguments that evaluate to `values`: temporary
+    /// bindings in a scope of their own. This lets already-evaluated values
+    /// reach the calls that take AST arguments.
+    fn with_value_args(
         &mut self,
-        name: &str,
-        is_builtin: bool,
         values: &[JValue],
-        data: &JValue,
+        call: impl FnOnce(&mut Self, &[AstNode]) -> Result<JValue, EvaluatorError>,
     ) -> Result<JValue, EvaluatorError> {
         self.context.push_scope();
         let temp_args: Vec<AstNode> = values
@@ -8035,7 +8045,7 @@ impl Evaluator {
                 AstNode::Variable(temp_name)
             })
             .collect();
-        let result = self.evaluate_function_call(name, &temp_args, is_builtin, data);
+        let result = call(self, &temp_args);
         self.context.pop_scope();
         result
     }
@@ -8777,7 +8787,12 @@ impl Evaluator {
                 self.invoke_stored_lambda(&stored, &full_args, data)
             }
             PartialTarget::Named { name, is_builtin } => {
-                self.call_named_with_values(name, *is_builtin, &full_args, data)
+                // Through evaluate_function_call, so builtins, host fns, late
+                // shadowing bindings and per-function special cases all
+                // behave exactly as a direct call would.
+                self.with_value_args(&full_args, |ev, args| {
+                    ev.evaluate_function_call(name, args, *is_builtin, data)
+                })
             }
         }
     }

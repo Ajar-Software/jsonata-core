@@ -195,6 +195,8 @@ const EXTRA = [
   '[3, 1, 2] ~> $sort', 'arr ~> $sort ~> $reverse', '[3] ~> $single', '($f := $sort; $f([2, 1]))',
   '$map([1, 2], $sort)', '$map(n, $sum ~> $string)', '$filter(n, $count ~> function($c) { $c > 1 })',
   '($f := function($v) { $exists($x) }; arr ~> ($sum ~> $f))',
+  '(function($sort) { $sort([3, 1, 2]) })($sort)',
+  '($s := $sort; $sort := function($x) { "user" }; $s([3, 1, 2]))',
 ];
 
 // The same questions with a top-level array as input. jsonata-js wraps that

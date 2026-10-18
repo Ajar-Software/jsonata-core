@@ -6761,6 +6761,22 @@
    "result": false
   },
   {
+   "expression": "(function($sort) { $sort([3, 1, 2]) })($sort)",
+   "result": [
+    1,
+    2,
+    3
+   ]
+  },
+  {
+   "expression": "($s := $sort; $sort := function($x) { \"user\" }; $s([3, 1, 2]))",
+   "result": [
+    1,
+    2,
+    3
+   ]
+  },
+  {
    "expression": "a",
    "root": true,
    "result": [
