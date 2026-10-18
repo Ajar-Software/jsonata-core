@@ -49,6 +49,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`??` propagates errors and coalesces any undefined value**, as jsonata-js does
+  ([#195](https://github.com/txjmb/jsonata-core/issues/195)). jsonata-js reads `a ?? b` as
+  `$exists(a) ? a : b`. `$error("x") ?? 1` used to swallow the error and give `1`, and the right
+  side could then see variables left bound by the failed left side. An undefined left side that
+  isn't a path or a variable, such as `$lookup({}, "a") ?? 3`, used to give undefined instead of
+  `3`.
+- **Each evaluation runs in a scope of its own**, as jsonata-js runs each in a new frame. An
+  `Evaluator` reused through the Rust API used to keep what an earlier evaluation bound: a
+  top-level `$x := 1`, and on a failed evaluation any scope or temporary `$` an error skipped
+  popping. Bindings set on the `Context` beforehand are still visible. `$$` is each evaluation's
+  own input; a reused evaluator used to keep answering it from the first.
+- **A `.(...)` step's `:=` bindings stay in the step.** `($y := 1; a.($y := 5); $y)` is `1`, as
+  in jsonata-js; it used to be `5`. In the Rust AST, a `.(expr)` step is now always
+  `FunctionApplication(Block([...]))`, even with one expression, so it can be told apart from a
+  `.$fn(...)` step, whose `:=` arguments still bind outside the step.
+- **A builtin's arguments are all evaluated.** Two leftover checks returned early: one for an
+  unbound variable argument, which skipped the other arguments' errors and signature checks and
+  gave `null` rather than undefined (`{"x": $string($nope)}` is now `{}`); and one that
+  evaluated a path argument a first time, discarding any error, before evaluating it again.
 - **`$match` returns every match**, as jsonata-js does ([#194](https://github.com/txjmb/jsonata-core/issues/194)).
   jsonata-js regexes are always global, so `$match("aba", /a/)` gives both matches, not only
   the first, and the limit argument caps how many are returned. Each match object now always

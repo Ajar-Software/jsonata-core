@@ -1489,7 +1489,7 @@ fn seek_parent_step_impl(
         // slot.level++` (which notably does NOT set `.tuple` here).
         AstNode::Parent(_) => Ok(level + 1),
         // Parenthesized sub-path as a path step (e.g. `Account.(Order.Product).%`
-        // parses `(Order.Product)` as `FunctionApplication(Path{...})`) --
+        // parses `(Order.Product)` as `FunctionApplication(Block([Path{...}]))`) --
         // mirrors seekParent's 'block'/'path' cases layered together: this
         // outer step becomes tuple-producing regardless of where inside the
         // parens the actual ancestor tag lands, and we recurse inward to
@@ -1523,8 +1523,9 @@ fn seek_parent_step_impl(
     }
 }
 
-/// Recurse into a "wrapped" target (a `FunctionApplication`'s sole inner
-/// expression, or a `Block`'s last expression) that must itself resolve to
+/// Recurse into a "wrapped" target (a `FunctionApplication`'s inner node,
+/// for a `.(...)` step a `Block`, or a `Block`'s last expression) that must
+/// itself resolve to
 /// a nested `Path` for us to walk backward through it -- mirrors how
 /// jsonata-js's block/path seekParent cases can be layered on top of each
 /// other for doubly-nested parens (e.g. `Account.(Order.(Product)).%`).
@@ -2332,11 +2333,19 @@ mod tests {
         }
     }
 
+    /// The one expression of a `.(...)` step's Block.
+    fn paren_body(node: &AstNode) -> &AstNode {
+        match node {
+            AstNode::Block(exprs) if exprs.len() == 1 => &exprs[0],
+            other => panic!("expected a one-expression Block, got {:?}", other),
+        }
+    }
+
     #[test]
     fn test_real_parser_percent_through_parenthesized_step_function_application() {
         // parent001.jsonata's shape: "Account.(Order.Product).%" -- parens
         // around a multi-step sub-path parse as a FunctionApplication step
-        // wrapping a nested Path. `%` must walk INTO that nested path to
+        // wrapping a Block of a nested Path. `%` must walk INTO that nested path to
         // find Product (its last step) as the target, exactly as if the
         // parens weren't there.
         let ast = crate::parser::Parser::new("Account.(Order.Product).%".to_string())
@@ -2349,7 +2358,7 @@ mod tests {
                 assert_eq!(steps.len(), 3);
                 assert!(steps[1].is_tuple, "the wrapping step must be flagged tuple");
                 match &steps[1].node {
-                    AstNode::FunctionApplication(inner) => match inner.as_ref() {
+                    AstNode::FunctionApplication(inner) => match paren_body(inner) {
                         AstNode::Path { steps: inner_steps } => {
                             assert_eq!(inner_steps.len(), 2);
                             assert!(
@@ -2429,7 +2438,7 @@ mod tests {
                 // where % actually resolves.
                 assert!(steps[1].is_tuple, "the wrapping step must be flagged tuple");
                 match &steps[1].node {
-                    AstNode::FunctionApplication(inner) => match inner.as_ref() {
+                    AstNode::FunctionApplication(inner) => match paren_body(inner) {
                         AstNode::Path { steps: inner_steps } => {
                             assert_eq!(inner_steps.len(), 1);
                             assert!(

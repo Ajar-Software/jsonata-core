@@ -156,6 +156,20 @@ const EXTRA = [
   '$match("abc", function($s) { {"match": "x", "start": 0, "groups": [], "next": function() { undefined }} })',
   '$match("abc", function($s) { {"match": "x", "start": 0, "groups": [], "next": function() { "str" }} }, 1)',
   '($o := {"f": function($s) { {"match": "b", "start": 1, "groups": [], "next": function() { undefined }} }}; $match("abc", $o.f))',
+  // `a ?? b` is `$exists(a) ? a : b` (#195): errors on the left propagate.
+  '$error("x") ?? 1', '(($x := 5; $error("e")) ?? $x)', 'nope.(1/0) ?? 2', '$string(nope) ?? 1',
+  '(nope) ?? 2', '$lookup({}, "a") ?? 3', 'null ?? 4', '[nope][0] ?? 5', 'false ?? 6', '0 ?? 7',
+  '"" ?? 8', '[] ?? 9', 'nope ?? nope2 ?? 10', 'e.x ?? v', 'a.b ?? 0', 'arr[$ > 5] ?? "none"',
+  // A builtin's arguments are all evaluated, so their errors surface.
+  '$substring($nope, $error("e"))', '$string($nope, $error("e"))', '$substring($nope, "x")',
+  '{"x": $string($nope)}', '$type($not($nope))', '$string(objs.(p).q)',
+  // A `.(...)` block's `:=` bindings stay in the block.
+  '(arr.($z := 3); $z)', 'arr.($z := $; $z * 2)', '($y := 1; arr.($y := 5); $y)',
+  // A `.$fn(...)` step is not a block, so its argument's `:=` binds outside.
+  '($r := arr.$string($x := $); $x)', '(one.$string($x := z); $x)', '($r := arr.$sum([$x := $]); $x)',
+  'arr.(1; 2)', 'arr.()',
+  // Recursion through a `.(...)` step.
+  '($f := function($n) { $n <= 0 ? 0 : [$n].($f($n - 1)) + 1 }; $f(40))',
 ];
 
 // The same questions with a top-level array as input. jsonata-js wraps that

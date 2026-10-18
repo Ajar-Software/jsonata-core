@@ -6290,6 +6290,160 @@
    }
   },
   {
+   "expression": "$error(\"x\") ?? 1",
+   "result": {
+    "$error": "D3137"
+   }
+  },
+  {
+   "expression": "(($x := 5; $error(\"e\")) ?? $x)",
+   "result": {
+    "$error": "D3137"
+   }
+  },
+  {
+   "expression": "nope.(1/0) ?? 2",
+   "result": 2
+  },
+  {
+   "expression": "$string(nope) ?? 1",
+   "result": 1
+  },
+  {
+   "expression": "(nope) ?? 2",
+   "result": 2
+  },
+  {
+   "expression": "$lookup({}, \"a\") ?? 3",
+   "result": 3
+  },
+  {
+   "expression": "null ?? 4",
+   "result": null
+  },
+  {
+   "expression": "[nope][0] ?? 5",
+   "result": 5
+  },
+  {
+   "expression": "false ?? 6",
+   "result": false
+  },
+  {
+   "expression": "0 ?? 7",
+   "result": 0
+  },
+  {
+   "expression": "\"\" ?? 8",
+   "result": ""
+  },
+  {
+   "expression": "[] ?? 9",
+   "result": []
+  },
+  {
+   "expression": "nope ?? nope2 ?? 10",
+   "result": 10
+  },
+  {
+   "expression": "e.x ?? v",
+   "result": 5
+  },
+  {
+   "expression": "a.b ?? 0",
+   "result": [
+    1
+   ]
+  },
+  {
+   "expression": "arr[$ > 5] ?? \"none\"",
+   "result": "none"
+  },
+  {
+   "expression": "$substring($nope, $error(\"e\"))",
+   "result": {
+    "$error": "D3137"
+   }
+  },
+  {
+   "expression": "$string($nope, $error(\"e\"))",
+   "result": {
+    "$error": "D3137"
+   }
+  },
+  {
+   "expression": "$substring($nope, \"x\")",
+   "result": {
+    "$error": "T0410"
+   }
+  },
+  {
+   "expression": "{\"x\": $string($nope)}",
+   "result": {}
+  },
+  {
+   "expression": "$type($not($nope))",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "$string(objs.(p).q)",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "(arr.($z := 3); $z)",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "arr.($z := $; $z * 2)",
+   "result": [
+    2,
+    4,
+    6
+   ]
+  },
+  {
+   "expression": "($y := 1; arr.($y := 5); $y)",
+   "result": 1
+  },
+  {
+   "expression": "($r := arr.$string($x := $); $x)",
+   "result": 3
+  },
+  {
+   "expression": "(one.$string($x := z); $x)",
+   "result": [
+    7
+   ]
+  },
+  {
+   "expression": "($r := arr.$sum([$x := $]); $x)",
+   "result": 3
+  },
+  {
+   "expression": "arr.(1; 2)",
+   "result": [
+    2,
+    2,
+    2
+   ]
+  },
+  {
+   "expression": "arr.()",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "($f := function($n) { $n <= 0 ? 0 : [$n].($f($n - 1)) + 1 }; $f(40))",
+   "result": 40
+  },
+  {
    "expression": "a",
    "root": true,
    "result": [

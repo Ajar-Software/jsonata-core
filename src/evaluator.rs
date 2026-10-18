@@ -667,6 +667,12 @@ fn try_compile_expr_inner(node: &AstNode, allowed_vars: Option<&[&str]>) -> Opti
         }
 
         // ── Block (sequential evaluation) ───────────────────────────────
+        // A block's scope only matters for `:=`, which doesn't compile, so a
+        // one-expression block (every `.(expr)` step) compiles to its
+        // expression, without a one-element `CompiledExpr::Block` around it.
+        AstNode::Block(exprs) if exprs.len() == 1 => {
+            try_compile_expr_inner(&exprs[0], allowed_vars)
+        }
         AstNode::Block(exprs) if !exprs.is_empty() => {
             // Instr::BlockEnd's operand is a u16 element count - bail out to
             // the (always-correct, no-limit) tree-walker rather than silently
@@ -2653,6 +2659,22 @@ impl Context {
             .insert(name, value);
     }
 
+    /// Bind `name` in the top scope, returning what the top scope held for
+    /// it, for `restore_top`.
+    fn bind_top(&mut self, name: &str, value: JValue) -> Option<JValue> {
+        let top = self.scope_stack.last_mut().unwrap();
+        top.bindings.insert(name.to_string(), value)
+    }
+
+    /// Put back what `bind_top` replaced in the top scope.
+    fn restore_top(&mut self, name: &str, previous: Option<JValue>) {
+        let top = self.scope_stack.last_mut().unwrap();
+        match previous {
+            Some(value) => top.bindings.insert(name.to_string(), value),
+            None => top.bindings.remove(name),
+        };
+    }
+
     pub fn unbind(&mut self, name: &str) {
         // Remove from top scope only
         let top = self.scope_stack.last_mut().unwrap();
@@ -3728,7 +3750,37 @@ impl Evaluator {
     /// a bare (or object/array-nested) tuple-producing expression would leak
     /// that internal representation into user-visible output instead of the
     /// plain value.
+    ///
+    /// Each evaluation runs in a scope of its own, as jsonata-js runs each in
+    /// a new frame of its environment, so nothing it binds outlives it:
+    /// bindings made with `Context::bind` beforehand are visible, and those
+    /// the evaluation makes are gone afterwards, whether it succeeded or
+    /// failed. Bindings only ever go into the top scope, so dropping every
+    /// scope above the entry depth undoes all of them, including any an error
+    /// skipped popping. `$$` is the evaluation's input unless the caller set a
+    /// parent on the context.
     pub fn evaluate(&mut self, node: &AstNode, data: &JValue) -> Result<JValue, EvaluatorError> {
+        let entry_depth = self.context.scope_stack.len();
+        let caller_parent = self.context.get_parent().is_some();
+        self.context.push_scope();
+        let result = self.evaluate_from_entry(node, data);
+        debug_assert!(
+            result.is_err() || self.context.scope_stack.len() == entry_depth + 1,
+            "a successful evaluation pops every scope it pushes"
+        );
+        self.context.scope_stack.truncate(entry_depth);
+        if !caller_parent {
+            self.context.parent_data = None;
+        }
+        self.keep_tuple_stream = false;
+        result
+    }
+
+    fn evaluate_from_entry(
+        &mut self,
+        node: &AstNode,
+        data: &JValue,
+    ) -> Result<JValue, EvaluatorError> {
         // Set parent context to root data if not already set
         if self.context.get_parent().is_none() {
             self.context.set_parent(data.clone());
@@ -4269,35 +4321,7 @@ impl Evaluator {
                 }
             }
 
-            AstNode::Block(expressions) => {
-                // Blocks create a new scope - push scope instead of clone/restore
-                self.context.push_scope();
-
-                // An empty block (`()`) is undefined in jsonata-js, not null.
-                // A non-empty block always overwrites this before it's read,
-                // so this default only matters for the empty case -- reachable
-                // via `.()` as a path step (parser.rs routes a bare top-level
-                // `()` around this arm entirely, straight to
-                // `AstNode::Undefined`, but a `.()` step keeps it as an empty
-                // `Block` so the ancestry pass can walk past it; see #114).
-                let mut result = JValue::Undefined;
-                // Only the last expression is the block's value, so only it
-                // may keep a tuple stream.
-                let keep = std::mem::replace(&mut self.keep_tuple_stream, false);
-                for (index, expr) in expressions.iter().enumerate() {
-                    if index + 1 == expressions.len() {
-                        self.keep_tuple_stream = keep;
-                    }
-                    result = self.evaluate_internal(expr, data)?;
-                }
-                self.keep_tuple_stream = keep;
-
-                // Closures escaping the block (IIFE pattern) carry their own
-                // storage inside the value, so popping is unconditional.
-                self.context.pop_scope();
-
-                Ok(result)
-            }
+            AstNode::Block(expressions) => self.evaluate_block(expressions, data),
 
             // Lambda: capture current environment for closure support
             AstNode::Lambda {
@@ -4898,17 +4922,13 @@ impl Evaluator {
     ) -> Result<JValue, EvaluatorError> {
         match node {
             AstNode::Variable(name) if name.is_empty() => Ok(item.bare()),
+            // `$` is the item there, bound even with no outer `$`: the
+            // lambda-step desugaring (`x.function($v){...}()`) passes `$`
+            // explicitly. A `.(...)` step's expression is a Block, which gives
+            // its `:=` bindings a scope of their own and, as in jsonata-js,
+            // counts as a level of evaluation depth.
             AstNode::FunctionApplication(expr) => {
-                // Always bound, not only over an outer `$`: the lambda-step
-                // desugaring (`x.function($v){...}()`) passes `$` explicitly.
-                let saved = self.context.lookup("$").cloned();
-                self.context.bind("$".to_string(), item.clone());
-                let result = self.evaluate_internal(expr, item);
-                match saved {
-                    Some(value) => self.context.bind("$".to_string(), value),
-                    None => self.context.unbind("$"),
-                }
-                result
+                self.with_dollar(item, |ev| ev.evaluate_internal(expr, item))
             }
             AstNode::ArrayGroup(elements) => {
                 let items =
@@ -4931,12 +4951,53 @@ impl Evaluator {
         item: &JValue,
         f: impl FnOnce(&mut Self) -> Result<T, EvaluatorError>,
     ) -> Result<T, EvaluatorError> {
-        let Some(saved) = self.context.lookup("$").cloned() else {
+        if self.context.lookup("$").is_none() {
             return f(self);
-        };
-        self.context.bind("$".to_string(), item.clone());
+        }
+        self.with_dollar(item, f)
+    }
+
+    /// Run `f` with `$` bound to `item` in the top scope, leaving the top
+    /// scope as it was afterwards.
+    fn with_dollar<T>(
+        &mut self,
+        item: &JValue,
+        f: impl FnOnce(&mut Self) -> Result<T, EvaluatorError>,
+    ) -> Result<T, EvaluatorError> {
+        let previous = self.context.bind_top("$", item.clone());
         let result = f(self);
-        self.context.bind("$".to_string(), saved);
+        self.context.restore_top("$", previous);
+        result
+    }
+
+    /// A block: its expressions in order, in a scope of their own, giving the
+    /// last one's value. The scope is popped however the block ends.
+    fn evaluate_block(
+        &mut self,
+        expressions: &[AstNode],
+        data: &JValue,
+    ) -> Result<JValue, EvaluatorError> {
+        self.context.push_scope();
+        // An empty block (`()`) is undefined in jsonata-js, not null. A bare
+        // top-level `()` never gets here (the parser makes it
+        // `AstNode::Undefined`), but a `.()` step does.
+        let mut result = Ok(JValue::Undefined);
+        // Only the last expression is the block's value, so only it may keep
+        // a tuple stream.
+        let keep = std::mem::replace(&mut self.keep_tuple_stream, false);
+        for (index, expr) in expressions.iter().enumerate() {
+            if index + 1 == expressions.len() {
+                self.keep_tuple_stream = keep;
+            }
+            result = self.evaluate_internal(expr, data);
+            if result.is_err() {
+                break;
+            }
+        }
+        self.keep_tuple_stream = keep;
+        // Closures escaping the block (IIFE pattern) carry their own storage
+        // inside the value, so popping is unconditional.
+        self.context.pop_scope();
         result
     }
 
@@ -5380,33 +5441,17 @@ impl Evaluator {
     ) -> Result<JValue, EvaluatorError> {
         use crate::ast::BinaryOp;
 
-        // Special handling for coalescing operator (??)
-        // Returns right side if left is undefined (produces no value)
-        // Note: literal null is a value, so it's NOT replaced
+        // Coalescing (`??`): jsonata-js parses `a ?? b` as
+        // `$exists(a) ? a : b`, so an undefined left side gives the right
+        // one, null included as a value, and an error on the left propagates.
+        // jsonata-js evaluates `a` twice that way; once gives the same value
+        // unless `a` isn't deterministic (`$random()`), and does half the work.
         if op == BinaryOp::Coalesce {
-            // Try to evaluate the left side
-            return match self.evaluate_internal(lhs, data) {
-                Ok(value) => {
-                    // Successfully evaluated to a value (even if it's null)
-                    // Check if LHS is a literal null - keep it (null is a value, not undefined)
-                    if matches!(lhs, AstNode::Null) {
-                        Ok(value)
-                    }
-                    // For paths and variables, undefined (no match/unbound) - use RHS
-                    else if value.is_undefined()
-                        && (matches!(lhs, AstNode::Path { .. })
-                            || matches!(lhs, AstNode::String(_))
-                            || matches!(lhs, AstNode::Variable(_)))
-                    {
-                        self.evaluate_internal(rhs, data)
-                    } else {
-                        Ok(value)
-                    }
-                }
-                Err(_) => {
-                    // Evaluation failed (e.g., undefined variable) - use RHS
-                    self.evaluate_internal(rhs, data)
-                }
+            let value = self.evaluate_internal(lhs, data)?;
+            return if value.is_undefined() {
+                self.evaluate_internal(rhs, data)
+            } else {
+                Ok(value)
             };
         }
 
@@ -6175,122 +6220,6 @@ impl Evaluator {
             // the literal form.
             let value = self.evaluate_internal(arg, data)?;
             return Ok(JValue::Bool(!value.is_undefined()));
-        }
-
-        // Check if any arguments are undefined variables or undefined paths
-        // Functions like $not() should return undefined when given undefined values
-        for arg in args {
-            // Check for undefined variable (e.g., $undefined_var)
-            if let AstNode::Variable(var_name) = arg {
-                // Skip built-in function names - they're function references, not undefined variables
-                if !var_name.is_empty()
-                    && !self.is_builtin_function(var_name)
-                    && self.context.lookup(var_name).is_none()
-                {
-                    // Undefined variable - for functions that should propagate undefined
-                    if propagates_undefined(name) {
-                        return Ok(JValue::Null); // Return undefined
-                    }
-                }
-            }
-            // Check for simple field name (e.g., blah) that evaluates to undefined
-            if let AstNode::Name(field_name) = arg {
-                let field_exists = matches!(data, JValue::Object(obj) if obj.contains_key(field_name))
-                    || {
-                        #[cfg(feature = "python")]
-                        {
-                            matches!(data, JValue::LazyPyDict(l) if l.contains_field(field_name))
-                        }
-                        #[cfg(not(feature = "python"))]
-                        {
-                            false
-                        }
-                    };
-                if !field_exists && propagates_undefined(name) {
-                    return Ok(JValue::Null);
-                }
-            }
-            // Note: AstNode::String represents string literals (e.g., "hello"), not field accesses.
-            // Field accesses are represented as AstNode::Path. String literals should never
-            // be checked for undefined propagation.
-            // Check for Path expressions that evaluate to undefined
-            if let AstNode::Path { steps } = arg {
-                // For paths that evaluate to null, we need to determine if it's because:
-                // 1. A field doesn't exist (undefined) - should propagate as undefined
-                // 2. A field exists with value null - should throw T0410
-                //
-                // We can distinguish these by checking if the path is accessing a field
-                // that doesn't exist on an object vs one that has an explicit null value.
-                if let Ok(JValue::Null) = self.evaluate_internal(arg, data) {
-                    // Path evaluated to null - now check if it's truly undefined
-                    // For single-step paths, check if the field exists
-                    if steps.len() == 1 {
-                        // Get field name - could be Name (identifier) or String (quoted)
-                        let field_name = match &steps[0].node {
-                            AstNode::Name(n) => Some(n.as_str()),
-                            AstNode::String(s) => Some(s.as_str()),
-                            _ => None,
-                        };
-                        if let Some(field) = field_name {
-                            match data {
-                                JValue::Object(obj) => {
-                                    if !obj.contains_key(field) {
-                                        // Field doesn't exist - return undefined
-                                        if propagates_undefined(name) {
-                                            return Ok(JValue::Null);
-                                        }
-                                    }
-                                    // Field exists with value null - continue to throw T0410
-                                }
-                                // Trying to access field on null data - return undefined
-                                JValue::Null if propagates_undefined(name) => {
-                                    return Ok(JValue::Null);
-                                }
-                                _ => {}
-                            }
-                        }
-                    }
-                    // For multi-step paths, check if any intermediate step failed
-                    else if steps.len() > 1 {
-                        // Evaluate each step to find where it breaks
-                        let mut current = data;
-                        let mut failed_due_to_missing_field = false;
-
-                        for (i, step) in steps.iter().enumerate() {
-                            if let AstNode::Name(field_name) = &step.node {
-                                match current {
-                                    JValue::Object(obj) => {
-                                        if let Some(val) = obj.get(field_name) {
-                                            current = val;
-                                        } else {
-                                            // Field doesn't exist
-                                            failed_due_to_missing_field = true;
-                                            break;
-                                        }
-                                    }
-                                    JValue::Array(_) => {
-                                        // Array access - evaluate normally
-                                        break;
-                                    }
-                                    JValue::Null => {
-                                        // Hit null in the middle of the path
-                                        if i > 0 {
-                                            // Previous field had null value - not undefined
-                                            failed_due_to_missing_field = false;
-                                        }
-                                        break;
-                                    }
-                                    _ => break,
-                                }
-                            }
-                        }
-
-                        if failed_due_to_missing_field && propagates_undefined(name) {
-                            return Ok(JValue::Null);
-                        }
-                    }
-                }
-            }
         }
 
         // Fused aggregate pipeline: for $sum/$max/$min/$average with a single Path argument,
