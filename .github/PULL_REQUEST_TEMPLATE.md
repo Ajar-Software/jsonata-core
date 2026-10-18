@@ -128,6 +128,7 @@ assert result == expected
 
 ## Code Quality
 
+- [ ] Code review run, and its findings and their outcomes posted on this PR
 - [ ] Code follows project style guidelines
 - [ ] `cargo fmt` applied
 - [ ] `cargo clippy -- -D warnings` passes with no warnings

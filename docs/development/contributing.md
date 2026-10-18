@@ -122,7 +122,7 @@ jsonatapy mirrors the JavaScript reference implementation structure for easier s
 - `src/datetime.rs` - Date/time functions
 - `src/signature.rs` - Function signature validation
 
-See [CLAUDE.MD](../../CLAUDE.MD) for detailed architecture notes.
+See [CLAUDE.md](../../CLAUDE.md) for detailed architecture notes.
 
 ## Reporting Issues
 
@@ -135,5 +135,5 @@ When reporting bugs:
 ## Questions?
 
 - Check existing documentation
-- Review [CLAUDE.MD](../../CLAUDE.MD) for design guidelines
+- Review [CLAUDE.md](../../CLAUDE.md) for design guidelines
 - Open an issue for discussion

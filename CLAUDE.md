@@ -1,4 +1,4 @@
-# CLAUDE.MD
+# CLAUDE.md
 
 This file provides context and guidelines for AI assistants working on this project.
 
@@ -99,7 +99,7 @@ jsonatapy/
 ├── Cargo.toml             # Rust dependencies and config
 ├── pyproject.toml         # Python package config (maturin)
 ├── README.md              # Project readme
-├── CLAUDE.MD              # This file
+├── CLAUDE.md              # This file
 └── LICENSE                # MIT License (matching upstream)
 ```
 
@@ -234,6 +234,12 @@ python benches/compare_js.py
 3. Build evaluator core
 4. Add built-in functions incrementally
 5. Each feature should immediately have corresponding tests from JS suite
+
+### Pull Requests
+- Run a code review before a PR is opened for review: `/code-review` on the branch before opening it, or `/code-review <PR number>` once it exists. Review again after every push that changes code, not just docs or formatting.
+- Confirm each finding before acting on it: reproduce it, ideally against jsonata-js, or trace a real input to the failure.
+- Fix each confirmed finding and add a regression test for any behavior gap. If a finding is deferred or not changed, say why.
+- Post the outcome on the PR: each finding and what happened to it, either fixed (with the commit), deferred (and where it will be handled), or not changed (and why).
 
 ### Tracking Upstream
 - Monitor jsonata-js releases: https://github.com/jsonata-js/jsonata/releases
