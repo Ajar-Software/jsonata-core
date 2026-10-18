@@ -644,6 +644,16 @@ pub mod string {
             if limit.is_some_and(|lim| results.len() >= lim) {
                 break;
             }
+            // Same check and message as `check_sequence_length` in
+            // evaluator.rs, which returns an EvaluatorError.
+            if let Some(max) = max_sequence {
+                if results.len() >= max {
+                    return Err(FunctionError::RuntimeError(format!(
+                        "D2015: The maximum sequence length of {} was exceeded.",
+                        max
+                    )));
+                }
+            }
             let m = caps.get(0).unwrap();
             utf16_index += s[utf16_byte..m.start()].encode_utf16().count();
             utf16_byte = m.start();
@@ -660,12 +670,6 @@ pub mod string {
             match_obj.insert("match".to_string(), JValue::string(m.as_str().to_string()));
             match_obj.insert("index".to_string(), JValue::Number(utf16_index as f64));
             match_obj.insert("groups".to_string(), JValue::array(groups));
-            if max_sequence.is_some_and(|max| results.len() + 1 > max) {
-                return Err(FunctionError::RuntimeError(format!(
-                    "D2015: The maximum sequence length of {} was exceeded.",
-                    max_sequence.unwrap()
-                )));
-            }
             results.push(JValue::object(match_obj));
 
             current = if m.end() >= s.len() {
