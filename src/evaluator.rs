@@ -667,6 +667,11 @@ fn try_compile_expr_inner(node: &AstNode, allowed_vars: Option<&[&str]>) -> Opti
         }
 
         // ── Block (sequential evaluation) ───────────────────────────────
+        // A block's scope only matters for `:=`, which doesn't compile, so a
+        // one-expression block (every `.(expr)` step) is its expression.
+        AstNode::Block(exprs) if exprs.len() == 1 => {
+            try_compile_expr_inner(&exprs[0], allowed_vars)
+        }
         AstNode::Block(exprs) if !exprs.is_empty() => {
             // Instr::BlockEnd's operand is a u16 element count - bail out to
             // the (always-correct, no-limit) tree-walker rather than silently
@@ -2598,6 +2603,7 @@ impl StoredLambda {
 }
 
 /// A single scope in the scope stack
+#[derive(Clone)]
 struct Scope {
     bindings: HashMap<String, JValue>,
 }
@@ -2614,6 +2620,7 @@ impl Scope {
 ///
 /// Holds variable bindings and other state needed during evaluation.
 /// Uses a scope stack for efficient push/pop instead of clone/restore.
+#[derive(Clone)]
 pub struct Context {
     scope_stack: Vec<Scope>,
     parent_data: Option<JValue>,
@@ -4929,15 +4936,17 @@ impl Evaluator {
         match node {
             AstNode::Variable(name) if name.is_empty() => Ok(item.bare()),
             AstNode::FunctionApplication(expr) => {
-                // A `.(...)` block runs in a scope of its own, as jsonata-js
-                // gives a block a frame, so its `:=` bindings don't reach the
-                // enclosing scope. `$` is bound there too, not only over an
-                // outer `$`: the lambda-step desugaring
-                // (`x.function($v){...}()`) passes `$` explicitly.
-                self.context.push_scope();
+                // Always bound, not only over an outer `$`: the lambda-step
+                // desugaring (`x.function($v){...}()`) passes `$` explicitly.
+                // A `.(...)` step's expression is a Block, which gives its
+                // `:=` bindings a scope of their own.
+                let saved = self.context.lookup("$").cloned();
                 self.context.bind("$".to_string(), item.clone());
                 let result = self.evaluate_internal(expr, item);
-                self.context.pop_scope();
+                match saved {
+                    Some(value) => self.context.bind("$".to_string(), value),
+                    None => self.context.unbind("$"),
+                }
                 result
             }
             AstNode::ArrayGroup(elements) => {

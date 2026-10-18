@@ -165,6 +165,9 @@ const EXTRA = [
   '{"x": $string($nope)}', '$type($not($nope))', '$string(objs.(p).q)',
   // A `.(...)` block's `:=` bindings stay in the block.
   '(arr.($z := 3); $z)', 'arr.($z := $; $z * 2)', '($y := 1; arr.($y := 5); $y)',
+  // A `.$fn(...)` step is not a block, so its argument's `:=` binds outside.
+  '($r := arr.$string($x := $); $x)', '(one.$string($x := z); $x)', '($r := arr.$sum([$x := $]); $x)',
+  'arr.(1; 2)', 'arr.()',
 ];
 
 // The same questions with a top-level array as input. jsonata-js wraps that

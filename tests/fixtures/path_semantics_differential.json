@@ -6412,6 +6412,34 @@
    "result": 1
   },
   {
+   "expression": "($r := arr.$string($x := $); $x)",
+   "result": 3
+  },
+  {
+   "expression": "(one.$string($x := z); $x)",
+   "result": [
+    7
+   ]
+  },
+  {
+   "expression": "($r := arr.$sum([$x := $]); $x)",
+   "result": 3
+  },
+  {
+   "expression": "arr.(1; 2)",
+   "result": [
+    2,
+    2,
+    2
+   ]
+  },
+  {
+   "expression": "arr.()",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
    "expression": "a",
    "root": true,
    "result": [

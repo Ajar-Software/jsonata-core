@@ -1450,12 +1450,11 @@ impl Parser {
 
                         self.expect(Token::RightParen)?;
 
-                        // Wrap in Block if multiple expressions, otherwise use single expression
-                        let expr = if expressions.len() == 1 {
-                            expressions.into_iter().next().unwrap()
-                        } else {
-                            AstNode::Block(expressions)
-                        };
+                        // Always a Block, even with one expression: a `.(...)` step
+                        // is a jsonata-js block, which gets a frame of its own, and
+                        // the Block is what tells it apart from the `.$fn(...)` and
+                        // `.function(){...}(...)` steps, which share this node.
+                        let expr = AstNode::Block(expressions);
 
                         // Create FunctionApplication node as a path step
                         let mut steps = match lhs {
