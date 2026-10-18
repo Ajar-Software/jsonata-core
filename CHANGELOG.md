@@ -49,6 +49,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`~>` follows jsonata-js `evaluateApplyExpression`**
+  ([#193](https://github.com/txjmb/jsonata-core/issues/193)). The left side is evaluated once
+  and passed on even when undefined, so `nope ~> $count()` is `0` and `nope ~> $append([])` is
+  `[]` (both used to be undefined). A call on the right gets the left side as its first
+  argument. Any other right side is evaluated and must be a function: two functions compose
+  wherever they appear, so `arr ~> ($sum ~> $string)` and `$type($sum ~> $string)` now work, and
+  `5 ~> nope` raises T2006 instead of giving undefined. A partial application is applied like
+  any function, so `"abc" ~> $substring(?, ?)` is `"abc"`. The left side used to be evaluated
+  twice, calling a host function on it twice. Two jsonata-js behaviours are deliberately not
+  followed: it drops the filter on a call (`arr ~> $map($f)[0]` gives the whole array there),
+  and it matches a regex against an undefined left side as the text `"undefined"`.
+- **A transform is always a function value that runs when invoked**, as in jsonata-js. It used
+  to run at once wherever `$` was bound, so a `~>` into a transform inside another transform's
+  update, or `a.(|x|{}|)`, ran it on the wrong input. `$` in a transform's update is now the
+  matched object, not the transform's input, and so it is in the delete clause, which is
+  evaluated for each matched object as jsonata-js does (it used to be evaluated once, against
+  the input). A delete clause that is not a string or an array of strings raises T2012, as
+  does one with a non-string item, which used to be skipped, and a transform called with more
+  than one argument raises T0410. Like a lambda, it closes over the variables it
+  uses, and written directly as a higher-order function's argument it is called, as a
+  composition such as `$map(n, $sum ~> $string)` now is.
+- **`$sort`, `$single` and the other higher-order builtins can be called by value**:
+  `[3,1,2] ~> $sort`, `$f := $single` and `$sort ~> $reverse` used to raise T0410. They now run
+  as a direct call does, validating their arguments the same way.
+- **A host function named without a call is a function value**, as a builtin is, so
+  `5 ~> $dbl`, `$f := $dbl`, `$map(arr, $dbl)` and `$exists($dbl)` work for a function
+  registered with `register`. `$exists` on a variable checks its binding first, so a bound
+  name that shadows a builtin, such as `($sort := nope; $exists($sort))`, is `false`.
+- **A lambda parameter without an argument is undefined**, not `null`, on every path:
+  `($f := function($v) { $type($v) }; $f())` used to be `"null"` when the body was simple
+  enough to compile, and a tail-recursive lambda bound it as `null` too.
+- **`$single`, transforms and partial applications handle undefined as jsonata-js does**
+  ([#193](https://github.com/txjmb/jsonata-core/issues/193)). `$single` gives undefined for an
+  undefined input and treats `null` as a one-item sequence. A transform gives undefined for an
+  undefined input and raises T0410 for one that is not an object or array, however it is
+  invoked (`$t(5)` used to return `5`). A placeholder left without an argument is undefined, not
+  `null`.
 - **`??` propagates errors and coalesces any undefined value**, as jsonata-js does
   ([#195](https://github.com/txjmb/jsonata-core/issues/195)). jsonata-js reads `a ?? b` as
   `$exists(a) ? a : b`. `$error("x") ?? 1` used to swallow the error and give `1`, and the right

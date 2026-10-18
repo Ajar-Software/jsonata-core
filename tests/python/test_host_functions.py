@@ -52,6 +52,40 @@ class TestRegister:
         expr.register("greet", lambda n: "HOST")
         assert expr.evaluate(None) == "local x"
 
+    @pytest.mark.parametrize(
+        "source",
+        ["$tick() ~> $string()", "$tick() ~> $string", "$tick() ~> $string(?, false)"],
+    )
+    def test_chain_left_side_evaluated_once(self, source):
+        # `~>` used to evaluate its left side twice: once to check for
+        # undefined and again as the function's argument (#193).
+        calls = []
+        expr = jsonatapy.compile(source)
+        expr.register("tick", lambda: calls.append(1) or len(calls))
+        assert expr.evaluate(None) == "1"
+        assert len(calls) == 1
+
+    @pytest.mark.parametrize(
+        ("source", "expected"),
+        [
+            ("5 ~> $dbl", 10),
+            ("5 ~> $dbl()", 10),
+            ("($f := $dbl; 5 ~> $f)", 10),
+            ("5 ~> ($dbl ~> $string)", "10"),
+            ("$map([1, 2], $dbl)", [2, 4]),
+            ("$type($dbl)", "function"),
+            ("$exists($dbl)", True),
+            ("(function($dbl){ $exists($dbl) })()", False),
+        ],
+    )
+    def test_host_function_as_value(self, source, expected):
+        # A host function named without a call is a function value, as a
+        # builtin is, so `~>` can apply it (#193).
+        expr = jsonatapy.compile(source)
+        # A host function gets every argument a higher-order function has.
+        expr.register("dbl", lambda n, *_: n * 2)
+        assert expr.evaluate(None) == expected
+
 
 class TestRegisterErrors:
     def test_collision_with_builtin_rejected(self):

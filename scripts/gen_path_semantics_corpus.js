@@ -170,6 +170,41 @@ const EXTRA = [
   'arr.(1; 2)', 'arr.()',
   // Recursion through a `.(...)` step.
   '($f := function($n) { $n <= 0 ? 0 : [$n].($f($n - 1)) + 1 }; $f(40))',
+  // `~>` passes an undefined left side on to the function (#193).
+  'nope ~> $count()', 'nope ~> $exists()', 'nope ~> $count', 'nope ~> $single()',
+  'nope ~> $single(function($v) { true })', '$single(null, function($v) { false })',
+  'nope ~> function($v) { $exists($v) }', 'nope ~> $substring(?, 1)', 'nope ~> |x|{"a": 1}|',
+  '($t := |x|{"a": 1}|; $t(nope))', '($t := |x|{"a": 1}|; $t(5))', '5 ~> |x|{"a": 1}|',
+  'nope ~> /a/', 'nope ~> $sum ~> $string', 'arr ~> $append(nope)',
+  // A right side that is not a call is evaluated, and must be a function.
+  'arr ~> ($sum ~> $string)', '$type($sum ~> $string)', '($f := $sum ~> $string; arr ~> $f)',
+  '($c := $sum ~> $string ~> $length; $c(arr))', '"abc" ~> ($substring(?, 1) ~> $uppercase)',
+  '"abc" ~> $substring(?, ?)', '5 ~> nope', '5 ~> "x"', 'arr ~> $f.g', 'arr ~> $sum[0]',
+  'arr ~> $map(function($v) { $v * 2 })[0]', 'arr ~> $map(function($v) { $v * 2 })[]',
+  '($n := 0; $f := function($v) { $v }; ($n := $n + 1; arr) ~> $f; $n)',
+  'nope ~> /n/', 'arr ~> function($v) { $count($v) }', '$sum ~> function($v) { $v + 1 }',
+  // A transform is a function value that runs only when invoked, and `$` in
+  // its update is the matched object.
+  'm ~> |k|{"w": $keys($)}|', 'x ~> |$|{"w": $keys($)}|', 'm ~> |k|{"c": x ~> |$|{"d": 1}|}|',
+  'm ~> |k|{"c": $$.x ~> |$|{"d": 1}|}|',
+  'objs.(|$|{"q": 1}|) ~> $type()', '[1].($ ~> |x|{}|)',
+  '($t := |$|{"w": 1}|; $f := function($v) { $t($v) }; $f(x))',
+  '($mk := function($n) { |$|{"w": $n}| }; $t := $mk(5); x ~> $t)', '$map([x], |$|{"w": 1}|)',
+  '($t := |$|{"w": $v}|; $f := function($v) { $t(x) }; $f(1))',
+  // The delete clause is evaluated per matched object, with `$` bound to it.
+  'm ~> |k|{}, $keys($)|', 'het ~> |$|{}, $keys($)[0]|', 'm ~> |k|{}, ["b", 1]|', 'm ~> |k|{}, null|',
+  'm ~> |k|{}, nope|', '($t := |k|{"x": 1}|; $t(m, 2))',
+  // A builtin applied by value runs as a direct call does.
+  '[3, 1, 2] ~> $sort', 'arr ~> $sort ~> $reverse', '[3] ~> $single', '($f := $sort; $f([2, 1]))',
+  '$map([1, 2], $sort)', '$map(n, $sum ~> $string)', '$filter(n, $count ~> function($c) { $c > 1 })',
+  '($f := function($v) { $exists($x) }; arr ~> ($sum ~> $f))',
+  '(function($sort) { $sort([3, 1, 2]) })($sort)',
+  '($s := $sort; $sort := function($x) { "user" }; $s([3, 1, 2]))',
+  '($sort := nope; $exists($sort))', '$exists($sort)', '($sort := null; $exists($sort))',
+  // A parameter without an argument is undefined.
+  '(function($sort) { $exists($sort) })()', '($f := function($v) { $type($v) }; $f())',
+  '($f := function($v, $w) { [$v, $w] }; $f(1))',
+  '($f := function($n, $acc) { $n = 0 ? $type($acc) : $f($n - 1) }; $f(3))',
 ];
 
 // The same questions with a top-level array as input. jsonata-js wraps that

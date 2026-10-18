@@ -6444,6 +6444,420 @@
    "result": 40
   },
   {
+   "expression": "nope ~> $count()",
+   "result": 0
+  },
+  {
+   "expression": "nope ~> $exists()",
+   "result": false
+  },
+  {
+   "expression": "nope ~> $count",
+   "result": 0
+  },
+  {
+   "expression": "nope ~> $single()",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "nope ~> $single(function($v) { true })",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "$single(null, function($v) { false })",
+   "result": {
+    "$error": "D3139"
+   }
+  },
+  {
+   "expression": "nope ~> function($v) { $exists($v) }",
+   "result": false
+  },
+  {
+   "expression": "nope ~> $substring(?, 1)",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "nope ~> |x|{\"a\": 1}|",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "($t := |x|{\"a\": 1}|; $t(nope))",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "($t := |x|{\"a\": 1}|; $t(5))",
+   "result": {
+    "$error": "T0410"
+   }
+  },
+  {
+   "expression": "5 ~> |x|{\"a\": 1}|",
+   "result": {
+    "$error": "T0410"
+   }
+  },
+  {
+   "expression": "nope ~> /a/",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "nope ~> $sum ~> $string",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "arr ~> $append(nope)",
+   "result": [
+    1,
+    2,
+    3
+   ]
+  },
+  {
+   "expression": "arr ~> ($sum ~> $string)",
+   "result": "6"
+  },
+  {
+   "expression": "$type($sum ~> $string)",
+   "result": "function"
+  },
+  {
+   "expression": "($f := $sum ~> $string; arr ~> $f)",
+   "result": "6"
+  },
+  {
+   "expression": "($c := $sum ~> $string ~> $length; $c(arr))",
+   "result": 1
+  },
+  {
+   "expression": "\"abc\" ~> ($substring(?, 1) ~> $uppercase)",
+   "result": "BC"
+  },
+  {
+   "expression": "\"abc\" ~> $substring(?, ?)",
+   "result": "abc"
+  },
+  {
+   "expression": "5 ~> nope",
+   "result": {
+    "$error": "T2006"
+   }
+  },
+  {
+   "expression": "5 ~> \"x\"",
+   "result": {
+    "$error": "T2006"
+   }
+  },
+  {
+   "expression": "arr ~> $f.g",
+   "result": {
+    "$error": "T2006"
+   }
+  },
+  {
+   "expression": "arr ~> $sum[0]",
+   "result": 6
+  },
+  {
+   "expression": "arr ~> $map(function($v) { $v * 2 })[0]",
+   "result": [
+    2,
+    4,
+    6
+   ]
+  },
+  {
+   "expression": "arr ~> $map(function($v) { $v * 2 })[]",
+   "result": [
+    2,
+    4,
+    6
+   ]
+  },
+  {
+   "expression": "($n := 0; $f := function($v) { $v }; ($n := $n + 1; arr) ~> $f; $n)",
+   "result": 0
+  },
+  {
+   "expression": "nope ~> /n/",
+   "result": {
+    "match": "n",
+    "start": 1,
+    "end": 2,
+    "groups": []
+   }
+  },
+  {
+   "expression": "arr ~> function($v) { $count($v) }",
+   "result": 3
+  },
+  {
+   "expression": "$sum ~> function($v) { $v + 1 }",
+   "result": {
+    "$function": true
+   }
+  },
+  {
+   "expression": "m ~> |k|{\"w\": $keys($)}|",
+   "result": {
+    "k": {
+     "b": [
+      [
+       1
+      ]
+     ],
+     "w": "b"
+    }
+   }
+  },
+  {
+   "expression": "x ~> |$|{\"w\": $keys($)}|",
+   "result": {
+    "y": [
+     1
+    ],
+    "w": "y"
+   }
+  },
+  {
+   "expression": "m ~> |k|{\"c\": x ~> |$|{\"d\": 1}|}|",
+   "result": {
+    "k": {
+     "b": [
+      [
+       1
+      ]
+     ]
+    }
+   }
+  },
+  {
+   "expression": "m ~> |k|{\"c\": $$.x ~> |$|{\"d\": 1}|}|",
+   "result": {
+    "k": {
+     "b": [
+      [
+       1
+      ]
+     ],
+     "c": {
+      "y": [
+       1
+      ],
+      "d": 1
+     }
+    }
+   }
+  },
+  {
+   "expression": "objs.(|$|{\"q\": 1}|) ~> $type()",
+   "result": "array"
+  },
+  {
+   "expression": "[1].($ ~> |x|{}|)",
+   "result": {
+    "$error": "T0410"
+   }
+  },
+  {
+   "expression": "($t := |$|{\"w\": 1}|; $f := function($v) { $t($v) }; $f(x))",
+   "result": {
+    "y": [
+     1
+    ],
+    "w": 1
+   }
+  },
+  {
+   "expression": "($mk := function($n) { |$|{\"w\": $n}| }; $t := $mk(5); x ~> $t)",
+   "result": {
+    "y": [
+     1
+    ],
+    "w": 5
+   }
+  },
+  {
+   "expression": "$map([x], |$|{\"w\": 1}|)",
+   "result": {
+    "y": [
+     1
+    ],
+    "w": 1
+   }
+  },
+  {
+   "expression": "($t := |$|{\"w\": $v}|; $f := function($v) { $t(x) }; $f(1))",
+   "result": {
+    "y": [
+     1
+    ]
+   }
+  },
+  {
+   "expression": "m ~> |k|{}, $keys($)|",
+   "result": {
+    "k": {}
+   }
+  },
+  {
+   "expression": "het ~> |$|{}, $keys($)[0]|",
+   "result": [
+    {
+     "b": 5
+    },
+    {
+     "a": 4
+    }
+   ]
+  },
+  {
+   "expression": "m ~> |k|{}, [\"b\", 1]|",
+   "result": {
+    "$error": "T2012"
+   }
+  },
+  {
+   "expression": "m ~> |k|{}, null|",
+   "result": {
+    "$error": "T2012"
+   }
+  },
+  {
+   "expression": "m ~> |k|{}, nope|",
+   "result": {
+    "k": {
+     "b": [
+      [
+       1
+      ]
+     ]
+    }
+   }
+  },
+  {
+   "expression": "($t := |k|{\"x\": 1}|; $t(m, 2))",
+   "result": {
+    "$error": "T0410"
+   }
+  },
+  {
+   "expression": "[3, 1, 2] ~> $sort",
+   "result": [
+    1,
+    2,
+    3
+   ]
+  },
+  {
+   "expression": "arr ~> $sort ~> $reverse",
+   "result": [
+    3,
+    2,
+    1
+   ]
+  },
+  {
+   "expression": "[3] ~> $single",
+   "result": 3
+  },
+  {
+   "expression": "($f := $sort; $f([2, 1]))",
+   "result": [
+    1,
+    2
+   ]
+  },
+  {
+   "expression": "$map([1, 2], $sort)",
+   "result": {
+    "$error": "T0410"
+   }
+  },
+  {
+   "expression": "$map(n, $sum ~> $string)",
+   "result": [
+    "3",
+    "3"
+   ]
+  },
+  {
+   "expression": "$filter(n, $count ~> function($c) { $c > 1 })",
+   "result": [
+    1,
+    2
+   ]
+  },
+  {
+   "expression": "($f := function($v) { $exists($x) }; arr ~> ($sum ~> $f))",
+   "result": false
+  },
+  {
+   "expression": "(function($sort) { $sort([3, 1, 2]) })($sort)",
+   "result": [
+    1,
+    2,
+    3
+   ]
+  },
+  {
+   "expression": "($s := $sort; $sort := function($x) { \"user\" }; $s([3, 1, 2]))",
+   "result": [
+    1,
+    2,
+    3
+   ]
+  },
+  {
+   "expression": "($sort := nope; $exists($sort))",
+   "result": false
+  },
+  {
+   "expression": "$exists($sort)",
+   "result": true
+  },
+  {
+   "expression": "($sort := null; $exists($sort))",
+   "result": true
+  },
+  {
+   "expression": "(function($sort) { $exists($sort) })()",
+   "result": false
+  },
+  {
+   "expression": "($f := function($v) { $type($v) }; $f())",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "($f := function($v, $w) { [$v, $w] }; $f(1))",
+   "result": [
+    1
+   ]
+  },
+  {
+   "expression": "($f := function($n, $acc) { $n = 0 ? $type($acc) : $f($n - 1) }; $f(3))",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
    "expression": "a",
    "root": true,
    "result": [
