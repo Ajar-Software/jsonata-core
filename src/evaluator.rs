@@ -7535,11 +7535,18 @@ impl Evaluator {
                     }
                 };
 
-                // Get optional limit
+                // Optional limit. jsonata-js rejects a negative limit (D3040)
+                // and loops while `count < limit`, so a fractional limit
+                // rounds up.
                 let limit = if evaluated_args.len() == 3 {
                     match &evaluated_args[2] {
-                        JValue::Number(n) => Some(*n as usize),
-                        JValue::Null => None,
+                        JValue::Number(n) if *n < 0.0 => {
+                            return Err(EvaluatorError::EvaluationError(
+                                "D3040: Third argument of match function must evaluate to a positive number".to_string(),
+                            ))
+                        }
+                        JValue::Number(n) => Some(n.ceil() as usize),
+                        JValue::Null | JValue::Undefined => None,
                         _ => {
                             return Err(EvaluatorError::TypeError(
                                 "match() limit must be a number".to_string(),
@@ -7549,6 +7556,9 @@ impl Evaluator {
                 } else {
                     None
                 };
+                if limit == Some(0) {
+                    return Ok(JValue::Undefined);
+                }
 
                 // Check if second argument is a custom matcher function (lambda)
                 let pattern_value = evaluated_args.get(1);
@@ -7575,61 +7585,10 @@ impl Evaluator {
 
                 // Build regex via the shared flag translation ($split/$replace
                 // use the same helper, so i/m/s behave identically everywhere)
-                let is_global = flags.contains('g');
                 let re = crate::functions::string::build_regex(&pattern, &flags)
                     .map_err(|e| EvaluatorError::EvaluationError(e.to_string()))?;
 
-                let mut results = Vec::new();
-                let mut count = 0;
-
-                for caps in re.captures_iter(&s) {
-                    if let Some(lim) = limit {
-                        if count >= lim {
-                            break;
-                        }
-                    }
-
-                    let full_match = caps.get(0).unwrap();
-                    let mut match_obj = IndexMap::new();
-                    match_obj.insert(
-                        "match".to_string(),
-                        JValue::string(full_match.as_str().to_string()),
-                    );
-                    match_obj.insert(
-                        "index".to_string(),
-                        JValue::Number(full_match.start() as f64),
-                    );
-
-                    // Collect capture groups
-                    let mut groups: Vec<JValue> = Vec::new();
-                    for i in 1..caps.len() {
-                        if let Some(group) = caps.get(i) {
-                            groups.push(JValue::string(group.as_str().to_string()));
-                        } else {
-                            groups.push(JValue::Null);
-                        }
-                    }
-                    if !groups.is_empty() {
-                        match_obj.insert("groups".to_string(), JValue::array(groups));
-                    }
-
-                    results.push(JValue::object(match_obj));
-                    count += 1;
-
-                    // If not global, only return first match
-                    if !is_global {
-                        break;
-                    }
-                }
-
-                if results.is_empty() {
-                    Ok(JValue::Undefined)
-                } else if results.len() == 1 && !is_global {
-                    // Single match (non-global) returns the match object directly
-                    Ok(results.into_iter().next().unwrap())
-                } else {
-                    Ok(JValue::sequence(results))
-                }
+                Ok(crate::functions::string::match_regex(&s, &re, limit)?)
             }
             "sift" => {
                 // $sift(object, function) or $sift(function) - filter object by predicate

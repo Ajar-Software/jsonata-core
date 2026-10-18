@@ -1700,6 +1700,61 @@
    }
   },
   {
+   "expression": "$match(s, /(a)(b)/)",
+   "result": {
+    "$arr": [
+     {
+      "match": "ab",
+      "index": 0,
+      "groups": {
+       "$arr": [
+        "a",
+        "b"
+       ],
+       "seq": false,
+       "cons": false,
+       "ks": false
+      }
+     },
+     {
+      "match": "ab",
+      "index": 2,
+      "groups": {
+       "$arr": [
+        "a",
+        "b"
+       ],
+       "seq": false,
+       "cons": false,
+       "ks": false
+      }
+     }
+    ],
+    "seq": true,
+    "cons": false,
+    "ks": false
+   }
+  },
+  {
+   "expression": "$match(s, /a/, 1)",
+   "result": {
+    "match": "a",
+    "index": 0,
+    "groups": {
+     "$arr": [],
+     "seq": false,
+     "cons": false,
+     "ks": false
+    }
+   }
+  },
+  {
+   "expression": "$match(s, /z/)",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
    "expression": "$reverse(a)",
    "result": {
     "$arr": [

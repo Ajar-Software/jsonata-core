@@ -31,9 +31,6 @@ const KNOWN_VALUE_DIVERGENCES: &[(&str, &str)] = &[
     // `$lookup` over an array does not flatten array-valued results.
     ("compiled", "$lookup(orders, \"tags\")"),
     ("tree", "$lookup(orders, \"tags\")"),
-    // `$match` without `g` returns only the first match.
-    ("compiled", "$match(s, /a/)"),
-    ("tree", "$match(s, /a/)"),
 ];
 
 /// Mirror of `annotate` in scripts/gen_array_flags_corpus.js.
