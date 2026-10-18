@@ -268,7 +268,7 @@ fn push_ast_node_children(node: AstNode, stack: &mut Vec<AstNode>) {
                 stack.push(*d);
             }
         }
-        AstNode::FunctionApplication(inner) | AstNode::Predicate(inner) => stack.push(*inner),
+        AstNode::FunctionApplication(inner) => stack.push(*inner),
         // Leaf nodes: no nested AstNode -- whatever's left of `node` (a
         // String, an f64, ...) is dropped here for free, in O(1), as this
         // match arm ends. Listed EXPLICITLY (no `_` wildcard) on purpose:
@@ -288,7 +288,6 @@ fn push_ast_node_children(node: AstNode, stack: &mut Vec<AstNode>) {
         | AstNode::ParentVariable(_)
         | AstNode::Wildcard
         | AstNode::Descendant
-        | AstNode::KeepArray
         | AstNode::Parent(_) => {}
     }
 }
@@ -639,9 +638,6 @@ fn substitute_labels_impl(
                 .map(|e| substitute_labels(e, state, depth))
                 .collect::<Result<Vec<_>, _>>()?,
         ),
-        AstNode::Predicate(inner) => {
-            AstNode::Predicate(Box::new(substitute_labels(*inner, state, depth)?))
-        }
         // Leaf nodes and everything else pass through unchanged.
         other => other,
     })
@@ -704,7 +700,11 @@ fn check_focus_bind_target(
     if !matches!(marker, BindingMarker::Focus(_)) {
         return Ok(());
     }
-    if !target_stages.is_empty() {
+    // `[]` is a flag on the step in jsonata-js, not one of its predicates.
+    if target_stages
+        .iter()
+        .any(|stage| !matches!(stage, crate::ast::Stage::KeepArray))
+    {
         return Err(coded(
             "S0215",
             "A context variable binding must precede any predicates on a step",
@@ -735,33 +735,15 @@ fn splice_marker_steps(
     let Transformed { node, pending } = transformed;
     let steps = match node {
         AstNode::Path { mut steps } => {
-            // Our parser encodes `$[[1..4]]` (and any `expr[pred]`) as a separate
-            // trailing `Predicate` step rather than a step carrying the predicate
-            // as a `stage` (as jsonata-js does). For an index marker, mirror
-            // jsonata's `#` case (parser.js ~L1206-1223: when the target step
-            // already has stages, PUSH an index stage) by folding those trailing
-            // predicate pseudo-steps into the preceding real step's stages, then
-            // stamping the index on that step. This makes `$[[1..4]]#$pos[$pos>=2]`
-            // apply the `[[1..4]]` filter, then number the survivors, then filter
-            // by `$pos` -- rather than crashing on a `Predicate` step node in
-            // create_tuple_stream.
-            if matches!(marker, BindingMarker::Index(_)) {
-                while steps.len() >= 2
-                    && matches!(steps.last().map(|s| &s.node), Some(AstNode::Predicate(_)))
-                {
-                    let pred = steps.pop().unwrap();
-                    if let AstNode::Predicate(inner) = pred.node {
-                        steps.last_mut().unwrap().stages.push(Stage::Filter(inner));
-                    }
-                }
-            }
             if let Some(last) = steps.last_mut() {
                 check_focus_bind_target(&marker, &last.stages, &last.node)?;
-                // A SECOND index binding on the same step (e.g. `books#$ib[...]#$ib2`)
-                // must not overwrite the first: append it as an ordered index
-                // stage so it numbers the post-filter positions (jsonata's `#`
-                // case pushing an index stage when the step already has one).
-                if let (BindingMarker::Index(var), true) = (&marker, last.index_var.is_some()) {
+                // An index binding on a step that already has stages or an
+                // index (e.g. `x[0]#$i`, `books#$ib[...]#$ib2`) is an ordered
+                // index stage, numbering the positions after those stages:
+                // jsonata-js's `#` case pushes an index stage whenever the step
+                // already has stages.
+                let has_stages = !last.stages.is_empty() || last.index_var.is_some();
+                if let (BindingMarker::Index(var), true) = (&marker, has_stages) {
                     last.stages.push(Stage::Index(var.clone()));
                     last.is_tuple = true;
                 } else {
@@ -1210,13 +1192,6 @@ fn transform_children_impl(
                 pending,
             })
         }
-        AstNode::Predicate(inner) => {
-            let t = transform_node(*inner, state, depth)?;
-            Ok(Transformed {
-                node: AstNode::Predicate(Box::new(t.node)),
-                pending: t.pending,
-            })
-        }
         // Leaf nodes and everything else pass through unchanged.
         other => Ok(Transformed::leaf(other)),
     }
@@ -1446,50 +1421,14 @@ fn walk_backward_impl(
             return Ok(level);
         }
         index -= 1;
-        // Skip filter-predicate pseudo-steps: our parser encodes `@$v[pred]`
-        // and standalone `foo[pred]` chained after a marker as a separate
-        // `Predicate` step, whereas jsonata-js carries the predicate as a
-        // `stage` on the owning step (so it never appears as a distinct step in
-        // resolveAncestry). A predicate is a filter, never an ancestor target,
-        // so the backward ancestry walk steps over it -- without this, a `%`
-        // after `books@$B[$L.isbn=$B.isbn]` hits the predicate step and wrongly
-        // reports S0217.
-        //
-        // Then skip over a run of contiguous focus-bound (`@$var`) steps,
+        // Skip over a run of contiguous focus-bound (`@$var`) steps,
         // treating them as a SINGLE ancestor hop -- mirrors jsonata-js
         // resolveAncestry (parser.js ~L1023-1025): `while(index >= 0 &&
         // step.focus && path.steps[index].focus) { step = path.steps[index--] }`.
-        // Because our extra `Predicate` steps sit between the focus steps (which
-        // in jsonata are adjacent, the predicates being stages), the
-        // focus-contiguity test must look through those predicate steps to the
-        // previous REAL navigation step. So in
-        // `library.loans@$L.books@$B[...].customers@$C[...].{ $keys(%.%) }` all
-        // three focus steps collapse into one hop and `%.%` reaches the root.
-        loop {
-            while index > 0 && matches!(steps[index].node, AstNode::Predicate(_)) {
-                index -= 1;
-            }
-            // Locate the previous non-predicate step (if any) to test contiguity.
-            let mut prev = None;
-            if index > 0 {
-                let mut j = index - 1;
-                loop {
-                    if !matches!(steps[j].node, AstNode::Predicate(_)) {
-                        prev = Some(j);
-                        break;
-                    }
-                    if j == 0 {
-                        break;
-                    }
-                    j -= 1;
-                }
-            }
-            match prev {
-                Some(p) if steps[index].focus.is_some() && steps[p].focus.is_some() => {
-                    index = p;
-                }
-                _ => break,
-            }
+        // So in `library.loans@$L.books@$B[...].customers@$C[...].{ $keys(%.%) }`
+        // all three focus steps collapse into one hop and `%.%` reaches the root.
+        while index > 0 && steps[index].focus.is_some() && steps[index - 1].focus.is_some() {
+            index -= 1;
         }
         level = seek_parent_step(&mut steps[index], label, level, state, depth)?;
     }
@@ -1557,6 +1496,7 @@ fn seek_parent_step_impl(
         // find it.
         AstNode::FunctionApplication(inner) => {
             step.is_tuple = true;
+            step.inner_tuple = true;
             seek_parent_wrapped(inner.as_mut(), label, level, state, depth)
         }
         // A parenthesized block reached directly as a path step (e.g. a
@@ -1566,6 +1506,7 @@ fn seek_parent_step_impl(
         AstNode::Block(exprs) => match exprs.last_mut() {
             Some(last) => {
                 step.is_tuple = true;
+                step.inner_tuple = true;
                 seek_parent_wrapped(last, label, level, state, depth)
             }
             // An empty block `()` produces no ancestor and no tuple; the walk
@@ -1647,6 +1588,19 @@ fn seek_parent_wrapped_impl(
 /// self-recursive), but it closes the transform_path_steps -> transform_node
 /// cycle, so `depth + 1` (accounting for its own stack frame) must still be
 /// forwarded into `transform_node`.
+/// Move a binding step's own stages (a postfix `[...]` or `[]` after
+/// `@$var`/`#$var`) onto the step that now carries the binding, after any
+/// stages it already had.
+fn carry_stages(
+    (mut steps, pending): (Vec<PathStep>, Vec<PendingAncestor>),
+    stages: Vec<crate::ast::Stage>,
+) -> (Vec<PathStep>, Vec<PendingAncestor>) {
+    if let Some(last) = steps.last_mut() {
+        last.stages.extend(stages);
+    }
+    (steps, pending)
+}
+
 fn migrate_binding_markers(
     mut step: PathStep,
     state: &mut AncestryState,
@@ -1665,6 +1619,7 @@ fn migrate_binding_markers(
             match transform_node(*lhs, state, depth + 1) {
                 Ok(transformed_lhs) => {
                     splice_marker_steps(transformed_lhs, BindingMarker::Focus(var_name))
+                        .map(|spliced| carry_stages(spliced, step.stages))
                 }
                 // `step.node` (the `Binary{FocusBind, lhs, rhs}`) was already
                 // consumed by the match above, but `step.stages` (this
@@ -1689,6 +1644,7 @@ fn migrate_binding_markers(
             match transform_node(*lhs, state, depth + 1) {
                 Ok(transformed_lhs) => {
                     splice_marker_steps(transformed_lhs, BindingMarker::Index(var_name))
+                        .map(|spliced| carry_stages(spliced, step.stages))
                 }
                 Err(e) => {
                     drop_stages_iteratively(std::mem::take(&mut step.stages));

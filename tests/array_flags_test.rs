@@ -14,24 +14,13 @@ use jsonata_core::value::JValue;
 use jsonata_core::Expression;
 use serde_json::{json, Map, Value};
 
+mod common;
+use common::norm;
+
 /// Cases whose *value* still differs from jsonata-js, so their flags cannot
 /// be compared yet. Each entry is `(engine, expression)`. The list must stay
 /// exact: a case that starts matching has to be removed from it.
-const KNOWN_VALUE_DIVERGENCES: &[(&str, &str)] = &[
-    // `$` over an array of arrays does not flatten one level (#184).
-    ("compiled", "nested.$"),
-    ("tree", "nested.$"),
-    // `*` does not flatten array-valued fields as `evaluateWildcard` does.
-    ("compiled", "*"),
-    ("tree", "*"),
-    // `[]` over a constructed array: jsonata-js wraps it in a new sequence,
-    // giving `[[1]]` (#184 step 3).
-    ("compiled", "orders[0].[id][]"),
-    ("tree", "orders[0].[id][]"),
-    // `$lookup` over an array does not flatten array-valued results.
-    ("compiled", "$lookup(orders, \"tags\")"),
-    ("tree", "$lookup(orders, \"tags\")"),
-];
+const KNOWN_VALUE_DIVERGENCES: &[(&str, &str)] = &[];
 
 /// Mirror of `annotate` in scripts/gen_array_flags_corpus.js.
 fn annotate(v: &JValue) -> Value {
@@ -49,18 +38,6 @@ fn annotate(v: &JValue) -> Value {
                 .collect::<Map<_, _>>(),
         ),
         other => Value::from(other),
-    }
-}
-
-/// Represent every number as f64, so `1` from the fixture equals `1.0` here.
-fn norm(v: &Value) -> Value {
-    match v {
-        Value::Number(n) => json!(n.as_f64().unwrap()),
-        Value::Array(items) => Value::Array(items.iter().map(norm).collect()),
-        Value::Object(map) => {
-            Value::Object(map.iter().map(|(k, v)| (k.clone(), norm(v))).collect())
-        }
-        other => other.clone(),
     }
 }
 
@@ -153,6 +130,14 @@ fn audit_reference_suite_flags() {
             compared += 1;
             if strip(&actual) != strip(&expected) {
                 value_diffs += 1;
+                if std::env::var_os("ARRAY_FLAGS_AUDIT_VALUES").is_some() {
+                    println!(
+                        "VALUE {engine:8} {}  {src}\n    expected {}\n    actual   {}",
+                        case["id"].as_str().unwrap(),
+                        strip(&expected),
+                        strip(&actual)
+                    );
+                }
             } else if actual != expected {
                 flag_diffs += 1;
                 println!(
