@@ -2955,7 +2955,13 @@ fn match_limit(
         }
         // `as` saturates, and a NaN limit matches nothing, as in jsonata-js.
         Some(JValue::Number(n)) => Ok(Some(n.ceil() as usize)),
-        _ => Ok(None),
+        other => {
+            debug_assert!(
+                matches!(other, None | Some(JValue::Undefined)),
+                "the signature admits only a number limit, got {other:?}"
+            );
+            Ok(None)
+        }
     }
 }
 
@@ -2967,9 +2973,9 @@ const REPLACE_NEGATIVE_LIMIT: &str =
 /// jsonata-js `evaluateMatcher`'s check on a custom matcher's result: a
 /// value that isn't falsy must have a numeric `start`, an array `groups` or
 /// a function `next`, else T1010. Undefined ends the matches, as in
-/// jsonata-js. jsonata-js then crashes on any other falsy result, or on a
-/// match with no `next` function, by reading a property of it; those end
-/// the matches here instead.
+/// jsonata-js. jsonata-js crashes reading a property of any other falsy
+/// result, calling a missing `next`, or calling a builtin `next` (which it
+/// can't apply); each of those ends the matches here instead.
 fn check_matcher_result(result: &JValue) -> Result<(), EvaluatorError> {
     let falsy = match result {
         JValue::Undefined | JValue::Null | JValue::Bool(false) => true,
@@ -6419,8 +6425,7 @@ impl Evaluator {
                 if is_custom_matcher {
                     // Custom matcher function support
                     // Call the matcher with the string, get match objects with {match, start, end, groups, next}
-                    let matcher = evaluated_args[1].clone();
-                    return self.match_with_custom_matcher(&s, &matcher, limit, data);
+                    return self.match_with_custom_matcher(&s, &evaluated_args[1], limit, data);
                 }
 
                 // Get regex pattern from second argument
@@ -7778,33 +7783,29 @@ impl Evaluator {
         }
     }
 
-    /// Match with custom matcher function
-    ///
-    /// Implements custom matcher support for $match(str, matcherFunction, limit?)
-    /// The matcher function is called with the string and returns:
-    /// { match: string, start: number, end: number, groups: [], next: function }
-    /// The next function is called repeatedly to get subsequent matches
-    /// Call a function value (a lambda or a builtin) with `values`, or
-    /// `None` when `function` is not a function.
+    /// Call a function value, a lambda or a builtin, with `values`.
+    /// `function` must be one of the two.
     fn call_function_value(
         &mut self,
         function: &JValue,
         values: &[JValue],
         data: &JValue,
-    ) -> Result<Option<JValue>, EvaluatorError> {
+    ) -> Result<JValue, EvaluatorError> {
         match function {
-            JValue::Lambda(stored) => {
-                let stored = Rc::clone(stored);
-                self.invoke_stored_lambda(&stored, values, data).map(Some)
-            }
-            JValue::Builtin { name } => {
-                let name = name.to_string();
-                self.call_builtin_with_values(&name, values, data).map(Some)
-            }
-            _ => Ok(None),
+            JValue::Lambda(stored) => self.invoke_stored_lambda(stored, values, data),
+            JValue::Builtin { name } => self.call_builtin_with_values(name, values, data),
+            other => Err(EvaluatorError::TypeError(format!(
+                "T1006: Attempted to invoke a non-function: {other:?}"
+            ))),
         }
     }
 
+    /// $match(str, matcher, limit) with a custom matcher function, following
+    /// jsonata-js `match`. The matcher is called with the string and returns
+    /// `{match, start, end, groups, next}`. Each `next()` gives the following
+    /// match, until one is undefined. A limit of 0 doesn't call the matcher,
+    /// and after each match the next one is asked for, and checked, before
+    /// the limit is.
     fn match_with_custom_matcher(
         &mut self,
         str_value: &str,
@@ -7812,19 +7813,13 @@ impl Evaluator {
         limit: Option<usize>,
         data: &JValue,
     ) -> Result<JValue, EvaluatorError> {
-        // Following jsonata-js `match`: a limit of 0 doesn't call the matcher,
-        // and after each match the next one is asked for (and checked) before
-        // the limit is.
         let mut results = Vec::new();
         if limit == Some(0) {
             return Ok(JValue::sequence(results));
         }
         let str_val = JValue::string(str_value.to_string());
-        let mut current = self
-            .call_function_value(matcher, &[str_val], data)?
-            .unwrap_or(JValue::Undefined);
+        let mut current = normalize_lazy(&self.call_function_value(matcher, &[str_val], data)?)?;
         loop {
-            current = normalize_lazy(&current)?;
             check_matcher_result(&current)?;
             let JValue::Object(match_obj) = &current else {
                 break;
@@ -7837,14 +7832,12 @@ impl Evaluator {
             }
             results.push(JValue::object(result_obj));
 
-            let next = match match_obj.get("next") {
-                Some(next) => self.call_function_value(next, &[], data)?,
-                None => None,
-            };
-            let Some(next) = next else {
+            // Only a lambda `next` is called (see `check_matcher_result`).
+            let Some(JValue::Lambda(next)) = match_obj.get("next") else {
                 break;
             };
-            current = normalize_lazy(&next)?;
+            let next = Rc::clone(next);
+            current = normalize_lazy(&self.invoke_stored_lambda(&next, &[], data)?)?;
             if limit.is_some_and(|limit| results.len() >= limit) {
                 check_matcher_result(&current)?;
                 break;
