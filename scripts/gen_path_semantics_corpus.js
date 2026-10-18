@@ -168,8 +168,8 @@ const EXTRA = [
   // A `.$fn(...)` step is not a block, so its argument's `:=` binds outside.
   '($r := arr.$string($x := $); $x)', '(one.$string($x := z); $x)', '($r := arr.$sum([$x := $]); $x)',
   'arr.(1; 2)', 'arr.()',
-  // A `.(...)` step costs no recursion depth of its own.
-  '($f := function($n) { $n <= 0 ? 0 : [$n].($f($n - 1)) + 1 }; $f(70))',
+  // Recursion through a `.(...)` step.
+  '($f := function($n) { $n <= 0 ? 0 : [$n].($f($n - 1)) + 1 }; $f(40))',
 ];
 
 // The same questions with a top-level array as input. jsonata-js wraps that

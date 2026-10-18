@@ -61,7 +61,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   popping. Bindings set on the `Context` beforehand are still visible. `$$` is each evaluation's
   own input; a reused evaluator used to keep answering it from the first.
 - **A `.(...)` step's `:=` bindings stay in the step.** `($y := 1; a.($y := 5); $y)` is `1`, as
-  in jsonata-js; it used to be `5`.
+  in jsonata-js; it used to be `5`. In the Rust AST, a `.(expr)` step is now always
+  `FunctionApplication(Block([...]))`, even with one expression, so it can be told apart from a
+  `.$fn(...)` step, whose `:=` arguments still bind outside the step.
 - **A builtin's arguments are all evaluated.** Two leftover checks returned early: one for an
   unbound variable argument, which skipped the other arguments' errors and signature checks and
   gave `null` rather than undefined (`{"x": $string($nope)}` is now `{}`); and one that

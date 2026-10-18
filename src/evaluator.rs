@@ -4321,7 +4321,7 @@ impl Evaluator {
                 }
             }
 
-            AstNode::Block(expressions) => self.evaluate_block(expressions, data, None),
+            AstNode::Block(expressions) => self.evaluate_block(expressions, data),
 
             // Lambda: capture current environment for closure support
             AstNode::Lambda {
@@ -4924,13 +4924,12 @@ impl Evaluator {
             AstNode::Variable(name) if name.is_empty() => Ok(item.bare()),
             // `$` is the item there, bound even with no outer `$`: the
             // lambda-step desugaring (`x.function($v){...}()`) passes `$`
-            // explicitly. A block (`.(...)`, and that desugaring) is evaluated
-            // here rather than through `evaluate_internal`, so a step costs no
-            // recursion depth of its own, and `$` goes in the block's scope.
-            AstNode::FunctionApplication(expr) => match expr.as_ref() {
-                AstNode::Block(expressions) => self.evaluate_block(expressions, item, Some(item)),
-                expr => self.with_dollar(item, |ev| ev.evaluate_internal(expr, item)),
-            },
+            // explicitly. A `.(...)` step's expression is a Block, which gives
+            // its `:=` bindings a scope of their own and, as in jsonata-js,
+            // counts as a level of evaluation depth.
+            AstNode::FunctionApplication(expr) => {
+                self.with_dollar(item, |ev| ev.evaluate_internal(expr, item))
+            }
             AstNode::ArrayGroup(elements) => {
                 let items =
                     self.with_dollar_bound(item, |ev| ev.construct_array(elements, item))?;
@@ -4972,18 +4971,13 @@ impl Evaluator {
     }
 
     /// A block: its expressions in order, in a scope of their own, giving the
-    /// last one's value. `dollar`, if given, is bound as `$` in that scope.
-    /// The scope is popped however the block ends.
+    /// last one's value. The scope is popped however the block ends.
     fn evaluate_block(
         &mut self,
         expressions: &[AstNode],
         data: &JValue,
-        dollar: Option<&JValue>,
     ) -> Result<JValue, EvaluatorError> {
         self.context.push_scope();
-        if let Some(item) = dollar {
-            self.context.bind("$".to_string(), item.clone());
-        }
         // An empty block (`()`) is undefined in jsonata-js, not null. A bare
         // top-level `()` never gets here (the parser makes it
         // `AstNode::Undefined`), but a `.()` step does.
