@@ -15,7 +15,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   dereferences to `Vec<JValue>`, so code that reads arrays is unaffected. Code that builds them
   calls `JValue::array(vec)`, and `JArray::make_mut`, `into_vec` and `ptr_eq` replace
   `Rc::make_mut`, `Rc::try_unwrap` and `Rc::ptr_eq`. `JArray` also carries the `sequence`, `cons`
-  and `keep_singleton` flags jsonata-js keeps on arrays; nothing reads them yet.
+  and `keep_singleton` flags jsonata-js keeps on arrays, and an `outer_wrapper` flag for the
+  top-level input array.
+- **Results are unwrapped and flattened by jsonata-js's two rules** (#184). A path step's
+  results are flattened one level, except for arrays built by `[...]`, and on the last step a
+  single array result is returned as is. After every expression, an empty sequence is
+  undefined and a one-item sequence is its item unless `[]` applies. These replace the
+  engine's own heuristics, so results now match jsonata-js 2.2.2 in cases such as
+  `[{'a':[[1]]}].(a)` (`[[1]]`), `n.$` over nested arrays, `$lookup` and `*` (which flatten
+  one level), `x[]@$v` (now accepted) and a range that counts down (`[3..1]`, undefined).
+- **A top-level array input is one item to a path**, as jsonata-js's `outerWrapper` makes it,
+  while `$`, `*` and an object constructor see the bare array: `{"x": a[0]}` over
+  `[{"a":[1,2]},{"a":[3]}]` is `{"x":[1,3]}`. `$eval(expr, array)` wraps its focus the same way.
+- **An object constructor groups an array input's items by key**, as jsonata-js
+  `evaluateGroupExpression` does: a value is evaluated over its group's items, so
+  `[[1,2],[3]].{"x": $}` is `{"x":[1,2,3]}` and over `[4]` it is `{"x":4}`. A group-by's keys
+  keep the order they are first produced in.
 - **`function` and `λ` are names, not keywords.** They open a lambda only when immediately
   followed by `(`, matching jsonata-js, which has no such keyword and decides lambda-ness from
   the callee of a call. Anywhere else they are ordinary path steps, so `function` now reads a
@@ -33,6 +48,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Removed
 
 ### Fixed
+
+- **Field paths in lambda bodies map over arrays.** `($f := function() { objs.p }; $f())` was
+  undefined when `objs` held an array; it is now `[1, 2]` as in jsonata-js.
+- **Compiled predicates read the right field from objects with different key orders.** A
+  predicate inside a lambda body, such as `xs[a > 2].b`, read fields by the first object's key
+  positions and so tested the wrong field on objects ordered differently.
+- **Index binding on a sort numbers the sorted items**: `arr^($)#$i` is the sorted array and
+  `$i` its positions, where it used to return the input object.
+- **Object keys that are null or repeated raise jsonata-js's errors**: a null key is `T1003`
+  (it used to be skipped), and two pairs with the same literal key are `D1009` (the later
+  value used to win).
 
 - **`unknown(function)` now reports `T1006`** ("Attempted to invoke a non-function") instead of
   `S0202`. The `function` keyword in argument position used to commit the parser to a lambda,
