@@ -2903,6 +2903,7 @@ fn duplicate_literal_key(pairs: &[(AstNode, AstNode)]) -> Option<&str> {
 
 /// jsonata-js's D1009, for two pairs of an object constructor giving `key`.
 fn duplicate_key_error(key: &str) -> EvaluatorError {
+    let key = serde_json::to_string(key).unwrap_or_else(|_| key.to_string());
     EvaluatorError::EvaluationError(format!(
         "D1009: Multiple key definitions evaluate to same key: {key}"
     ))
@@ -2910,7 +2911,10 @@ fn duplicate_key_error(key: &str) -> EvaluatorError {
 
 /// jsonata-js's T1003, for an object key that is not a string.
 fn key_type_error(key: &JValue) -> EvaluatorError {
-    let key = key.to_json_string().unwrap_or_else(|_| format!("{key:?}"));
+    let key = match key {
+        JValue::Lambda(_) | JValue::Builtin { .. } => format!("{key:?}"),
+        _ => key.to_json_string().unwrap_or_else(|_| format!("{key:?}")),
+    };
     EvaluatorError::TypeError(format!(
         "T1003: Key in object structure must evaluate to a string; got: {key}"
     ))
@@ -4062,7 +4066,7 @@ impl Evaluator {
 
                     for item in &items {
                         // In reduce mode evaluate the key against `@` with tuple keys
-                        // bound; otherwise against the item itev.
+                        // bound; otherwise against the item itself.
                         let (key_data, tuple_saved) = match (reduce, item) {
                             (true, JValue::Object(o)) => {
                                 let saved = bind_tuple(ev, o);
@@ -4736,17 +4740,19 @@ impl Evaluator {
         // only pays off over several items. A compiled call reaches the
         // builtin directly, so a node calling a name bound here (a builtin
         // shadowed by `:=`) stays on the tree-walker.
-        let compiled = match node {
+        let body = match node {
             _ if items.len() < 2 => None,
-            AstNode::Object(_) => try_compile_expr(node),
-            AstNode::FunctionApplication(expr) => try_compile_expr(expr),
+            AstNode::Object(_) => Some(node),
+            AstNode::FunctionApplication(expr) => Some(&**expr),
             _ => None,
-        }
-        .filter(|_| {
-            !Self::collect_free_variables(node, &[])
-                .iter()
-                .any(|name| self.context.lookup(name).is_some())
-        });
+        };
+        let compiled = body
+            .filter(|body| {
+                !Self::collect_free_variables(body, &[])
+                    .iter()
+                    .any(|name| self.context.lookup(name).is_some())
+            })
+            .and_then(try_compile_expr);
         let mut values = Vec::with_capacity(items.len());
         if let Some(compiled) = compiled {
             for item in items {
@@ -4955,26 +4961,12 @@ impl Evaluator {
         steps.iter().any(Self::step_creates_tuple)
     }
 
-    /// True for a path node that is a tuple stream. A sort or group-by over
-    /// one sees its tuples, as jsonata-js passes them its path's tuple
-    /// bindings; over anything else, even a block holding such a path, it
-    /// sees values.
+    /// True for a path node that is a tuple stream (one of its steps is
+    /// `tuple`). A sort or group-by over one sees its tuples, as jsonata-js
+    /// passes them its path's tuple bindings; over anything else, even a
+    /// block holding such a path, it sees values.
     fn is_tuple_path_node(node: &AstNode) -> bool {
-        matches!(node, AstNode::Path { steps } if Self::is_tuple_path(steps))
-    }
-
-    /// True when `%` resolves through `node`'s value: its tail path (through
-    /// blocks and `.(...)` steps) has a step labelled as an ancestor.
-    /// jsonata-js marks such a path or block `tuple`, so it keeps its tuples.
-    fn carries_ancestry(node: &AstNode) -> bool {
-        match node {
-            AstNode::Path { steps } => steps
-                .iter()
-                .any(|step| step.ancestor_label.is_some() || Self::carries_ancestry(&step.node)),
-            AstNode::Block(expressions) => expressions.last().is_some_and(Self::carries_ancestry),
-            AstNode::FunctionApplication(expr) => Self::carries_ancestry(expr),
-            _ => false,
-        }
+        matches!(node, AstNode::Path { steps } if steps.iter().any(|step| step.is_tuple))
     }
 
     /// True for a one-step path whose step is an expression jsonata-js does
@@ -5198,7 +5190,7 @@ impl Evaluator {
             // path's tuples, so their bindings merge into this stream, as
             // jsonata-js does for a `tuple` path.
             let saved_keep = self.keep_tuple_stream;
-            if Self::carries_ancestry(&step.node) {
+            if step.inner_tuple {
                 self.keep_tuple_stream = true;
             }
             let step_value = self.evaluate_step_node(&step.node, &actual_data);

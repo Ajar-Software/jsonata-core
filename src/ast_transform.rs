@@ -1496,6 +1496,7 @@ fn seek_parent_step_impl(
         // find it.
         AstNode::FunctionApplication(inner) => {
             step.is_tuple = true;
+            step.inner_tuple = true;
             seek_parent_wrapped(inner.as_mut(), label, level, state, depth)
         }
         // A parenthesized block reached directly as a path step (e.g. a
@@ -1505,6 +1506,7 @@ fn seek_parent_step_impl(
         AstNode::Block(exprs) => match exprs.last_mut() {
             Some(last) => {
                 step.is_tuple = true;
+                step.inner_tuple = true;
                 seek_parent_wrapped(last, label, level, state, depth)
             }
             // An empty block `()` produces no ancestor and no tuple; the walk

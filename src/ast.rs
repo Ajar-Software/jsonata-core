@@ -52,6 +52,12 @@ pub struct PathStep {
     /// an earlier step in the same path already entered tuple-stream mode).
     /// Mirrors jsonata-js's `step.tuple`.
     pub is_tuple: bool,
+    /// Set by ast_transform on a block or `.(...)` step that a `%` resolves
+    /// through. jsonata-js's seekParent marks such a block's tail path
+    /// `tuple`, so the step's result is that path's tuple stream, carrying
+    /// its bindings, rather than its values.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub inner_tuple: bool,
 }
 
 /// AST Node types
@@ -284,6 +290,7 @@ impl PathStep {
             index_var: None,
             ancestor_label: None,
             is_tuple: false,
+            inner_tuple: false,
         }
     }
 
@@ -296,6 +303,7 @@ impl PathStep {
             index_var: None,
             ancestor_label: None,
             is_tuple: false,
+            inner_tuple: false,
         }
     }
 }

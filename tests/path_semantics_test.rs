@@ -29,6 +29,9 @@ const KNOWN_DIVERGENCES: &[(&str, &str)] = &[
     ("tree", "e.x ~> $append([])"),
     ("compiled", "nope ~> $append([])"),
     ("tree", "nope ~> $append([])"),
+    // A `%` in a group-by's key raises S0217 here; jsonata-js resolves it
+    // and gives `{}`. Tracked separately from #184.
+    ("compile", "acct.Order.P{%.id: N}"),
 ];
 
 /// Mirror of `encode` in scripts/gen_path_semantics_corpus.js.

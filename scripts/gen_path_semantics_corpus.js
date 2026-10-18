@@ -35,6 +35,7 @@ const DATA = {
   obj1: [{ p: 1 }],
   v: 5,
   het: [{ a: 1, b: 5 }, { b: 0, a: 4 }],
+  acct: { Order: [{ id: 'o1', P: [{ N: 'A' }, { N: 'B' }] }, { id: 'o2', P: [{ N: 'C' }] }] },
 };
 
 const PATHS = [
@@ -128,6 +129,11 @@ const EXTRA = [
   '(objs#$i)^(>p).{"i": $i}', '($a := objs#$i; $a)^(>p).{"i": $i}', '(objs#$i){"k": $i}',
   '[objs#$i]{"k": $i}', 'objs#$i.($string(objs#$z))', 'objs#$i^(>p).{"i": $i}',
   'objs#$i{"k": $i}', 'o.(t.%)', 'o.t.{"p": %.t}', 'o.t.(%.%)', 'o.(t.(%))',
+  // `%` resolved through a block, in a sort term or a later step.
+  '(acct.Order.P)^(>%.id).N', 'acct.Order.(P)^(>%.id).N', 'acct.(Order.P)^(>%.id).N',
+  '($x := 1; acct.Order.P)^(>%.id).N', 'acct.Order.(P).{"n": N, "o": %.id}',
+  'acct.Order#$k.(P#$i.%).{"i": $i, "k": $k}', 'o#$i.(t#$i.%).{"i": $i}',
+  'acct.Order.P{%.id: N}', 'acct.Order.(P)#$i.{"n": N, "i": $i, "o": %.id}',
 ];
 
 // The same questions with a top-level array as input. jsonata-js wraps that
