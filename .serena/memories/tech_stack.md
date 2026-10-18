@@ -1,7 +1,7 @@
 ## Tech stack
 
 - **Rust**: edition 2021, `rust-version = "1.70"` (stable channel only, no nightly features per
-  CLAUDE.MD). Crate name `jsonata-core` (lib name `jsonata_core`), cdylib+rlib.
+  CLAUDE.md). Crate name `jsonata-core` (lib name `jsonata_core`), cdylib+rlib.
 - **Key Rust deps**: `pyo3` 0.29 (optional, feature `python`), `serde`/`serde_json` (preserve_order),
   `simd-json` 0.17 (optional, feature `simd`, default-on — SIMD JSON parsing fast path),
   `indexmap` (ordered maps for JSONata objects), `regex`, `chrono`, `thiserror`, `stacker`
@@ -15,5 +15,5 @@
   mypy (strict mode), pytest (+pytest-cov, pytest-xdist for parallel runs).
 - **Benchmarking**: Criterion (Rust, `cargo bench`, `evaluator_bench`), plus Python-side
   benchmarks comparing against `jsonata` (JS) and `jsonata-rs`.
-- **Docs**: mkdocs + mkdocs-material (`docs/`, `mkdocs.yml`), not Sphinx despite CLAUDE.MD
+- **Docs**: mkdocs + mkdocs-material (`docs/`, `mkdocs.yml`), not Sphinx despite CLAUDE.md
   mentioning Sphinx — mkdocs is what's actually wired up in pyproject.toml `[project.optional-dependencies.docs]`.
