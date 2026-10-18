@@ -7588,7 +7588,12 @@ impl Evaluator {
                 let re = crate::functions::string::build_regex(&pattern, &flags)
                     .map_err(|e| EvaluatorError::EvaluationError(e.to_string()))?;
 
-                Ok(crate::functions::string::match_regex(&s, &re, limit)?)
+                Ok(crate::functions::string::match_regex(
+                    &s,
+                    &re,
+                    limit,
+                    self.options.max_sequence_length,
+                )?)
             }
             "sift" => {
                 // $sift(object, function) or $sift(function) - filter object by predicate
@@ -8993,6 +8998,9 @@ impl Evaluator {
                     result_obj.insert("groups".to_string(), groups_val.clone());
                 }
 
+                // jsonata-js collects these with createSequence(), which
+                // enforces the sequence-length guardrail on every push.
+                check_sequence_length(results.len() + 1, &self.options)?;
                 results.push(JValue::object(result_obj));
                 count += 1;
 

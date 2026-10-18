@@ -625,8 +625,15 @@ pub mod string {
     /// zero-length match anywhere after the first is D1004 (it would never
     /// progress). Like jsonata-js, the next match is looked up even when the
     /// limit is already reached, so that D1004 is raised regardless of the
-    /// limit. `index` counts UTF-16 code units, as in JavaScript.
-    pub fn match_regex(s: &str, re: &Regex, limit: Option<usize>) -> Result<JValue, FunctionError> {
+    /// limit. `index` counts UTF-16 code units, as in JavaScript. The result
+    /// is built with `createSequence()` upstream, so `max_sequence` (the
+    /// `sequence` guardrail) is checked on every push.
+    pub fn match_regex(
+        s: &str,
+        re: &Regex,
+        limit: Option<usize>,
+        max_sequence: Option<usize>,
+    ) -> Result<JValue, FunctionError> {
         let mut results = Vec::new();
         // UTF-16 length of s[..utf16_byte], advanced incrementally.
         let mut utf16_byte = 0;
@@ -641,16 +648,24 @@ pub mod string {
             utf16_index += s[utf16_byte..m.start()].encode_utf16().count();
             utf16_byte = m.start();
 
+            // An unmatched group is `undefined` in the JS match array.
             let groups: Vec<JValue> = (1..caps.len())
                 .map(|i| {
-                    caps.get(i)
-                        .map_or(JValue::Null, |g| JValue::string(g.as_str().to_string()))
+                    caps.get(i).map_or(JValue::Undefined, |g| {
+                        JValue::string(g.as_str().to_string())
+                    })
                 })
                 .collect();
             let mut match_obj = IndexMap::new();
             match_obj.insert("match".to_string(), JValue::string(m.as_str().to_string()));
             match_obj.insert("index".to_string(), JValue::Number(utf16_index as f64));
             match_obj.insert("groups".to_string(), JValue::array(groups));
+            if max_sequence.is_some_and(|max| results.len() + 1 > max) {
+                return Err(FunctionError::RuntimeError(format!(
+                    "D2015: The maximum sequence length of {} was exceeded.",
+                    max_sequence.unwrap()
+                )));
+            }
             results.push(JValue::object(match_obj));
 
             current = if m.end() >= s.len() {

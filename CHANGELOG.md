@@ -34,6 +34,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`$match(str, regex)` returns every match**, not just the first, matching jsonata-js. Each
+  match object always has `match`, `index` and `groups` (`[]` when the regex has no capture
+  groups, and an unmatched group is `undefined`), and `index` counts UTF-16 code units rather than
+  bytes. A single match is still returned as the object itself. As upstream, a zero-length match
+  after the first raises `D1004`, a negative limit raises `D3040`, a fractional limit rounds up,
+  and the result counts toward `max_sequence_length` (`D2015`).
+  ([#194](https://github.com/txjmb/jsonata-core/issues/194))
 - **`unknown(function)` now reports `T1006`** ("Attempted to invoke a non-function") instead of
   `S0202`. The `function` keyword in argument position used to commit the parser to a lambda,
   which then failed on its shape before anything decided the call target was not a function.

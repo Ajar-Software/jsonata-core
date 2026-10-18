@@ -24,8 +24,10 @@ def m(match, index, groups=()):
         # A single match surfaces as the object itself.
         ('$match("aba", /b/)', m("b", 1)),
         ('$match("aba", /z/)', None),
-        # An unmatched optional group is null.
+        # An unmatched optional group is undefined (None at the boundary).
         ('$match("aba", /(a)(z)?/)', [m("a", 0, ["a", None]), m("a", 2, ["a", None])]),
+        ('$exists($match("a", /(a)(z)?/).groups[1])', False),
+        ('$count($match("a", /(a)(z)?/).groups)', 2),
         ('$match("abab", /(a)(b)/).groups', ["a", "b", "a", "b"]),
         # Limit: 0 gives nothing, and a fractional limit rounds up.
         ('$match("aba", /a/, 1)', m("a", 0)),
@@ -63,3 +65,22 @@ def test_zero_length_match_after_first_is_d1004(expr):
 def test_negative_limit_is_d3040():
     with pytest.raises(ValueError, match="D3040"):
         ev('$match("aba", /a/, -1)')
+
+
+def test_result_counts_toward_max_sequence_length():
+    expr = jsonatapy.compile('$match("aaa", /a/)')
+    with pytest.raises(ValueError, match="D2015"):
+        expr.evaluate({}, max_sequence_length=2)
+    assert (
+        len(jsonatapy.compile('$match("aa", /a/)').evaluate({}, max_sequence_length=2))
+        == 2
+    )
+    # The limit stops the scan before the guardrail is reached.
+    assert (
+        len(
+            jsonatapy.compile('$match("aaa", /a/, 2)').evaluate(
+                {}, max_sequence_length=2
+            )
+        )
+        == 2
+    )
