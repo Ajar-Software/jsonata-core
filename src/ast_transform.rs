@@ -519,8 +519,9 @@ fn substitute_labels_impl(
                                 })
                             })
                             .collect::<Result<Vec<_>, _>>()?,
-                        // `node` changed: whatever was compiled is stale.
-                        compiled: crate::ast::StepCompileCache::default(),
+                        // `node` changed: a new step as far as the
+                        // evaluator's compiled-step cache is concerned.
+                        id: crate::ast::StepId::default(),
                         ..s
                     })
                 })
@@ -1827,6 +1828,7 @@ fn migrate_binding_markers(
         } {
             Ok(t) => {
                 step.node = t.node;
+                step.id = crate::ast::StepId::default();
                 Ok((vec![step], t.pending))
             }
             Err(e) => {

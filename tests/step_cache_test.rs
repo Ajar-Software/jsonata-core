@@ -5,9 +5,10 @@
 //! default dispatch (`Expression`, bytecode VM when the expression compiles)
 //! and the tree-walker. Values verified against jsonata-js 2.x.
 //!
-//! That the step compiles only once is checked by the unit tests in
+//! That the step compiles only once per evaluator is checked by the unit tests in
 //! `src/evaluator.rs` (`step_cache`), which can see the compile counter.
 
+use jsonata_core::ast::{AstNode, PathStep};
 use jsonata_core::evaluator::{Context, Evaluator};
 use jsonata_core::value::JValue;
 use jsonata_core::Expression;
@@ -129,5 +130,29 @@ fn binding_shadows_builtin_in_one_evaluation_not_the_next() {
         bound(upper);
         unbound(plain);
         bound(upper);
+    }
+}
+
+#[test]
+fn ast_stays_send_and_sync() {
+    // The cache lives on the evaluator, not the AST, so a parsed expression
+    // can still be shared across threads.
+    fn assert_send_sync<T: Send + Sync>() {}
+    assert_send_sync::<AstNode>();
+    assert_send_sync::<PathStep>();
+
+    let ast = std::sync::Arc::new(jsonata_core::parser::parse(r#"p.{"a": a}"#).unwrap());
+    let handles: Vec<_> = (0..2)
+        .map(|_| {
+            let ast = std::sync::Arc::clone(&ast);
+            std::thread::spawn(move || {
+                let data = jv(r#"{"p": [{"a": 1}, {"a": 2}]}"#);
+                let v = Evaluator::new().evaluate(&ast, &data).unwrap();
+                assert_eq!(v, jv(r#"[{"a": 1}, {"a": 2}]"#));
+            })
+        })
+        .collect();
+    for handle in handles {
+        handle.join().unwrap();
     }
 }

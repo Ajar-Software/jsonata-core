@@ -11,15 +11,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **An object constructor or `.(expr)` path step is compiled once, not each time it runs**
-  ([#197](https://github.com/txjmb/jsonata-core/issues/197)). The compiled form is kept on the
-  step, so a step inside a function body, such as `$map(big, function($v){ $v.items.{"a": x,
-  "b": y} })`, compiles once instead of once per call (about 11% fewer instructions for 200
-  calls), and a step that does not compile is not retried. Whether a builtin the step calls is
-  shadowed is still checked every time it runs. Rust API: `PathStep` has a new `compiled`
-  field (`StepCompileCache::default()` in a struct literal; `PathStep::new` and `with_stages`
-  fill it); it is ignored by equality and serde, and code that changes an evaluated step's
-  `node` must reset it.
+- **An object constructor or `.(expr)` path step is compiled once per evaluation, not each
+  time it runs** ([#197](https://github.com/txjmb/jsonata-core/issues/197)). The evaluator
+  keeps each step's compiled form, so a step inside a function body, such as `$map(big,
+  function($v){ $v.items.{"a": x, "b": y} })`, compiles once instead of once per call (about
+  10% fewer instructions for 200 calls), and a step that does not compile is not retried.
+  Whether a builtin the step calls is shadowed is still checked every time it runs. Rust API:
+  `PathStep` has a new `id: StepId` field, the key for that cache (`StepId::default()` in a
+  struct literal, which gives a new id; `PathStep::new` and `with_stages` set it). It is
+  ignored by equality and serde, and code that rewrites a step's `node` should give it a new
+  id. `AstNode` stays `Send + Sync`.
 - **A filter, sort or group-by right after a sort of a tuple stream sees each tuple as an
   object** ([#214](https://github.com/txjmb/jsonata-core/issues/214)). jsonata-js's sort returns
   a tuple stream's tuples as a plain array, so the stage that follows reads the tuple, not its

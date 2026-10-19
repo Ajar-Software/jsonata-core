@@ -58,44 +58,45 @@ pub struct PathStep {
     /// its bindings, rather than its values.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub inner_tuple: bool,
-    /// The step's object constructor or `.(expr)` body compiled for the
-    /// evaluator's fast path, filled the first time the step runs over
-    /// several items (#197). Not part of the step's meaning: ignored by
-    /// equality and serialization. A clone carries over (shares) what is
-    /// already compiled and otherwise fills its own cache, so a function
-    /// body, cloned when the function is created, compiles each step at most
-    /// once per function value. Code that changes `node` of a step that has
-    /// already been evaluated must reset this to `StepCompileCache::default()`.
+    /// This step's identity, which the evaluator keys its cache of compiled
+    /// step bodies by (#197). Each new step gets an id no other step has had
+    /// in this process; a clone keeps it, being the same step. Not part of
+    /// the step's meaning: ignored by equality, and serialization skips it
+    /// (a deserialized step gets a new one). Code that changes the `node` of
+    /// a step must give it a new id (`StepId::default()`) if a clone of the
+    /// old step may be evaluated by the same evaluator.
     #[serde(skip)]
-    pub compiled: StepCompileCache,
+    pub id: StepId,
 }
 
-/// A lazily filled cache of a path step's compiled form; see
-/// `PathStep::compiled`. Starts empty (`Default`), compares equal to any
-/// other, and is skipped by serde.
-///
-/// It holds the compiled expression and the builtins it calls, not a verdict
-/// on whether the fast path may run: that depends on the bindings in scope
-/// where the step runs (#191), so the evaluator checks it on every use.
-#[derive(Clone, Default)]
-pub struct StepCompileCache(
-    pub(crate) std::cell::OnceCell<Option<std::rc::Rc<crate::evaluator::CompiledBody>>>,
-);
+/// The identity of a path step; see `PathStep::id`. `StepId::default()` is
+/// a new id, never handed out before in this process. It compares equal to
+/// any other id, so that `PathStep`s are compared by content.
+#[derive(Clone, Copy)]
+pub struct StepId(u64);
 
-impl PartialEq for StepCompileCache {
+impl StepId {
+    pub(crate) fn get(self) -> u64 {
+        self.0
+    }
+}
+
+impl Default for StepId {
+    fn default() -> Self {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        StepId(NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
+    }
+}
+
+impl PartialEq for StepId {
     fn eq(&self, _other: &Self) -> bool {
         true
     }
 }
 
-impl std::fmt::Debug for StepCompileCache {
+impl std::fmt::Debug for StepId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let state = match self.0.get() {
-            None => "empty",
-            Some(None) => "not compilable",
-            Some(Some(_)) => "compiled",
-        };
-        write!(f, "StepCompileCache({state})")
+        write!(f, "StepId({})", self.0)
     }
 }
 
@@ -332,7 +333,7 @@ impl PathStep {
             ancestor_label: None,
             is_tuple: false,
             inner_tuple: false,
-            compiled: StepCompileCache::default(),
+            id: StepId::default(),
         }
     }
 
@@ -346,7 +347,7 @@ impl PathStep {
             ancestor_label: None,
             is_tuple: false,
             inner_tuple: false,
-            compiled: StepCompileCache::default(),
+            id: StepId::default(),
         }
     }
 }
