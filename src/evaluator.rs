@@ -335,6 +335,11 @@ pub(crate) struct CompiledStep {
 /// Try to compile an AstNode subtree into a CompiledExpr.
 /// Returns None for anything that requires full AST evaluation (lambda calls,
 /// function calls with side effects, complex paths, etc.).
+///
+/// The result calls builtins directly, so it is only right where no binding
+/// shadows them: a whole expression evaluated with no bindings (the bytecode
+/// VM). Inside the evaluator use `Evaluator::compile_in_scope` or
+/// `CompiledBody`, which apply the shadowing rule (#191).
 pub(crate) fn try_compile_expr(node: &AstNode) -> Option<CompiledExpr> {
     reject_if_too_large_to_pool(try_compile_expr_inner(node, None)?)
 }
@@ -342,11 +347,139 @@ pub(crate) fn try_compile_expr(node: &AstNode) -> Option<CompiledExpr> {
 /// Like `try_compile_expr` but additionally allows the specified variable names
 /// to be compiled as `VariableLookup`. Used by HOF integration where lambda
 /// parameters are known and will be provided via the `vars` map at eval time.
-pub(crate) fn try_compile_expr_with_allowed_vars(
+/// Private for the same reason as `try_compile_expr`'s caveat.
+fn try_compile_expr_with_allowed_vars(
     node: &AstNode,
     allowed_vars: &[&str],
 ) -> Option<CompiledExpr> {
     reject_if_too_large_to_pool(try_compile_expr_inner(node, Some(allowed_vars))?)
+}
+
+/// The builtins a compiled expression calls directly, by name: its
+/// `BuiltinCall`s and the `$map`/`$filter`/`$reduce` it inlines. A compiled
+/// expression gives the tree-walker's result only where each of these names
+/// still means the builtin (`Evaluator::builtin_unshadowed`).
+fn compiled_builtin_names(expr: &CompiledExpr, out: &mut Vec<&'static str>) {
+    let add = |name: &'static str, out: &mut Vec<&'static str>| {
+        if !out.contains(&name) {
+            out.push(name);
+        }
+    };
+    match expr {
+        CompiledExpr::Literal(_)
+        | CompiledExpr::FieldLookup(_)
+        | CompiledExpr::NestedFieldLookup(..)
+        | CompiledExpr::VariableLookup(_)
+        | CompiledExpr::ContextVar(_) => {}
+        CompiledExpr::Compare { lhs, rhs, .. }
+        | CompiledExpr::Arithmetic { lhs, rhs, .. }
+        | CompiledExpr::Concat(lhs, rhs)
+        | CompiledExpr::And(lhs, rhs)
+        | CompiledExpr::Or(lhs, rhs)
+        | CompiledExpr::Coalesce(lhs, rhs) => {
+            compiled_builtin_names(lhs, out);
+            compiled_builtin_names(rhs, out);
+        }
+        CompiledExpr::Not(e) | CompiledExpr::Negate(e) => compiled_builtin_names(e, out),
+        CompiledExpr::Conditional {
+            condition,
+            then_expr,
+            else_expr,
+        } => {
+            compiled_builtin_names(condition, out);
+            compiled_builtin_names(then_expr, out);
+            if let Some(e) = else_expr {
+                compiled_builtin_names(e, out);
+            }
+        }
+        CompiledExpr::ObjectConstruct(fields) => {
+            for (_, e) in fields {
+                compiled_builtin_names(e, out);
+            }
+        }
+        CompiledExpr::ArrayConstruct(elems) => {
+            for (e, _) in elems {
+                compiled_builtin_names(e, out);
+            }
+        }
+        CompiledExpr::FieldPath { steps, .. } => {
+            for step in steps {
+                if let Some(filter) = &step.filter {
+                    compiled_builtin_names(filter, out);
+                }
+            }
+        }
+        CompiledExpr::BuiltinCall { name, args } => {
+            add(name, out);
+            for a in args {
+                compiled_builtin_names(a, out);
+            }
+        }
+        CompiledExpr::Block(exprs) => {
+            for e in exprs {
+                compiled_builtin_names(e, out);
+            }
+        }
+        CompiledExpr::MapCall { array, body, .. }
+        | CompiledExpr::FilterCall { array, body, .. } => {
+            add(
+                if matches!(expr, CompiledExpr::MapCall { .. }) {
+                    "map"
+                } else {
+                    "filter"
+                },
+                out,
+            );
+            compiled_builtin_names(array, out);
+            compiled_builtin_names(body, out);
+        }
+        CompiledExpr::ReduceCall {
+            array,
+            body,
+            initial,
+            ..
+        } => {
+            add("reduce", out);
+            compiled_builtin_names(array, out);
+            compiled_builtin_names(body, out);
+            if let Some(i) = initial {
+                compiled_builtin_names(i, out);
+            }
+        }
+    }
+}
+
+/// A function body compiled when the function is defined, with the builtin
+/// names it calls directly. Whether those names still mean the builtins is
+/// only known when it is called, so the body is reached only through
+/// `Evaluator::usable_compiled_body`.
+#[derive(Clone, Debug)]
+pub(crate) struct CompiledBody {
+    expr: CompiledExpr,
+    builtins: Box<[&'static str]>,
+}
+
+impl CompiledBody {
+    /// Compile a function body for the fast path. A signature (which coerces
+    /// and checks arguments) or a tail call needs the full evaluator.
+    fn compile(
+        body: &AstNode,
+        params: &[String],
+        signature: &Option<String>,
+        thunk: bool,
+    ) -> Option<CompiledBody> {
+        if signature.is_some() || thunk {
+            return None;
+        }
+        let var_refs: Vec<&str> = params.iter().map(|s| s.as_str()).collect();
+        let expr = try_compile_expr_with_allowed_vars(body, &var_refs)?;
+        let mut builtins = Vec::new();
+        compiled_builtin_names(&expr, &mut builtins);
+        Some(CompiledBody {
+            expr,
+            builtins: builtins.into_boxed_slice(),
+        })
+    }
 }
 
 /// Reject (fall back to the tree-walker) a fully-built `CompiledExpr` tree
@@ -730,6 +863,11 @@ fn try_compile_node(node: &AstNode, allowed_vars: Option<&[&str]>) -> Option<Com
             args,
             is_builtin: true,
         } => {
+            // A parameter named like the builtin shadows it:
+            // `function($string) { $string(1) }` calls the argument.
+            if allowed_vars.is_some_and(|vars| vars.contains(&name.as_str())) {
+                return None;
+            }
             if is_compilable_builtin(name) {
                 // Arity guard: if the call site passes more args than the builtin accepts,
                 // fall back to the tree-walker so it can raise the correct T0410 error.
@@ -789,7 +927,11 @@ fn compile_hof_array_and_body(
     allowed_vars: Option<&[&str]>,
 ) -> Option<(Box<CompiledExpr>, Box<CompiledExpr>)> {
     let array = try_compile_expr_inner(array_node, allowed_vars)?;
-    let param_refs: Vec<&str> = params.iter().map(|s| s.as_str()).collect();
+    // The enclosing lambda's parameters stay visible in the body (the
+    // evaluator merges them into the inner call's variables), and shadow
+    // builtins there as well.
+    let mut param_refs: Vec<&str> = params.iter().map(|s| s.as_str()).collect();
+    param_refs.extend(allowed_vars.unwrap_or_default().iter().copied());
     let compiled_body = try_compile_expr_inner(body, Some(&param_refs))?;
     Some((Box::new(array), Box::new(compiled_body)))
 }
@@ -2496,6 +2638,15 @@ mod evaluator_error_message_tests {
     }
 }
 
+/// The names a composition's parts are bound to
+/// (`Evaluator::compose_functions`). They hold spaces, so no expression can
+/// spell them: `$x` or `$__chain_x` would be visible to f and g.
+mod composition_names {
+    pub(super) const F: &str = "chain f";
+    pub(super) const G: &str = "chain g";
+    pub(super) const X: &str = "chain x";
+}
+
 /// Result of evaluating a lambda body that may be a tail call
 /// Used for trampoline-based tail call optimization
 enum LambdaResult {
@@ -2562,11 +2713,24 @@ pub(crate) enum PartialTarget {
     /// A user-defined function, captured as a closure value at creation time —
     /// this is what lets the partial outlive the scope that defined its target.
     Lambda(Rc<StoredLambda>),
-    /// A builtin or host function, resolved BY NAME at each invocation.
-    /// These are global and cannot dangle, and name resolution preserves
-    /// call-time shadowing (`$up := $uppercase(?); $uppercase := ...` — the
-    /// later user binding wins, matching jsonata-js's environment chain).
-    Named { name: String, is_builtin: bool },
+    /// A host function (`register_fn`/`register_fn_override`), taken from
+    /// the registry when the partial is made, as jsonata-js takes a
+    /// registered function's value.
+    Host(HostTarget),
+    /// A builtin, resolved when the partial is made (`$uppercase(?)`,
+    /// `($uppercase)(?)`, `$f := $sum; $f(?)`): that builtin, whatever its
+    /// name is bound to by the time the partial is called.
+    Builtin(String),
+}
+
+/// A host function held by a partial application.
+#[derive(Clone)]
+pub(crate) struct HostTarget(Rc<dyn HostFn>);
+
+impl std::fmt::Debug for HostTarget {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("HostTarget")
+    }
 }
 
 /// A partial application, carried inside a `StoredLambda` in place of a body.
@@ -2600,7 +2764,8 @@ pub struct StoredLambda {
     pub body: AstNode,
     /// Pre-compiled body for use in tight inner loops (HOF fast path).
     /// `None` if the body is not compilable (transform, partial-app, thunk, etc.).
-    pub(crate) compiled_body: Option<CompiledExpr>,
+    /// Only usable through `Evaluator::usable_compiled_body`.
+    pub(crate) compiled_body: Option<CompiledBody>,
     pub signature: Option<String>,
     /// Captured environment bindings for closures: a by-value snapshot of the
     /// free variables at definition time (this engine's long-standing capture
@@ -2622,6 +2787,9 @@ pub struct StoredLambda {
     pub(crate) partial: Option<Rc<PartialApplication>>,
     /// Keeps `live_lambda_count` accurate; see that function.
     pub live_token: LiveLambdaToken,
+    /// The scope the function was defined in: names its body neither binds
+    /// nor captured resolve there, not where it is called (#191).
+    pub(crate) def_scope: DefScope,
 }
 
 impl StoredLambda {
@@ -2639,6 +2807,7 @@ impl StoredLambda {
             self_name: None,
             partial: None,
             live_token: LiveLambdaToken::new(),
+            def_scope: DefScope::ROOT,
         }
     }
 }
@@ -2646,15 +2815,333 @@ impl StoredLambda {
 /// A single scope in the scope stack
 struct Scope {
     bindings: HashMap<String, JValue>,
+    /// Identifies this frame among every frame its context has pushed.
+    /// Ids only grow, so a frame pushed after a function was defined has a
+    /// larger id than any frame that was live when it was defined (see
+    /// `Context::barrier_for`).
+    id: u64,
+    /// For a function's frame: the index of the frame the function was
+    /// defined in. A lookup that misses here continues from that frame,
+    /// skipping the caller's frames in between, so a function body sees the
+    /// scope it was written in and not the one it is called from (#191).
+    barrier: Option<usize>,
+    /// A frame of the tail-call trampoline, which it may clear and reuse
+    /// for the next call (`Context::enter_tail_call`).
+    tco: bool,
+    /// For a trampoline frame: a token each function defined to see this
+    /// frame holds (`DefScope::keep`), created with the first. While some
+    /// function outside the frame's own bindings holds one, the frame is
+    /// part of its scope and must not be reused (#191).
+    token: std::cell::OnceCell<Rc<FrameToken>>,
+    /// An evaluator-internal frame (argument temporaries, a composition's
+    /// parts), which `$eval` does not see.
+    internal: bool,
+    /// An internal frame standing for a jsonata-js call frame of its own (a
+    /// composition's first function runs in one): `$eval` reached through it
+    /// keeps its bindings to itself instead of passing them to the frame
+    /// below.
+    opaque: bool,
+    /// The token's reference count when the frame was last judged seen
+    /// from outside (`Scope::still_seen`); 0 if it has not been.
+    seen_at: usize,
 }
 
-impl Scope {
-    fn new() -> Self {
-        Scope {
-            bindings: HashMap::new(),
+/// A value with a reference count, as `OwnershipWalk` sees it.
+#[derive(Clone, Copy)]
+enum Owned<'a> {
+    Lambda(&'a Rc<StoredLambda>),
+    Partial(&'a Rc<PartialApplication>),
+    Items(&'a Rc<Vec<JValue>>),
+    Map(&'a Rc<IndexMap<String, JValue>>),
+    Token(&'a Rc<FrameToken>),
+}
+
+impl Owned<'_> {
+    fn key(self) -> usize {
+        match self {
+            Owned::Lambda(rc) => Rc::as_ptr(rc) as *const u8 as usize,
+            Owned::Partial(rc) => Rc::as_ptr(rc) as *const u8 as usize,
+            Owned::Items(rc) => Rc::as_ptr(rc) as *const u8 as usize,
+            Owned::Map(rc) => Rc::as_ptr(rc) as *const u8 as usize,
+            Owned::Token(rc) => Rc::as_ptr(rc) as *const u8 as usize,
+        }
+    }
+
+    fn strong_count(self) -> usize {
+        match self {
+            Owned::Lambda(rc) => Rc::strong_count(rc),
+            Owned::Partial(rc) => Rc::strong_count(rc),
+            Owned::Items(rc) => Rc::strong_count(rc),
+            Owned::Map(rc) => Rc::strong_count(rc),
+            Owned::Token(rc) => Rc::strong_count(rc),
         }
     }
 }
+
+/// Counts the references to a frame's token that come from values its
+/// bindings own (see `Scope::seen_from_outside`). A walk step answers
+/// `Break(false)` once those account for every holder.
+struct OwnershipWalk<'a> {
+    token: &'a Rc<FrameToken>,
+    holders: usize,
+    inside: usize,
+    /// References found so far to each value, from owned values only.
+    refs: HashMap<usize, usize>,
+    /// Owned values not yet looked into: functions and tokens first, as
+    /// they are where holders are.
+    functions: Vec<Owned<'a>>,
+    containers: Vec<Owned<'a>>,
+}
+
+impl<'a> OwnershipWalk<'a> {
+    fn run(&mut self, bindings: impl Iterator<Item = &'a JValue>) -> std::ops::ControlFlow<bool> {
+        for value in bindings {
+            self.value(value)?;
+        }
+        loop {
+            let next = match self.functions.pop() {
+                Some(node) => node,
+                None => match self.containers.pop() {
+                    Some(node) => node,
+                    None => return std::ops::ControlFlow::Break(true),
+                },
+            };
+            self.expand(next)?;
+        }
+    }
+
+    /// One reference to `node` from an owned value.
+    fn reference(&mut self, node: Owned<'a>) -> std::ops::ControlFlow<bool> {
+        if let Owned::Token(token) = node {
+            if Rc::ptr_eq(token, self.token) {
+                self.inside += 1;
+                if self.inside == self.holders {
+                    return std::ops::ControlFlow::Break(false);
+                }
+                return std::ops::ControlFlow::Continue(());
+            }
+        }
+        let refs = self.refs.entry(node.key()).or_insert(0);
+        *refs += 1;
+        if *refs == node.strong_count() {
+            // Every reference is from owned values: owned too.
+            match node {
+                Owned::Items(_) | Owned::Map(_) => self.containers.push(node),
+                _ => self.functions.push(node),
+            }
+        }
+        std::ops::ControlFlow::Continue(())
+    }
+
+    fn value(&mut self, value: &'a JValue) -> std::ops::ControlFlow<bool> {
+        match value {
+            JValue::Lambda(rc) => self.reference(Owned::Lambda(rc)),
+            JValue::Array(items) => self.reference(Owned::Items(items.items_rc())),
+            JValue::Object(map) => self.reference(Owned::Map(map)),
+            _ => std::ops::ControlFlow::Continue(()),
+        }
+    }
+
+    fn expand(&mut self, node: Owned<'a>) -> std::ops::ControlFlow<bool> {
+        match node {
+            Owned::Lambda(rc) => {
+                for value in rc.captured_env.values() {
+                    self.value(value)?;
+                }
+                if let Some(data) = &rc.captured_data {
+                    self.value(data)?;
+                }
+                if let Some(partial) = &rc.partial {
+                    self.reference(Owned::Partial(partial))?;
+                }
+                if let Some(token) = &rc.def_scope.keep {
+                    self.reference(Owned::Token(token))?;
+                }
+            }
+            Owned::Partial(partial) => {
+                if let PartialTarget::Lambda(target) = &partial.target {
+                    self.reference(Owned::Lambda(target))?;
+                }
+                for (_, value) in &partial.bound_args {
+                    self.value(value)?;
+                }
+            }
+            Owned::Items(items) => {
+                for value in items.iter() {
+                    self.value(value)?;
+                }
+            }
+            Owned::Map(map) => {
+                for value in map.values() {
+                    self.value(value)?;
+                }
+            }
+            Owned::Token(token) => {
+                if let Some(outer) = &token.outer {
+                    self.reference(Owned::Token(outer))?;
+                }
+            }
+        }
+        std::ops::ControlFlow::Continue(())
+    }
+}
+
+/// A trampoline frame's token (`Scope::token`). It holds the token of the
+/// next trampoline frame out in its lexical chain, so a function holds
+/// only its innermost one and still keeps every frame it sees.
+#[derive(Debug)]
+pub(crate) struct FrameToken {
+    outer: Option<Rc<FrameToken>>,
+}
+
+impl Scope {
+    /// Whether a function that can see this frame may outlive the frame's
+    /// bindings. Each such function holds the frame's token, directly or
+    /// through the token of a trampoline frame further in; the frame's own
+    /// bindings keep some of them. A value is owned by the bindings when
+    /// every reference to it comes from the bindings or from values they
+    /// own; owned values go when the frame is cleared, so if they account
+    /// for every holder, nothing can see the frame afterwards. The walk
+    /// looks into owned values only (functions first, as that is where
+    /// holders are, and it stops once all are found), never into a value
+    /// referenced from elsewhere. Owned values go when the frame is reused;
+    /// a frame kept instead is walked again only once one of its token's
+    /// holders has gone (`Scope::still_seen`). So the walks cost, in all,
+    /// what making the owned values did, plus one walk of a kept frame per
+    /// holder it loses.
+    fn seen_from_outside(&self) -> bool {
+        let Some(token) = self.token.get() else {
+            return false;
+        };
+        let holders = Rc::strong_count(token) - 1;
+        if holders == 0 {
+            return false;
+        }
+        let mut walk = OwnershipWalk {
+            token,
+            holders,
+            inside: 0,
+            refs: HashMap::new(),
+            functions: Vec::new(),
+            containers: Vec::new(),
+        };
+        walk.run(self.bindings.values()) != std::ops::ControlFlow::Break(false)
+    }
+
+    /// `seen_from_outside`, remembered: a frame judged seen stays so, with
+    /// no walk, until a holder of its token goes. A holder replaced by
+    /// another meanwhile only keeps the frame a while longer.
+    fn still_seen(&mut self) -> bool {
+        let count = match self.token.get() {
+            Some(token) => Rc::strong_count(token),
+            None => return false,
+        };
+        if count == self.seen_at {
+            return true;
+        }
+        let seen = self.seen_from_outside();
+        self.seen_at = if seen { count } else { 0 };
+        seen
+    }
+
+    fn new(id: u64, barrier: Option<usize>) -> Self {
+        Scope {
+            bindings: HashMap::new(),
+            id,
+            barrier,
+            tco: false,
+            token: std::cell::OnceCell::new(),
+            internal: false,
+            opaque: false,
+            seen_at: 0,
+        }
+    }
+}
+
+/// Where a function was defined: the frames its body could see then, the
+/// frame on top of the scope stack first, then each frame a lookup from it
+/// would reach (its lexical ancestors, skipping callers' frames). Calling
+/// the function resolves the names its body does not bind or capture
+/// through the first of these still on the stack, as jsonata-js resolves
+/// them through the function's `environment`.
+#[derive(Clone, Debug)]
+pub(crate) struct DefScope {
+    /// The defining context (`Context::ctx_id`); 0 for a function defined
+    /// outside any scope, which sees only the root frame.
+    ctx: u64,
+    /// `(index, id)` of each visible frame above the root, innermost first.
+    /// The root frame (index 0) is always visible and never listed.
+    chain: DefChain,
+    /// The evaluator built this function (a composition, or the call of
+    /// its first function); its frames are internal.
+    internal: bool,
+    /// Its frames continue at its caller's frame, not a defining one
+    /// (`DefScope::AT_CALLER`).
+    at_caller: bool,
+    /// Its frames are opaque (see `Scope::opaque`).
+    opaque: bool,
+    /// The token of the innermost trampoline frame in `chain` (see
+    /// `Scope::token`), which keeps the trampoline from reusing it, and
+    /// through it the ones further out, while this function lives. None
+    /// outside tail-call loops.
+    keep: Option<Rc<FrameToken>>,
+}
+
+/// Lexical chains are short (a few blocks and calls), so they are kept
+/// inline, without an allocation per function created.
+const DEF_CHAIN_INLINE: usize = 8;
+
+#[derive(Clone, Debug)]
+enum DefChain {
+    Inline {
+        len: u8,
+        frames: [(usize, u64); DEF_CHAIN_INLINE],
+    },
+    Heap(Rc<[(usize, u64)]>),
+}
+
+impl DefChain {
+    fn frames(&self) -> &[(usize, u64)] {
+        match self {
+            DefChain::Inline { len, frames } => &frames[..*len as usize],
+            DefChain::Heap(frames) => frames,
+        }
+    }
+}
+
+impl DefScope {
+    /// Defined outside any scope: only the root frame (the caller's
+    /// bindings) is visible.
+    pub(crate) const ROOT: DefScope = DefScope {
+        ctx: 0,
+        chain: DefChain::Inline {
+            len: 0,
+            frames: [(0, 0); DEF_CHAIN_INLINE],
+        },
+        internal: false,
+        at_caller: false,
+        opaque: false,
+        keep: None,
+    };
+
+    /// A composition `f ~> g` (`Evaluator::compose_functions`). Its frame
+    /// continues at its caller's frame and is hidden from `$eval`: g is
+    /// jsonata-js's tail call, run in the caller's environment, so `$eval`
+    /// as g sees, and binds in, the scope the composition is called from.
+    pub(crate) const AT_CALLER: DefScope = DefScope {
+        ctx: 0,
+        chain: DefChain::Inline {
+            len: 0,
+            frames: [(0, 0); DEF_CHAIN_INLINE],
+        },
+        internal: true,
+        at_caller: true,
+        opaque: false,
+        keep: None,
+    };
+}
+
+static NEXT_CONTEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 /// Evaluation context
 ///
@@ -2663,19 +3150,249 @@ impl Scope {
 pub struct Context {
     scope_stack: Vec<Scope>,
     parent_data: Option<JValue>,
+    /// Distinguishes this context's frames from another context's, for a
+    /// function value that crosses evaluators.
+    ctx_id: u64,
+    /// The id the next pushed (or cleared) frame gets.
+    next_scope_id: u64,
+    /// The frame the innermost running tail-call trampoline was entered
+    /// from: jsonata-js's environment of the `apply` that runs a chain of
+    /// tail calls, where it applies each one (`Evaluator::invoke_lambda_with_tco`).
+    tail_base: usize,
+    /// Set while a builtin runs as a tail call: the frame its callbacks'
+    /// own tail-call chains begin at, as jsonata-js applies a function
+    /// argument of such a builtin in the trampoline's environment, and the
+    /// stack height the builtin applies them at (so a function applied
+    /// anywhere deeper, by a callback, starts where it is applied).
+    callback_base: Option<(usize, usize)>,
+    /// The most frames the stack has held, for tests that bound it.
+    #[cfg(test)]
+    peak_depth: usize,
 }
 
 impl Context {
     pub fn new() -> Self {
         Context {
-            scope_stack: vec![Scope::new()],
+            scope_stack: vec![Scope::new(0, None)],
             parent_data: None,
+            ctx_id: NEXT_CONTEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+            next_scope_id: 1,
+            tail_base: 0,
+            callback_base: None,
+            #[cfg(test)]
+            peak_depth: 1,
+        }
+    }
+
+    fn fresh_scope_id(&mut self) -> u64 {
+        let id = self.next_scope_id;
+        self.next_scope_id += 1;
+        id
+    }
+
+    fn push_frame(&mut self, scope: Scope) {
+        self.scope_stack.push(scope);
+        #[cfg(test)]
+        {
+            self.peak_depth = self.peak_depth.max(self.scope_stack.len());
         }
     }
 
     /// Push a new scope onto the stack
     fn push_scope(&mut self) {
-        self.scope_stack.push(Scope::new());
+        let id = self.fresh_scope_id();
+        self.push_frame(Scope::new(id, None));
+    }
+
+    /// Push the frame of a call to a function defined at `def`: lookups that
+    /// miss in it continue at the defining frame, not the caller's.
+    fn push_scope_defined_at(&mut self, def: &DefScope) {
+        let barrier = self.barrier_for(def);
+        let id = self.fresh_scope_id();
+        let mut scope = Scope::new(id, Some(barrier));
+        scope.internal = def.internal;
+        scope.opaque = def.opaque;
+        self.push_frame(scope);
+    }
+
+    /// Push a frame for evaluator-internal bindings, hidden from `$eval`.
+    fn push_internal_scope(&mut self) {
+        let id = self.fresh_scope_id();
+        let mut scope = Scope::new(id, None);
+        scope.internal = true;
+        self.push_frame(scope);
+    }
+
+    /// The innermost frame that is not internal, from the top or from frame
+    /// `from`, where `$eval` runs, and whether an opaque frame is on the
+    /// way there.
+    fn frame_below_internal(&self, from: Option<usize>) -> (usize, bool) {
+        let mut i = from.unwrap_or(self.scope_stack.len() - 1);
+        let mut opaque = false;
+        while i > 0 && self.scope_stack[i].internal {
+            opaque |= self.scope_stack[i].opaque;
+            i = self.scope_stack[i].barrier.unwrap_or(i - 1);
+        }
+        (i, opaque)
+    }
+
+    /// Push a frame whose lookups continue at frame `at`.
+    fn push_scope_at(&mut self, at: usize) {
+        let id = self.fresh_scope_id();
+        self.push_frame(Scope::new(id, Some(at)));
+    }
+
+    /// Pop the top frame and move its bindings into frame `at`.
+    fn pop_scope_into(&mut self, at: usize) {
+        if self.scope_stack.len() > 1 {
+            let top = self.scope_stack.pop().unwrap();
+            self.scope_stack[at].bindings.extend(top.bindings);
+        }
+    }
+
+    /// Push the trampoline's first frame, for a call to a function
+    /// defined at `def`.
+    fn push_tail_call_scope(&mut self, def: &DefScope) {
+        if def.at_caller {
+            let id = self.fresh_scope_id();
+            let mut scope = Scope::new(id, Some(self.tail_base));
+            scope.internal = def.internal;
+            scope.opaque = def.opaque;
+            self.push_frame(scope);
+        } else {
+            self.push_scope_defined_at(def);
+        }
+        self.scope_stack.last_mut().unwrap().tco = true;
+    }
+
+    /// Give a tail call to a function defined at `def` its frame, keeping
+    /// `frames`, the count of frames the trampoline has pushed, up to date.
+    /// The trampoline reuses the previous call's frame, cleared, when
+    /// nothing else can see it: the callee was defined elsewhere, and no
+    /// function defined to see the frame lives on outside the frame's own
+    /// bindings. Otherwise the frame is someone's defining scope (the
+    /// callee's, or a closure's that may still be called), so it stays and
+    /// the callee gets a frame above it. A frame kept that way and no longer
+    /// needed is dropped once it is under the top again, so tail loops run
+    /// in one frame, even ones that make a function on each pass and drop
+    /// it, or tail-call a function made in the pass.
+    fn enter_tail_call(&mut self, def: &DefScope, frames: &mut usize) {
+        // A composition continues at its caller's frame, which for a tail
+        // call is the trampoline's caller.
+        let barrier = if def.at_caller {
+            self.tail_base
+        } else {
+            self.barrier_for(def)
+        };
+        loop {
+            let top = self.scope_stack.len() - 1;
+            if barrier >= top || self.scope_stack[top].still_seen() {
+                self.push_tail_call_scope(def);
+                *frames += 1;
+                return;
+            }
+            if *frames > 1 {
+                // The trampoline's frame below may be free now too.
+                self.scope_stack.pop();
+                *frames -= 1;
+                continue;
+            }
+            self.clear_current_scope();
+            let scope = &mut self.scope_stack[top];
+            scope.barrier = Some(barrier);
+            scope.internal = def.internal;
+            scope.opaque = def.opaque;
+            // Its lexical chain changes; a function defined from now on
+            // takes a new token, holding the new chain's.
+            scope.token = std::cell::OnceCell::new();
+            scope.seen_at = 0;
+            return;
+        }
+    }
+
+    /// Where the defining scope at `def` is on the stack now: its frame if
+    /// it is still live, else its innermost lexical ancestor that is (a
+    /// function that outlived its block sees what is left of its scope, and
+    /// never the frames of whoever called the function that made it).
+    fn barrier_for(&self, def: &DefScope) -> usize {
+        if def.at_caller {
+            return self.scope_stack.len() - 1;
+        }
+        if def.ctx != self.ctx_id {
+            return 0;
+        }
+        // Frame ids are never reused, so a matching id is the same frame.
+        def.chain
+            .frames()
+            .iter()
+            .find(|&&(index, id)| {
+                self.scope_stack
+                    .get(index)
+                    .is_some_and(|scope| scope.id == id)
+            })
+            .map_or(0, |&(index, _)| index)
+    }
+
+    /// The token of trampoline frame `i`, holding that of the next
+    /// trampoline frame out in its lexical chain.
+    fn frame_token(&self, i: usize) -> Rc<FrameToken> {
+        let scope = &self.scope_stack[i];
+        if let Some(token) = scope.token.get() {
+            return Rc::clone(token);
+        }
+        let mut j = i;
+        let mut outer = None;
+        while j > 0 {
+            j = self.scope_stack[j].barrier.unwrap_or(j - 1);
+            if self.scope_stack[j].tco {
+                outer = Some(self.frame_token(j));
+                break;
+            }
+        }
+        Rc::clone(scope.token.get_or_init(|| Rc::new(FrameToken { outer })))
+    }
+
+    /// The defining scope for a function created now.
+    fn def_scope(&self) -> DefScope {
+        let mut keep = None;
+        let mut frames = [(0, 0); DEF_CHAIN_INLINE];
+        let mut len = 0;
+        let mut heap: Option<Vec<(usize, u64)>> = None;
+        let mut i = self.scope_stack.len() - 1;
+        while i > 0 {
+            let scope = &self.scope_stack[i];
+            if scope.tco && keep.is_none() {
+                keep = Some(self.frame_token(i));
+            }
+            match &mut heap {
+                Some(v) => v.push((i, scope.id)),
+                None if len < DEF_CHAIN_INLINE => {
+                    frames[len] = (i, scope.id);
+                    len += 1;
+                }
+                None => {
+                    let mut v = frames.to_vec();
+                    v.push((i, scope.id));
+                    heap = Some(v);
+                }
+            }
+            i = scope.barrier.unwrap_or(i - 1);
+        }
+        let chain = match heap {
+            Some(v) => DefChain::Heap(Rc::from(v)),
+            None => DefChain::Inline {
+                len: len as u8,
+                frames,
+            },
+        };
+        DefScope {
+            ctx: self.ctx_id,
+            chain,
+            internal: false,
+            at_caller: false,
+            opaque: false,
+            keep,
+        }
     }
 
     /// Pop the top scope from the stack
@@ -2685,10 +3402,13 @@ impl Context {
         }
     }
 
-    /// Clear all bindings in the top scope without deallocating
+    /// Clear all bindings in the top scope without deallocating. The frame
+    /// gets a new id: a function defined before the clear no longer sees it.
     fn clear_current_scope(&mut self) {
+        let id = self.fresh_scope_id();
         let top = self.scope_stack.last_mut().unwrap();
         top.bindings.clear();
+        top.id = id;
     }
 
     pub fn bind(&mut self, name: String, value: JValue) {
@@ -2722,13 +3442,32 @@ impl Context {
     }
 
     pub fn lookup(&self, name: &str) -> Option<&JValue> {
-        // Walk scope stack from top to bottom
-        for scope in self.scope_stack.iter().rev() {
+        self.lookup_from(self.scope_stack.len() - 1, name)
+    }
+
+    /// Walk the scope stack down from frame `start`, jumping from a
+    /// function's frame to the frame it was defined in.
+    #[inline]
+    fn lookup_from(&self, start: usize, name: &str) -> Option<&JValue> {
+        let mut i = start;
+        loop {
+            let scope = &self.scope_stack[i];
             if let Some(value) = scope.bindings.get(name) {
                 return Some(value);
             }
+            // A barrier always points below its own frame.
+            i = match scope.barrier {
+                Some(barrier) => barrier,
+                None if i == 0 => return None,
+                None => i - 1,
+            };
         }
-        None
+    }
+
+    /// Look `name` up as the body of a function defined at `def` would,
+    /// before any of its own bindings.
+    fn lookup_defined_at(&self, def: &DefScope, name: &str) -> Option<&JValue> {
+        self.lookup_from(self.barrier_for(def), name)
     }
 
     /// Look up `name` and, if it is bound to a lambda value, hand out the
@@ -3701,26 +4440,18 @@ impl Evaluator {
         }
 
         // Compiled fast path: skip scope push/pop and tree-walking for simple lambdas.
-        // Conditions: has compiled body, no signature (can't skip validation), no thunk,
-        // and no captured lambda/builtin values (those require Context for runtime lookup).
-        if let Some(ref ce) = stored.compiled_body {
-            if stored.signature.is_none()
-                && !stored.thunk
-                && !stored.captured_env.values().any(|v| v.is_function())
-            {
-                let call_data = stored.captured_data.as_ref().unwrap_or(data);
-                // A parameter without an argument is undefined, as on the
-                // tree-walking path.
-                let undefined = JValue::Undefined;
-                let vars: HashMap<&str, &JValue> = stored
-                    .params
-                    .iter()
-                    .enumerate()
-                    .map(|(i, p)| (p.as_str(), args.get(i).unwrap_or(&undefined)))
-                    .chain(stored.captured_env.iter().map(|(k, v)| (k.as_str(), v)))
-                    .collect();
-                return eval_compiled(ce, call_data, Some(&vars), &self.options, self.start_time);
-            }
+        if let Some(ce) = self.usable_compiled_body(stored) {
+            let call_data = stored.captured_data.as_ref().unwrap_or(data);
+            // A parameter without an argument is undefined, as on the
+            // tree-walking path. A compiled body reads only its parameters.
+            let undefined = JValue::Undefined;
+            let vars: HashMap<&str, &JValue> = stored
+                .params
+                .iter()
+                .enumerate()
+                .map(|(i, p)| (p.as_str(), args.get(i).unwrap_or(&undefined)))
+                .collect();
+            return eval_compiled(ce, call_data, Some(&vars), &self.options, self.start_time);
         }
 
         let captured_env = if stored.captured_env.is_empty() {
@@ -4190,7 +4921,10 @@ impl Evaluator {
 
     /// Run one level of evaluation under the recursion-depth, timeout and
     /// native-stack checks every node evaluation makes. Inlined so the hot
-    /// node-evaluation path pays no extra call frame for it.
+    /// node-evaluation path pays no extra call frame for it. The trampoline's
+    /// own recursion paths that bypass `evaluate_internal` (a tail call of a
+    /// higher-order builtin or of a composition) run under it too, so no
+    /// recursion cycle grows the native stack unchecked (#191).
     #[inline(always)]
     fn with_checkpoint<T>(
         &mut self,
@@ -4624,16 +5358,10 @@ impl Evaluator {
                 signature,
                 thunk,
             } => {
-                let compiled_body = if !thunk {
-                    let var_refs: Vec<&str> = params.iter().map(|s| s.as_str()).collect();
-                    try_compile_expr_with_allowed_vars(body, &var_refs)
-                } else {
-                    None
-                };
                 let stored_lambda = StoredLambda {
                     params: params.clone(),
                     body: (**body).clone(),
-                    compiled_body,
+                    compiled_body: CompiledBody::compile(body, params, signature, *thunk),
                     signature: signature.clone(),
                     captured_env: self.capture_environment_for(body, params),
                     captured_data: Some(data.clone()),
@@ -4641,6 +5369,7 @@ impl Evaluator {
                     self_name: None,
                     partial: None,
                     live_token: LiveLambdaToken::new(),
+                    def_scope: self.context.def_scope(),
                 };
                 Ok(JValue::Lambda(Rc::new(stored_lambda)))
             }
@@ -4728,6 +5457,7 @@ impl Evaluator {
                     self_name: None,
                     partial: None,
                     live_token: LiveLambdaToken::new(),
+                    def_scope: self.context.def_scope(),
                 };
                 Ok(JValue::Lambda(Rc::new(transform_lambda)))
             }
@@ -4847,37 +5577,129 @@ impl Evaluator {
             ));
         }
         if lhs_value.is_function() {
-            return Ok(Self::compose_functions(lhs_value, func));
+            let def = self.context.def_scope();
+            return Ok(Self::compose_functions(lhs_value, func, def));
         }
         self.call_function_value(&func, &[lhs_value], data)
             .map(JValue::unwrap_sequence)
     }
 
-    /// `f ~> g` for two functions: the function `λ($x) { g(f($x)) }`, as
-    /// jsonata-js builds from its `chainAST`.
-    fn compose_functions(f: JValue, g: JValue) -> JValue {
-        // Names no expression can spell: `$x` or `$__chain_x` would be
-        // visible to f and g.
-        const F: &str = "chain f";
-        const G: &str = "chain g";
-        const X: &str = "chain x";
+    /// Whether an argument is a function with tail calls (written inline,
+    /// or a variable holding one), whose chain of tail calls would begin
+    /// where it is applied.
+    fn has_thunk_function_arg(&self, args: &[AstNode]) -> bool {
+        args.iter().any(|arg| match arg {
+            AstNode::Lambda { thunk, .. } => *thunk,
+            AstNode::Variable(name) => {
+                matches!(self.context.lookup(name), Some(JValue::Lambda(rc)) if rc.thunk)
+            }
+            _ => false,
+        })
+    }
+
+    /// The `(f, g)` a composition calls: the function that runs f (in its
+    /// own frame) and g. `None` for any other function.
+    fn composition_parts(lambda: &StoredLambda) -> Option<(&JValue, &JValue)> {
+        if !lambda.def_scope.at_caller {
+            return None;
+        }
+        let f = lambda.captured_env.get(composition_names::F)?;
+        let g = lambda.captured_env.get(composition_names::G)?;
+        Some((f, g))
+    }
+
+    /// A tail call of a composition: f's call runs here, as jsonata-js runs
+    /// it in the composition's frame before the tail call, and g's is the
+    /// tail call itself. So the composition never becomes the trampoline's
+    /// function, which would keep the frame it was made in.
+    fn tail_call_composition(
+        &mut self,
+        mut composition: Rc<StoredLambda>,
+        args: Vec<JValue>,
+        data: &JValue,
+    ) -> Result<LambdaResult, EvaluatorError> {
+        let mut arg = args.into_iter().next().unwrap_or(JValue::Undefined);
+        loop {
+            let (f, g) = match Self::composition_parts(&composition) {
+                Some((f, g)) => (f.clone(), g.clone()),
+                None => unreachable!("tail_call_composition of a non-composition"),
+            };
+            let value = self.call_function_value(&f, &[arg], data)?;
+            match g {
+                JValue::Lambda(next) if Self::composition_parts(&next).is_some() => {
+                    composition = next;
+                    arg = value;
+                }
+                JValue::Lambda(lambda) if lambda.thunk => {
+                    return Ok(LambdaResult::TailCall {
+                        lambda,
+                        args: vec![value],
+                        data: data.clone(),
+                    });
+                }
+                JValue::Builtin { name }
+                    if &*name == "eval" && self.builtin_unshadowed("eval", None) =>
+                {
+                    let at = self.context.tail_base;
+                    let result = self.eval_from_values_at(&[value], data, Some(at))?;
+                    return Ok(LambdaResult::JValue(result));
+                }
+                g => {
+                    let result = self.call_function_value(&g, &[value], data)?;
+                    return Ok(LambdaResult::JValue(result));
+                }
+            }
+        }
+    }
+
+    /// `f ~> g` for two functions, made where `def` says: the function
+    /// `λ($x) { g(f($x)) }`, as jsonata-js builds from its `chainAST` in the
+    /// environment of the `~>`. There, `f($x)` runs in the composition's own
+    /// call frame, below the defining environment, and `g(...)` is a tail
+    /// call, run in the caller's. So f is called through a function defined
+    /// at `def` with an opaque frame, and the composition itself continues
+    /// at its caller's frame (`DefScope::AT_CALLER`); this matters only to
+    /// `$eval`, as every other function resolves names where it was made.
+    fn compose_functions(f: JValue, g: JValue, def: DefScope) -> JValue {
+        use composition_names::{F, G, X};
         let call = |name: &str, arg: AstNode| AstNode::Function {
             name: name.to_string(),
             args: vec![arg],
             is_builtin: false,
         };
-        JValue::Lambda(Rc::new(StoredLambda {
-            params: vec![X.to_string()],
-            body: call(G, call(F, AstNode::Variable(X.to_string()))),
-            compiled_body: None,
-            signature: None,
-            captured_env: HashMap::from([(F.to_string(), f), (G.to_string(), g)]),
-            captured_data: None,
-            thunk: false,
-            self_name: None,
-            partial: None,
-            live_token: LiveLambdaToken::new(),
-        }))
+        let lambda = |body: AstNode, captured_env: HashMap<String, JValue>, def_scope, thunk| {
+            JValue::Lambda(Rc::new(StoredLambda {
+                params: vec![X.to_string()],
+                body,
+                compiled_body: None,
+                signature: None,
+                captured_env,
+                captured_data: None,
+                thunk,
+                self_name: None,
+                partial: None,
+                live_token: LiveLambdaToken::new(),
+                def_scope,
+            }))
+        };
+        let first = lambda(
+            call(F, AstNode::Variable(X.to_string())),
+            HashMap::from([(F.to_string(), f)]),
+            DefScope {
+                internal: true,
+                opaque: true,
+                ..def
+            },
+            false,
+        );
+        // Its body names only what it captured.
+        lambda(
+            call(G, call(F, AstNode::Variable(X.to_string()))),
+            HashMap::from([(F.to_string(), first), (G.to_string(), g)]),
+            DefScope::AT_CALLER,
+            // g's call is a tail call, as in jsonata-js.
+            true,
+        )
     }
 
     /// Finish a `~>` whose right side is a call with a filter or `[]`
@@ -5351,22 +6173,15 @@ impl Evaluator {
         items: &[JValue],
     ) -> Result<Vec<JValue>, EvaluatorError> {
         // Compiling costs about one tree evaluation and isn't cached, so it
-        // only pays off over several items. A compiled call reaches the
-        // builtin directly, so a node calling a name bound here (a builtin
-        // shadowed by `:=`) stays on the tree-walker.
+        // only pays off over several items. A node calling a builtin that a
+        // binding here shadows stays on the tree-walker (`compile_in_scope`).
         let body = match node {
             _ if items.len() < 2 => None,
             AstNode::Object(_) => Some(node),
             AstNode::FunctionApplication(expr) => Some(&**expr),
             _ => None,
         };
-        let compiled = body
-            .filter(|body| {
-                !Self::collect_free_variables(body, &[])
-                    .iter()
-                    .any(|name| self.context.lookup(name).is_some())
-            })
-            .and_then(try_compile_expr);
+        let compiled = body.and_then(|body| self.compile_in_scope(body, None));
         let mut values = Vec::with_capacity(items.len());
         if let Some(compiled) = compiled {
             for item in items {
@@ -6499,16 +7314,10 @@ impl Evaluator {
                 // Store the lambda AST for later invocation
                 // Capture only the free variables referenced by the lambda body
                 let captured_env = self.capture_environment_for(body, params);
-                let compiled_body = if !thunk {
-                    let var_refs: Vec<&str> = params.iter().map(|s| s.as_str()).collect();
-                    try_compile_expr_with_allowed_vars(body, &var_refs)
-                } else {
-                    None
-                };
                 let stored_lambda = StoredLambda {
                     params: params.clone(),
                     body: (**body).clone(),
-                    compiled_body,
+                    compiled_body: CompiledBody::compile(body, params, signature, *thunk),
                     signature: signature.clone(),
                     captured_env,
                     captured_data: Some(data.clone()),
@@ -6519,6 +7328,7 @@ impl Evaluator {
                     self_name: Some(var_name.clone()),
                     partial: None,
                     live_token: LiveLambdaToken::new(),
+                    def_scope: self.context.def_scope(),
                 };
                 let lambda_value = JValue::Lambda(Rc::new(stored_lambda));
                 self.context.bind(var_name, lambda_value.clone());
@@ -6692,7 +7502,7 @@ impl Evaluator {
         // Check for filter stage — try CompiledExpr for the predicate
         let filter_compiled = match arr_step.stages.as_slice() {
             [] => None,
-            [Stage::Filter(pred)] => try_compile_expr(pred),
+            [Stage::Filter(pred)] => self.compile_in_scope(pred, None),
             _ => return Ok(None),
         };
         // If filter stage exists but wasn't compilable, bail out
@@ -6812,6 +7622,17 @@ impl Evaluator {
                     evaluated_args.push(self.evaluate_internal(arg, data)?);
                 }
                 return self.call_function_value(&value, &evaluated_args, data);
+            }
+            // Any other value, undefined included, hides a builtin or host
+            // function of the same name, as a jsonata-js frame binding does:
+            // `$string := 5; $string(1)` calls 5.
+            if is_builtin {
+                for arg in args {
+                    self.evaluate_internal(arg, data)?;
+                }
+                return Err(EvaluatorError::ReferenceError(
+                    "T1006: Attempted to invoke a non-function".to_string(),
+                ));
             }
         }
 
@@ -6966,7 +7787,8 @@ impl Evaluator {
                     .unwrap_or(JValue::Undefined);
                 let mut bound_args = args.to_vec();
                 bound_args[index] = AstNode::Variable(HOF_CALLBACK.to_string());
-                self.context.push_scope();
+                // Hidden from `$eval`, which runs in the caller's scope.
+                self.context.push_internal_scope();
                 self.context.bind(HOF_CALLBACK.to_string(), callback);
                 let result = self.call_evaluator_builtin(name, &bound_args, evaluated_args, data);
                 self.context.pop_scope();
@@ -7242,8 +8064,7 @@ impl Evaluator {
                             {
                                 let var_refs: Vec<&str> =
                                     params.iter().map(|s| s.as_str()).collect();
-                                if let Some(compiled) =
-                                    try_compile_expr_with_allowed_vars(body, &var_refs)
+                                if let Some(compiled) = self.compile_in_scope(body, Some(&var_refs))
                                 {
                                     let param_name = params[0].as_str();
                                     let mut result = Vec::with_capacity(arr.len());
@@ -7266,35 +8087,29 @@ impl Evaluator {
                             }
                             // Stored lambda variable fast path: $var with pre-compiled body
                             if let AstNode::Variable(var_name) = &args[1] {
-                                if let Some(stored) = self.context.lookup_lambda_value(var_name) {
-                                    if let Some(ref ce) = stored.compiled_body.clone() {
-                                        let param_name = stored.params[0].clone();
-                                        let captured_data = stored.captured_data.clone();
-                                        let captured_env_clone = stored.captured_env.clone();
-                                        let ce_clone = ce.clone();
-                                        if !captured_env_clone.values().any(|v| v.is_function()) {
-                                            let call_data = captured_data.as_ref().unwrap_or(data);
-                                            let mut result = Vec::with_capacity(arr.len());
-                                            let mut vars: HashMap<&str, &JValue> =
-                                                captured_env_clone
-                                                    .iter()
-                                                    .map(|(k, v)| (k.as_str(), v))
-                                                    .collect();
-                                            for item in arr.iter() {
-                                                vars.insert(param_name.as_str(), item);
-                                                let mapped = eval_compiled(
-                                                    &ce_clone,
-                                                    call_data,
-                                                    Some(&vars),
-                                                    &self.options,
-                                                    self.start_time,
-                                                )?;
-                                                if !mapped.is_undefined() {
-                                                    result.push(mapped);
-                                                }
+                                if let Some(stored) =
+                                    self.context.lookup_lambda_value(var_name).cloned()
+                                {
+                                    if let Some(ce) = self.usable_compiled_body(&stored) {
+                                        let param_name = stored.params[0].as_str();
+                                        let call_data =
+                                            stored.captured_data.as_ref().unwrap_or(data);
+                                        let mut result = Vec::with_capacity(arr.len());
+                                        let mut vars: HashMap<&str, &JValue> = HashMap::new();
+                                        for item in arr.iter() {
+                                            vars.insert(param_name, item);
+                                            let mapped = eval_compiled(
+                                                ce,
+                                                call_data,
+                                                Some(&vars),
+                                                &self.options,
+                                                self.start_time,
+                                            )?;
+                                            if !mapped.is_undefined() {
+                                                result.push(mapped);
                                             }
-                                            return hof_result_sequence(result, &self.options);
                                         }
+                                        return hof_result_sequence(result, &self.options);
                                     }
                                 }
                             }
@@ -7375,8 +8190,7 @@ impl Evaluator {
                     } = &args[1]
                     {
                         let var_refs: Vec<&str> = params.iter().map(|s| s.as_str()).collect();
-                        if let Some(compiled) = try_compile_expr_with_allowed_vars(body, &var_refs)
-                        {
+                        if let Some(compiled) = self.compile_in_scope(body, Some(&var_refs)) {
                             let param_name = params[0].as_str();
                             let mut result = Vec::with_capacity(items.len() / 2);
                             let mut vars = HashMap::new();
@@ -7405,41 +8219,33 @@ impl Evaluator {
                     }
                     // Stored lambda variable fast path: $var with pre-compiled body
                     if let AstNode::Variable(var_name) = &args[1] {
-                        if let Some(stored) = self.context.lookup_lambda_value(var_name) {
-                            if let Some(ref ce) = stored.compiled_body.clone() {
-                                let param_name = stored.params[0].clone();
-                                let captured_data = stored.captured_data.clone();
-                                let captured_env_clone = stored.captured_env.clone();
-                                let ce_clone = ce.clone();
-                                if !captured_env_clone.values().any(|v| v.is_function()) {
-                                    let call_data = captured_data.as_ref().unwrap_or(data);
-                                    let mut result = Vec::with_capacity(items.len() / 2);
-                                    let mut vars: HashMap<&str, &JValue> = captured_env_clone
-                                        .iter()
-                                        .map(|(k, v)| (k.as_str(), v))
-                                        .collect();
-                                    for item in items.iter() {
-                                        vars.insert(param_name.as_str(), item);
-                                        let pred_result = eval_compiled(
-                                            &ce_clone,
-                                            call_data,
-                                            Some(&vars),
-                                            &self.options,
-                                            self.start_time,
-                                        )?;
-                                        if compiled_is_truthy(&pred_result) {
-                                            result.push(item.clone());
-                                        }
+                        if let Some(stored) = self.context.lookup_lambda_value(var_name).cloned() {
+                            if let Some(ce) = self.usable_compiled_body(&stored) {
+                                let param_name = stored.params[0].as_str();
+                                let call_data = stored.captured_data.as_ref().unwrap_or(data);
+                                let mut result = Vec::with_capacity(items.len() / 2);
+                                let mut vars: HashMap<&str, &JValue> = HashMap::new();
+                                for item in items.iter() {
+                                    vars.insert(param_name, item);
+                                    let pred_result = eval_compiled(
+                                        ce,
+                                        call_data,
+                                        Some(&vars),
+                                        &self.options,
+                                        self.start_time,
+                                    )?;
+                                    if compiled_is_truthy(&pred_result) {
+                                        result.push(item.clone());
                                     }
-                                    if was_single_value {
-                                        if result.len() == 1 {
-                                            return Ok(result.remove(0));
-                                        } else if result.is_empty() {
-                                            return Ok(JValue::Undefined);
-                                        }
-                                    }
-                                    return hof_result_sequence(result, &self.options);
                                 }
+                                if was_single_value {
+                                    if result.len() == 1 {
+                                        return Ok(result.remove(0));
+                                    } else if result.is_empty() {
+                                        return Ok(JValue::Undefined);
+                                    }
+                                }
+                                return hof_result_sequence(result, &self.options);
                             }
                         }
                     }
@@ -7541,8 +8347,7 @@ impl Evaluator {
                     } = &args[1]
                     {
                         let var_refs: Vec<&str> = params.iter().map(|s| s.as_str()).collect();
-                        if let Some(compiled) = try_compile_expr_with_allowed_vars(body, &var_refs)
-                        {
+                        if let Some(compiled) = self.compile_in_scope(body, Some(&var_refs)) {
                             let acc_name = params[0].as_str();
                             let item_name = params[1].as_str();
                             for item in items[start_idx..].iter() {
@@ -7561,38 +8366,26 @@ impl Evaluator {
                     }
                     // Stored lambda variable fast path: $var with pre-compiled body
                     if let AstNode::Variable(var_name) = &args[1] {
-                        if let Some(stored) = self.context.lookup_lambda_value(var_name) {
+                        if let Some(stored) = self.context.lookup_lambda_value(var_name).cloned() {
                             if stored.params.len() == 2 {
-                                if let Some(ref ce) = stored.compiled_body.clone() {
-                                    let acc_param = stored.params[0].clone();
-                                    let item_param = stored.params[1].clone();
-                                    let captured_data = stored.captured_data.clone();
-                                    let captured_env_clone = stored.captured_env.clone();
-                                    let ce_clone = ce.clone();
-                                    if !captured_env_clone.values().any(|v| v.is_function()) {
-                                        let call_data = captured_data.as_ref().unwrap_or(data);
-                                        for item in items[start_idx..].iter() {
-                                            let mut vars: HashMap<&str, &JValue> =
-                                                captured_env_clone
-                                                    .iter()
-                                                    .map(|(k, v)| (k.as_str(), v))
-                                                    .collect();
-                                            vars.insert(acc_param.as_str(), &accumulator);
-                                            vars.insert(item_param.as_str(), item);
-                                            // Evaluate and drop vars before assigning accumulator
-                                            // to satisfy borrow checker (vars borrows accumulator)
-                                            let new_acc = eval_compiled(
-                                                &ce_clone,
-                                                call_data,
-                                                Some(&vars),
-                                                &self.options,
-                                                self.start_time,
-                                            )?;
-                                            drop(vars);
-                                            accumulator = new_acc;
-                                        }
-                                        return Ok(accumulator);
+                                if let Some(ce) = self.usable_compiled_body(&stored) {
+                                    let acc_param = stored.params[0].as_str();
+                                    let item_param = stored.params[1].as_str();
+                                    let call_data = stored.captured_data.as_ref().unwrap_or(data);
+                                    for item in items[start_idx..].iter() {
+                                        let vars: HashMap<&str, &JValue> = HashMap::from([
+                                            (acc_param, &accumulator),
+                                            (item_param, item),
+                                        ]);
+                                        accumulator = eval_compiled(
+                                            ce,
+                                            call_data,
+                                            Some(&vars),
+                                            &self.options,
+                                            self.start_time,
+                                        )?;
                                     }
+                                    return Ok(accumulator);
                                 }
                             }
                         }
@@ -7868,7 +8661,7 @@ impl Evaluator {
             )));
         }
         let input = args.first().cloned().unwrap_or(JValue::Undefined);
-        self.context.push_scope();
+        self.context.push_scope_defined_at(&stored.def_scope);
         for (name, value) in &stored.captured_env {
             self.context.bind(name.clone(), value.clone());
         }
@@ -8073,14 +8866,21 @@ impl Evaluator {
                     self_name: None,
                     partial: None,
                     live_token: LiveLambdaToken::new(),
+                    // An inline function, defined where it is called.
+                    def_scope: self.context.def_scope(),
                 }),
             };
             return self.invoke_lambda_with_tco(&stored, values, data);
         }
 
         // Validate signature if present, and get coerced arguments
-        // Push a new scope for this lambda invocation
-        self.context.push_scope();
+        // Push a new scope for this lambda invocation. A stored function's
+        // body resolves free names where it was defined, not in the caller's
+        // scopes (#191); an inline one is defined right here.
+        match self_rc {
+            Some(rc) => self.context.push_scope_defined_at(&rc.def_scope),
+            None => self.context.push_scope(),
+        }
 
         // First apply captured environment (for closures)
         if let Some(env) = captured_env {
@@ -8140,6 +8940,26 @@ impl Evaluator {
         initial_args: &[JValue],
         data: &JValue,
     ) -> Result<JValue, EvaluatorError> {
+        // A callback of a builtin run as a tail call starts its chain where
+        // that builtin's did; nothing it calls in turn does.
+        let height = self.context.scope_stack.len();
+        let base = match self.context.callback_base {
+            Some((base, at)) if at == height => base,
+            _ => height - 1,
+        };
+        let outer_base = std::mem::replace(&mut self.context.tail_base, base);
+        let result = self.run_tail_calls(stored_lambda, initial_args, data);
+        self.context.tail_base = outer_base;
+        result
+    }
+
+    /// The trampoline of `invoke_lambda_with_tco`.
+    fn run_tail_calls(
+        &mut self,
+        stored_lambda: &Rc<StoredLambda>,
+        initial_args: &[JValue],
+        data: &JValue,
+    ) -> Result<JValue, EvaluatorError> {
         let mut current_lambda = Rc::clone(stored_lambda);
         let mut current_args = initial_args.to_vec();
         let mut current_data = data.clone();
@@ -8152,7 +8972,11 @@ impl Evaluator {
         // Push a persistent scope for the TCO trampoline loop.
         // This scope persists across all iterations so that lambdas defined
         // in one iteration (like recursive $iter) remain available in subsequent ones.
-        self.context.push_scope();
+        // Like any call's frame, it looks past the caller's scopes to the
+        // function's defining one (re-pointed per iteration below).
+        self.context.push_tail_call_scope(&stored_lambda.def_scope);
+        // Frames this trampoline has pushed (see `Context::enter_tail_call`).
+        let mut frames = 1;
 
         // Trampoline loop - keeps evaluating until we get a final value
         let result = loop {
@@ -8169,17 +8993,25 @@ impl Evaluator {
             // scenario it exists to catch (see jsonata-js's own `$inf := function
             // (){$inf()}; $inf()` guardrails-documentation example).
             if self.options.timeout_ms.is_none() && iterations > MAX_TCO_ITERATIONS {
-                self.context.pop_scope();
+                for _ in 0..frames {
+                    self.context.pop_scope();
+                }
                 return Err(EvaluatorError::EvaluationError(
                     "U1001: Stack overflow - maximum recursion depth (500) exceeded".to_string(),
                 ));
             }
             if let Err(e) = check_loop_timeout(&self.options, self.start_time) {
-                self.context.pop_scope();
+                for _ in 0..frames {
+                    self.context.pop_scope();
+                }
                 return Err(e);
             }
+            if iterations > 1 {
+                self.context
+                    .enter_tail_call(&current_lambda.def_scope, &mut frames);
+            }
 
-            // Evaluate the lambda body within the persistent scope
+            // Evaluate the lambda body within the trampoline's frame
             let result =
                 self.invoke_lambda_body_for_tco(&current_lambda, &current_args, &current_data)?;
 
@@ -8194,8 +9026,10 @@ impl Evaluator {
             }
         };
 
-        // Pop the persistent TCO scope; escaping closures carry their own storage.
-        self.context.pop_scope();
+        // Pop the trampoline's frames; escaping closures carry their own storage.
+        for _ in 0..frames {
+            self.context.pop_scope();
+        }
 
         Ok(result)
     }
@@ -8220,7 +9054,8 @@ impl Evaluator {
             values.to_vec()
         };
 
-        // Bind directly into the persistent scope (managed by invoke_lambda_with_tco)
+        // Bind directly into the trampoline's frame (managed by
+        // invoke_lambda_with_tco), defined at the function's scope.
         // Apply captured environment
         for (name, value) in &lambda.captured_env {
             self.context.bind(name.clone(), value.clone());
@@ -8314,16 +9149,10 @@ impl Evaluator {
                 } = rhs.as_ref()
                 {
                     let captured_env = self.capture_environment_for(body, params);
-                    let compiled_body = if !thunk {
-                        let var_refs: Vec<&str> = params.iter().map(|s| s.as_str()).collect();
-                        try_compile_expr_with_allowed_vars(body, &var_refs)
-                    } else {
-                        None
-                    };
                     let stored_lambda = StoredLambda {
                         params: params.clone(),
                         body: (**body).clone(),
-                        compiled_body,
+                        compiled_body: CompiledBody::compile(body, params, signature, *thunk),
                         signature: signature.clone(),
                         captured_env,
                         captured_data: Some(data.clone()),
@@ -8331,6 +9160,7 @@ impl Evaluator {
                         self_name: Some(var_name.clone()),
                         partial: None,
                         live_token: LiveLambdaToken::new(),
+                        def_scope: self.context.def_scope(),
                     };
                     let lambda_value = JValue::Lambda(Rc::new(stored_lambda));
                     self.context.bind(var_name, lambda_value.clone());
@@ -8348,24 +9178,75 @@ impl Evaluator {
                 // A `?` argument makes a partial application, not a call: the
                 // non-TCO path builds it.
                 let has_placeholder = args.iter().any(|a| matches!(a, AstNode::Placeholder));
-                // Check if this is a call to a lambda value (user function)
-                if let Some(stored_lambda) = self
-                    .context
-                    .lookup_lambda_value(name)
-                    .filter(|_| !has_placeholder)
-                    .cloned()
-                {
-                    if stored_lambda.thunk {
-                        let mut evaluated_args = Vec::with_capacity(args.len());
-                        for arg in args {
-                            evaluated_args.push(self.evaluate_internal(arg, data)?);
-                        }
-                        return Ok(LambdaResult::TailCall {
-                            lambda: stored_lambda,
-                            args: evaluated_args,
-                            data: data.clone(),
+                // A call to a lambda value (user function), or `$eval` as a
+                // tail call: jsonata-js makes that a thunk too, which its
+                // trampoline applies in the environment it was entered from,
+                // so it reads and binds there, not in this body's scope.
+                let (tail_lambda, tail_eval) = if has_placeholder {
+                    (None, false)
+                } else {
+                    match self.context.lookup(name) {
+                        Some(JValue::Lambda(rc)) if rc.thunk => (Some(Rc::clone(rc)), false),
+                        Some(JValue::Builtin { name: b }) => (None, &**b == "eval"),
+                        None => (None, name == "eval"),
+                        Some(_) => (None, false),
+                    }
+                };
+                if let Some(stored_lambda) = tail_lambda {
+                    let mut evaluated_args = Vec::with_capacity(args.len());
+                    for arg in args {
+                        evaluated_args.push(self.evaluate_internal(arg, data)?);
+                    }
+                    if Self::composition_parts(&stored_lambda).is_some() {
+                        return self.with_checkpoint(|ev| {
+                            ev.tail_call_composition(stored_lambda, evaluated_args, data)
                         });
                     }
+                    return Ok(LambdaResult::TailCall {
+                        lambda: stored_lambda,
+                        args: evaluated_args,
+                        data: data.clone(),
+                    });
+                }
+                // A builtin given a function with tail calls, as a tail call:
+                // jsonata-js passes it the function unwrapped, and applies it
+                // in the trampoline's environment, so that function's own
+                // chain of tail calls begins there. Not `$sort`: jsonata-js
+                // 2.2.2 fails such a call with "comp is not a function", so
+                // there is no chain to match, and the usual path keeps the
+                // fast path for an inline comparator.
+                if matches!(
+                    name.as_str(),
+                    "map" | "filter" | "reduce" | "single" | "sift" | "each" | "match" | "replace"
+                ) && !has_placeholder
+                    && self.context.lookup(name).is_none()
+                    && self.builtin_unshadowed(name, None)
+                    && self.has_thunk_function_arg(args)
+                {
+                    let mut evaluated_args = Vec::with_capacity(args.len());
+                    for arg in args {
+                        evaluated_args.push(self.evaluate_internal(arg, data)?);
+                    }
+                    // It applies them over the frame of its value arguments.
+                    let height = self.context.scope_stack.len() + 1;
+                    let outer = self
+                        .context
+                        .callback_base
+                        .replace((self.context.tail_base, height));
+                    let result = self.with_checkpoint(|ev| {
+                        ev.call_builtin_with_values(name, &evaluated_args, data)
+                    });
+                    self.context.callback_base = outer;
+                    return Ok(LambdaResult::JValue(result?));
+                }
+                if tail_eval && self.builtin_unshadowed("eval", None) {
+                    let mut evaluated_args = Vec::with_capacity(args.len());
+                    for arg in args {
+                        evaluated_args.push(self.evaluate_internal(arg, data)?);
+                    }
+                    let at = self.context.tail_base;
+                    let result = self.eval_from_values_at(&evaluated_args, data, Some(at))?;
+                    return Ok(LambdaResult::JValue(result));
                 }
                 // Not a thunk lambda - evaluate normally
                 let result = self.evaluate_internal(node, data)?;
@@ -8391,12 +9272,29 @@ impl Evaluator {
                         for arg in args {
                             evaluated_args.push(self.evaluate_internal(arg, data)?);
                         }
+                        if Self::composition_parts(&stored_lambda).is_some() {
+                            return self.with_checkpoint(|ev| {
+                                ev.tail_call_composition(stored_lambda, evaluated_args, data)
+                            });
+                        }
                         return Ok(LambdaResult::TailCall {
                             lambda: stored_lambda,
                             args: evaluated_args,
                             data: data.clone(),
                         });
                     }
+                }
+                // `($eval)(...)` as a tail call, as `$eval(...)` above.
+                if matches!(&callable, JValue::Builtin { name } if &**name == "eval")
+                    && self.builtin_unshadowed("eval", None)
+                {
+                    let mut evaluated_args = Vec::with_capacity(args.len());
+                    for arg in args {
+                        evaluated_args.push(self.evaluate_internal(arg, data)?);
+                    }
+                    let at = self.context.tail_base;
+                    let result = self.eval_from_values_at(&evaluated_args, data, Some(at))?;
+                    return Ok(LambdaResult::JValue(result));
                 }
                 // Not a thunk - apply the value already evaluated, so the
                 // callee is not evaluated a second time.
@@ -8430,10 +9328,7 @@ impl Evaluator {
         if args.iter().any(|a| matches!(a, AstNode::Placeholder)) {
             let target = match &callable {
                 JValue::Lambda(stored) => PartialTarget::Lambda(Rc::clone(stored)),
-                JValue::Builtin { name } => PartialTarget::Named {
-                    name: name.to_string(),
-                    is_builtin: true,
-                },
+                JValue::Builtin { name } => PartialTarget::Builtin(name.to_string()),
                 _ => {
                     return Err(EvaluatorError::EvaluationError(
                         "T1008: Attempted to partially apply a non-function".to_string(),
@@ -8541,6 +9436,8 @@ impl Evaluator {
             self_name: None,
             partial: None,
             live_token: LiveLambdaToken::new(),
+            // Its body names only what it captured.
+            def_scope: DefScope::ROOT,
         }));
         Rc::make_mut(&mut result).insert("next".to_string(), next);
         Ok(JValue::Object(result))
@@ -8786,6 +9683,62 @@ impl Evaluator {
         }
         result.extend_from_slice(js_substring(&units, position, None));
         Ok(JValue::string(String::from_utf16_lossy(&result)))
+    }
+
+    /// THE builtin-shadowing rule for compiled code (#191). A compiled
+    /// expression calls each builtin it names directly, which is what the
+    /// tree-walker does only when `name`, resolved where the expression is
+    /// evaluated, is unbound (`bound` is that resolution) and no host
+    /// override replaces it -- or is bound to that same builtin. Any other
+    /// binding, a function or not, shadows the builtin.
+    fn builtin_unshadowed(&self, name: &str, bound: Option<&JValue>) -> bool {
+        match bound {
+            None => self.host_fns.is_empty() || !self.host_fns.contains_key(name),
+            Some(JValue::Builtin { name: b }) => {
+                &**b == name && (self.host_fns.is_empty() || !self.host_fns.contains_key(name))
+            }
+            Some(_) => false,
+        }
+    }
+
+    /// Compile `node` to run right here, in the current scope: `None` if it
+    /// does not compile or calls a builtin a binding here shadows. Every
+    /// evaluator site that compiles part of an expression goes through this
+    /// (or `CompiledBody` for function bodies), so none can skip the rule.
+    fn compile_in_scope(
+        &self,
+        node: &AstNode,
+        allowed_vars: Option<&[&str]>,
+    ) -> Option<CompiledExpr> {
+        let compiled = match allowed_vars {
+            Some(vars) => try_compile_expr_with_allowed_vars(node, vars)?,
+            None => try_compile_expr(node)?,
+        };
+        let mut names = Vec::new();
+        compiled_builtin_names(&compiled, &mut names);
+        names
+            .iter()
+            .all(|name| self.builtin_unshadowed(name, self.context.lookup(name)))
+            .then_some(compiled)
+    }
+
+    /// A function's compiled body, if calling it now may take the fast path:
+    /// each builtin it calls must be unshadowed where the function was
+    /// defined -- by what it captured, its own name, or a binding made since
+    /// in its defining scope -- as its body would resolve it.
+    fn usable_compiled_body<'a>(&self, stored: &'a StoredLambda) -> Option<&'a CompiledExpr> {
+        let body = stored.compiled_body.as_ref()?;
+        let unshadowed = body.builtins.iter().all(|&name| {
+            if stored.self_name.as_deref() == Some(name) {
+                return false;
+            }
+            let bound = match stored.captured_env.get(name) {
+                Some(v) => Some(v),
+                None => self.context.lookup_defined_at(&stored.def_scope, name),
+            };
+            self.builtin_unshadowed(name, bound)
+        });
+        unshadowed.then_some(&body.expr)
     }
 
     /// Capture only the variables referenced by a lambda body (selective capture).
@@ -9060,7 +10013,7 @@ impl Evaluator {
         values: &[JValue],
         call: impl FnOnce(&mut Self, &[AstNode]) -> Result<JValue, EvaluatorError>,
     ) -> Result<JValue, EvaluatorError> {
-        self.context.push_scope();
+        self.context.push_internal_scope();
         let temp_args: Vec<AstNode> = values
             .iter()
             .enumerate()
@@ -9087,6 +10040,17 @@ impl Evaluator {
         &mut self,
         args: &[JValue],
         data: &JValue,
+    ) -> Result<JValue, EvaluatorError> {
+        self.eval_from_values_at(args, data, None)
+    }
+
+    /// `$eval`, run in the caller's scope, or in frame `from` (as a tail
+    /// call: see `evaluate_for_tco`).
+    fn eval_from_values_at(
+        &mut self,
+        args: &[JValue],
+        data: &JValue,
+        from: Option<usize>,
     ) -> Result<JValue, EvaluatorError> {
         // $eval(expression [, context]) - parse and evaluate a JSONata expression at runtime
         if args.is_empty() || args.len() > 2 {
@@ -9138,7 +10102,26 @@ impl Evaluator {
         };
 
         // Evaluate the parsed expression
-        match self.evaluate_internal(&parsed_ast, eval_context) {
+        // In the caller's scope, as jsonata-js evaluates in the calling
+        // environment, so a `:=` there binds in it. When the evaluator's own
+        // frames (argument temporaries, a composition) are on top, it runs
+        // in a frame that looks past them, whose bindings then go to the
+        // caller's frame, or nowhere when one of those frames stands for a
+        // jsonata-js call frame of its own (a composition's first function).
+        let (at, opaque) = self.context.frame_below_internal(from);
+        let evaluated = if at == self.context.scope_stack.len() - 1 {
+            self.evaluate_internal(&parsed_ast, eval_context)
+        } else {
+            self.context.push_scope_at(at);
+            let evaluated = self.evaluate_internal(&parsed_ast, eval_context);
+            if opaque {
+                self.context.pop_scope();
+            } else {
+                self.context.pop_scope_into(at);
+            }
+            evaluated
+        };
+        match evaluated {
             Ok(result) => Ok(result),
             Err(e) => {
                 // D3121 is the error code for evaluation errors in $eval
@@ -9716,11 +10699,14 @@ impl Evaluator {
         data: &JValue,
     ) -> Result<JValue, EvaluatorError> {
         // First, look up the function to ensure it exists
-        let is_lambda = self
-            .context
-            .lookup(name)
-            .map(|v| matches!(v, JValue::Lambda { .. }))
-            .unwrap_or(false);
+        let bound = self.context.lookup(name);
+        let is_lambda = matches!(bound, Some(JValue::Lambda { .. }));
+        // A binding that is not a function hides any builtin of that name.
+        if bound.is_some_and(|v| !v.is_function()) {
+            return Err(EvaluatorError::EvaluationError(
+                "T1008: Attempted to partially apply a non-function".to_string(),
+            ));
+        }
 
         // Built-in functions must be called with $ prefix for partial application
         // Without $, it's an error (T1007) suggesting the user forgot the $
@@ -9737,16 +10723,21 @@ impl Evaluator {
             ));
         }
 
-        // A user-defined target is captured as a closure value so the partial
-        // still works after the target's defining scope pops; builtins and
-        // host fns stay name-resolved (they are global and cannot dangle, and
-        // by-name resolution preserves call-time shadowing).
-        let target = match self.context.lookup_lambda_value(name) {
-            Some(rc) => PartialTarget::Lambda(Rc::clone(rc)),
-            None => PartialTarget::Named {
-                name: name.to_string(),
-                is_builtin,
-            },
+        // The target is resolved now, as jsonata-js evaluates the procedure
+        // when it builds the partial: a closure, builtin or host function, so
+        // rebinding the name afterwards does not change it.
+        let target = match bound {
+            Some(JValue::Lambda(rc)) => PartialTarget::Lambda(Rc::clone(rc)),
+            Some(JValue::Builtin { name: b }) => PartialTarget::Builtin(b.to_string()),
+            _ if self.host_fns.contains_key(name) => {
+                PartialTarget::Host(HostTarget(Rc::clone(&self.host_fns[name])))
+            }
+            _ if self.is_builtin_function(name) => PartialTarget::Builtin(name.to_string()),
+            _ => {
+                return Err(EvaluatorError::EvaluationError(
+                    "T1008: Attempted to partially apply a non-function".to_string(),
+                ))
+            }
         };
         self.build_partial_application(target, args, data)
     }
@@ -9796,6 +10787,8 @@ impl Evaluator {
                 total_args: args.len(),
             })),
             live_token: LiveLambdaToken::new(),
+            // Its target is resolved already; the scope is never consulted.
+            def_scope: DefScope::ROOT,
         };
 
         Ok(JValue::Lambda(Rc::new(stored_lambda)))
@@ -9830,13 +10823,11 @@ impl Evaluator {
                 let stored = Rc::clone(stored);
                 self.invoke_stored_lambda(&stored, &full_args, data)
             }
-            PartialTarget::Named { name, is_builtin } => {
-                // Through evaluate_function_call, so builtins, host fns, late
-                // shadowing bindings and per-function special cases all
-                // behave exactly as a direct call would.
-                self.with_value_args(&full_args, |ev, args| {
-                    ev.evaluate_function_call(name, args, *is_builtin, data)
-                })
+            PartialTarget::Builtin(name) => self.call_builtin_with_values(name, &full_args, data),
+            PartialTarget::Host(HostTarget(f)) => {
+                let f = Rc::clone(f);
+                let mut ctx = HostCtx::new();
+                f.call(&full_args, &mut ctx)
             }
         }
     }
@@ -10813,5 +11804,145 @@ mod tests {
         let mut evaluator = Evaluator::new();
         let result = evaluator.evaluate(&ast, &data).unwrap();
         assert_eq!(result, serde_json::json!("OUT").into());
+    }
+
+    // --- #191: tail loops that make a function on each pass ----------------
+    //
+    // The tail-call trampoline reuses its frame unless a function that can
+    // see it lives on. A function made and dropped on each pass must not
+    // keep the frames, or the stack (and memory) grows with the loop.
+
+    fn peak_depth_of(src: &str) -> (JValue, usize) {
+        let ast = crate::parser::parse(src).unwrap();
+        let mut evaluator = Evaluator::new();
+        let result = evaluator.evaluate(&ast, &JValue::Null).unwrap();
+        (result, evaluator.context.peak_depth)
+    }
+
+    #[test]
+    fn tail_loop_making_a_closure_each_pass_keeps_stack_bounded() {
+        let (result, depth) = peak_depth_of(
+            "($f := function($n, $acc){ ($g := function(){ $n }; \
+             $n = 0 ? $acc : $f($n - 1, $acc + $g())) }; $f(50000, 0))",
+        );
+        assert_eq!(result, JValue::from(1_250_025_000.0));
+        assert!(depth < 16, "scope stack reached {depth} frames");
+    }
+
+    #[test]
+    fn tail_loop_passing_a_lambda_each_pass_keeps_stack_bounded() {
+        let (result, depth) = peak_depth_of(
+            "($f := function($n, $acc){ ($m := $map([$n], function($v){ $v }); \
+             $n = 0 ? $acc : $f($n - 1, $acc + $m)) }; $f(50000, 0))",
+        );
+        assert_eq!(result, JValue::from(1_250_025_000.0));
+        assert!(depth < 16, "scope stack reached {depth} frames");
+    }
+
+    #[test]
+    fn tail_loop_keeps_frames_of_closures_that_escape() {
+        // Each pass's closure goes into the accumulator, so each pass's
+        // frame stays; the closures see their own pass's `$n`.
+        let (result, depth) = peak_depth_of(
+            "($f := function($n, $acc){ ($g := function(){ $n }; \
+             $n = 0 ? $map($acc, function($h){ $h() }) : $f($n - 1, $append($acc, [$g]))) }; $f(50, []))",
+        );
+        let expected: Vec<JValue> = (1..=50).rev().map(|n| JValue::from(n as f64)).collect();
+        assert_eq!(result, JValue::array(expected));
+        assert!(depth > 50, "scope stack reached only {depth} frames");
+    }
+
+    #[test]
+    fn tail_loop_dropping_functions_held_in_values_keeps_stack_bounded() {
+        // Functions held by arrays, objects, other functions' results and a
+        // local tail-recursive maker all go with the pass.
+        for body in [
+            "$a := [function(){ $n }]",
+            "$o := {\"k\": function(){ $n }}",
+            "$q := $map([1, 2], function($v){ function(){ $v } })",
+            "$g := function(){ $n }; $l := [$g]",
+            "$mk := function($k){ $k = 0 ? function(){ $n } : $mk($k - 1) }; $q := $mk(1)",
+        ] {
+            let src = format!(
+                "($f := function($n, $acc){{ ({body}; $n = 0 ? $acc : $f($n - 1, $acc + 1)) }}; \
+                 $f(5000, 0))"
+            );
+            let (result, depth) = peak_depth_of(&src);
+            assert_eq!(result, JValue::from(5000.0), "{body}");
+            assert!(depth < 16, "{body}: scope stack reached {depth} frames");
+        }
+    }
+
+    #[test]
+    fn tail_loop_dropping_many_functions_keeps_stack_bounded() {
+        // Far more functions per pass than any fixed walk budget.
+        for body in [
+            "$fs := $map([1..1000], function($i){ function(){ $i } })",
+            "$u := [{'x': [function(){ 1 }]}, [1..2000].{'a': $}]",
+        ] {
+            let src = format!(
+                "($f := function($n, $acc){{ ({body}; $n = 0 ? $acc : $f($n - 1, $acc + 1)) }}; \
+                 $f(100, 0))"
+            );
+            let (result, depth) = peak_depth_of(&src);
+            assert_eq!(result, JValue::from(100.0), "{body}");
+            assert!(depth < 16, "{body}: scope stack reached {depth} frames");
+        }
+    }
+
+    #[test]
+    fn tail_called_composition_or_local_function_keeps_stack_bounded() {
+        for src in [
+            "($inc := function($x){ $x + 1 }; \
+             $loop := function($n){ $n >= 20000 ? $n : ($inc ~> $loop)($n) }; $loop(0))",
+            "($loop := function($n){ $n >= 20000 ? $n : \
+             ($string ~> function($s){ $loop($number($s) + 1) })($n) }; $loop(0))",
+            "($loop := function($n){ $n >= 20000 ? $n : (function($s){ $loop($s + 1) })($n) }; \
+             $loop(0))",
+        ] {
+            let (result, depth) = peak_depth_of(src);
+            assert_eq!(result, JValue::from(20000.0), "{src}");
+            assert!(depth < 16, "{src}: scope stack reached {depth} frames");
+        }
+    }
+
+    #[test]
+    fn kept_frame_is_not_walked_again_each_pass() {
+        // The first pass's frame owns a large array and stays for a closure
+        // passed along every pass; deciding again on each pass that it
+        // stays must not walk the array again.
+        let start = std::time::Instant::now();
+        let (result, _) = peak_depth_of(
+            "($f := function($k, $keep){ ($big := $k = 5000 ? [1..20000] : []; \
+             $k = 0 ? $keep() : $f($k - 1, $k = 5000 ? function(){ $k } : $keep)) }; \
+             $f(5000, function(){ 0 }))",
+        );
+        assert_eq!(result, JValue::from(5000.0));
+        let elapsed = start.elapsed();
+        assert!(elapsed.as_secs() < 3, "took {elapsed:?}");
+    }
+
+    #[test]
+    fn tail_loop_passing_a_chain_of_closures_stays_linear() {
+        // Each pass's closure captures the previous one, so the frames stay
+        // (each closure may see its own); deciding that must not walk the
+        // chain, or the loop takes quadratic time.
+        // Dropping the chain of 20000 closures at the end recurses through
+        // it, which a test thread's default stack does not hold.
+        let elapsed = std::thread::Builder::new()
+            .stack_size(512 << 20)
+            .spawn(|| {
+                let start = std::time::Instant::now();
+                let (result, _) = peak_depth_of(
+                    "($f := function($n, $prev){ $n = 0 ? 'done' : $f($n - 1, function(){ $prev() + 1 }) }; \
+                     $f(20000, function(){ 0 }))",
+                );
+                assert_eq!(result, JValue::from("done"));
+                start.elapsed()
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+        assert!(elapsed.as_secs() < 5, "took {elapsed:?}");
     }
 }

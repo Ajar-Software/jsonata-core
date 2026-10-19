@@ -37,15 +37,66 @@ const KNOWN_DIVERGENCES: &[(&str, &str)] = &[
     // undefined here.
     ("compiled", "nope ~> /n/"),
     ("tree", "nope ~> /n/"),
-    // A function body sees a variable bound where it is called, not only
-    // where it is defined (#191).
+    // Deliberate (#159): `$k` captures `$m` by value when it is defined,
+    // while it is still the outer "root"; jsonata-js sees the block's later
+    // `$m := 1` through the live frame. Without the outer `$m` nothing is
+    // captured and both give 1 (the case before this one in the corpus).
     (
         "compiled",
-        "($t := |$|{\"w\": $v}|; $f := function($v) { $t(x) }; $f(1))",
+        "($m := \"root\"; $other := function($f) { $f() }; $outer := function() { ($k := function() { $m }; $m := 1; $other($k)) }; $outer())",
     ),
     (
         "tree",
-        "($t := |$|{\"w\": $v}|; $f := function($v) { $t(x) }; $f(1))",
+        "($m := \"root\"; $other := function($f) { $f() }; $outer := function() { ($k := function() { $m }; $m := 1; $other($k)) }; $outer())",
+    ),
+    // Not yet matched (#191): `$r(4)` nests four sequences of one item.
+    // jsonata-js flattens only the outermost when the composition evaluates
+    // its first function's call as the argument of its second ("[[[0]]]");
+    // here a second level is flattened on the way out of that call
+    // ("[[0]]"). Called directly, as `$string($r(4))`, both give "[[[0]]]".
+    (
+        "compiled",
+        "($r := function($n) { $n <= 0 ? 0 : $map([$n], function($i) { $r($i - 1) }) }; ($r ~> $string)(4))",
+    ),
+    (
+        "tree",
+        "($r := function($n) { $n <= 0 ? 0 : $map([$n], function($i) { $r($i - 1) }) }; ($r ~> $string)(4))",
+    ),
+    // Not yet matched (#191): jsonata-js parses `a ?: b` and `a ?? b` as
+    // conditions, so `b` is a tail position and a `$eval` there runs where
+    // the chain of tail calls began. Here only `?` branches, a block's last
+    // expression and a call are tail positions, so it runs in the body's
+    // scope. Treating them as tail positions would also take the bodies
+    // that end in them off the compiled fast path.
+    (
+        "compiled",
+        "($n := 1; $f := function() { ($n := 2; $x ?: $eval(\"$n\")) }; ($n := 3; $f()))",
+    ),
+    (
+        "tree",
+        "($n := 1; $f := function() { ($n := 2; $x ?: $eval(\"$n\")) }; ($n := 3; $f()))",
+    ),
+    (
+        "compiled",
+        "($n := 1; $f := function() { ($n := 2; $x ?? $eval(\"$n\")) }; ($n := 3; $f()))",
+    ),
+    (
+        "tree",
+        "($n := 1; $f := function() { ($n := 2; $x ?? $eval(\"$n\")) }; ($n := 3; $f()))",
+    ),
+    // Deliberate (#191, the documented late-binding gap): the composition's
+    // `$eval` runs in its defining block, which has finished by the call.
+    // jsonata-js keeps that block alive and sees its `$n`; here, as for any
+    // function outliving its defining scope, it is gone, and only what the
+    // function captured remains. `$eval`'s text names nothing to capture,
+    // so it sees the enclosing scope's `$n`.
+    (
+        "compiled",
+        "($n := \"outer\"; $c := ($n := \"def\"; $eval ~> $uppercase); ($n := \"call\"; $c(\"$n\")))",
+    ),
+    (
+        "tree",
+        "($n := \"outer\"; $c := ($n := \"def\"; $eval ~> $uppercase); ($n := \"call\"; $c(\"$n\")))",
     ),
 ];
 

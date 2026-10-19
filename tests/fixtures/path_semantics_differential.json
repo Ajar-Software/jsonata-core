@@ -12246,6 +12246,875 @@
    }
   },
   {
+   "expression": "($f := function($x) { $string($x) }; ($string := function($x) { \"z\" }; objs.{\"r\": $f(p)}))",
+   "result": [
+    {
+     "r": "1"
+    },
+    {
+     "r": "2"
+    }
+   ]
+  },
+  {
+   "expression": "($string := function($x) { \"z\" }; $f := function($x) { $string($x) }; $f(1))",
+   "result": "z"
+  },
+  {
+   "expression": "($f := function($x) { $string($x) }; $string := function($x) { \"z\" }; $f(1))",
+   "result": "z"
+  },
+  {
+   "expression": "($f := function($x) { $string($x) }; ($string := function($x) { \"z\" }; $f(1)))",
+   "result": "1"
+  },
+  {
+   "expression": "($f := function($x) { $string($x) }; ($string := 5; $f(1)))",
+   "result": "1"
+  },
+  {
+   "expression": "($g := function() { $v }; $f := function($v) { $g() }; $f(1))",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "($g := function($x) { $exists($y) }; $f := function($y) { $g(1) }; $f(\"q\"))",
+   "result": false
+  },
+  {
+   "expression": "($g := function($x) { $x & $y }; $f := function($y) { $map([1], $g) }; $f(\"q\"))",
+   "result": "1"
+  },
+  {
+   "expression": "($v := 1; $g := function() { $v }; ($v := 2; $g()))",
+   "result": 1
+  },
+  {
+   "expression": "($g := function() { $v }; ($v := 2; $g()))",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "($g := function() { $v }; $v := 2; $g())",
+   "result": 2
+  },
+  {
+   "expression": "($i := 9; $f := function() { $i }; objs#$i.{\"r\": $f()})",
+   "result": [
+    {
+     "r": 9
+    },
+    {
+     "r": 9
+    }
+   ]
+  },
+  {
+   "expression": "($g := function() { $exists($__temp_arg_0) }; $map([1], $g))",
+   "result": false
+  },
+  {
+   "expression": "($t := |$|{\"w\": $string(1)}|; ($string := function($x) { \"z\" }; $t(x)))",
+   "result": {
+    "y": [
+     1
+    ],
+    "w": "1"
+   }
+  },
+  {
+   "expression": "($f := function($v) { $map([$v], function($w) { $string($w) }) }; ($string := function($x) { \"z\" }; $f(1)))",
+   "result": "1"
+  },
+  {
+   "expression": "($f := function($v) { $sum([$v, 1]) }; ($sum := function($x) { 0 }; $f(1)))",
+   "result": 2
+  },
+  {
+   "expression": "($f := function($v) { $string($v) }; ($string := function($x) { \"z\" }; $map([1, 2], $f)))",
+   "result": [
+    "1",
+    "2"
+   ]
+  },
+  {
+   "expression": "($f := function($x) { $string($x) }; $string := function($x) { \"z\" }; $map([1, 2], $f))",
+   "result": [
+    "z",
+    "z"
+   ]
+  },
+  {
+   "expression": "($f := function($x) { $string($x) = \"1\" }; ($string := function($x) { \"z\" }; $filter([1, 2], $f)))",
+   "result": 1
+  },
+  {
+   "expression": "($f := function($a, $x) { $a & $string($x) }; ($string := function($x) { \"z\" }; $reduce([1, 2], $f, \"\")))",
+   "result": "12"
+  },
+  {
+   "expression": "($f := function($a, $x) { $a & $string($x) }; $string := function($x) { \"z\" }; $reduce([1, 2], $f, \"\"))",
+   "result": "zz"
+  },
+  {
+   "expression": "($f := function() { objs.{\"r\": $string(p)} }; ($string := function($x) { \"z\" }; $f()))",
+   "result": [
+    {
+     "r": "1"
+    },
+    {
+     "r": "2"
+    }
+   ]
+  },
+  {
+   "expression": "($f := function() { objs.{\"r\": $string(p)} }; $string := function($x) { \"z\" }; $f())",
+   "result": [
+    {
+     "r": "z"
+    },
+    {
+     "r": "z"
+    }
+   ]
+  },
+  {
+   "expression": "($f := function() { objs.($string(p)) }; ($string := function($x) { \"z\" }; $f()))",
+   "result": [
+    "1",
+    "2"
+   ]
+  },
+  {
+   "expression": "($f := function() { objs[$string(p) = \"1\"].p }; ($string := function($x) { \"z\" }; $f()))",
+   "result": 1
+  },
+  {
+   "expression": "($f := function() { $sum(objs.(p * 2)) }; ($sum := function($x) { 0 }; $f()))",
+   "result": 6
+  },
+  {
+   "expression": "($f := function() { $sum(objs[p > 1].p) }; ($sum := function($x) { 0 }; $f()))",
+   "result": 2
+  },
+  {
+   "expression": "($f := function() { $sum(objs[$string(p) = \"1\"].p) }; ($string := function($x) { \"z\" }; $f()))",
+   "result": 1
+  },
+  {
+   "expression": "($string := function($x) { \"z\" }; $sum(objs[$string(p) = \"z\"].p))",
+   "result": 3
+  },
+  {
+   "expression": "($sum := function($x) { 0 }; $sum(objs[p > 1].p))",
+   "result": 0
+  },
+  {
+   "expression": "($string := function($x) { \"z\" }; objs.($string(p)))",
+   "result": [
+    "z",
+    "z"
+   ]
+  },
+  {
+   "expression": "($string := function($x) { \"z\" }; $map([1, 2], function($v) { $string($v) }))",
+   "result": [
+    "z",
+    "z"
+   ]
+  },
+  {
+   "expression": "($string := function($x) { \"z\" }; $filter([1, 2], function($v) { $string($v) = \"z\" }))",
+   "result": [
+    1,
+    2
+   ]
+  },
+  {
+   "expression": "($string := function($x) { \"z\" }; $reduce([1, 2], function($a, $v) { $a & $string($v) }))",
+   "result": "1z"
+  },
+  {
+   "expression": "($string := function($x) { \"z\" }; [1, 2] ~> $map(function($v) { $string($v) }))",
+   "result": [
+    "z",
+    "z"
+   ]
+  },
+  {
+   "expression": "($map := function($a, $f) { \"m\" }; $f := function($v) { $map([$v], function($w) { $w }) }; $f(1))",
+   "result": "m"
+  },
+  {
+   "expression": "($f := function($v) { $map([$v], function($w) { $w }) }; ($map := function($a, $f) { \"m\" }; $f(1)))",
+   "result": 1
+  },
+  {
+   "expression": "(function($string) { $string(1) })(function($v) { \"p\" })",
+   "result": "p"
+  },
+  {
+   "expression": "$map([1, 2], function($string) { $string })",
+   "result": [
+    1,
+    2
+   ]
+  },
+  {
+   "expression": "(function($string) { $map([1, 2], function($v) { $string($v) }) })(function($x) { \"p\" })",
+   "result": [
+    "p",
+    "p"
+   ]
+  },
+  {
+   "expression": "$map([1], function($string) { $string(1) })",
+   "result": {
+    "$error": "Cannot create property 'token' on number '1'"
+   }
+  },
+  {
+   "expression": "(function($string) { $string(1) })()",
+   "result": {
+    "$error": "Cannot set properties of undefined (setting 'token')"
+   }
+  },
+  {
+   "expression": "($string := 5; $string(1))",
+   "result": {
+    "$error": "T1006"
+   }
+  },
+  {
+   "expression": "($string := nope; $string(1))",
+   "result": {
+    "$error": "T1006"
+   }
+  },
+  {
+   "expression": "($sum := 0; $sum([1]))",
+   "result": {
+    "$error": "T1006"
+   }
+  },
+  {
+   "expression": "objs.($string := 5; $string(p))",
+   "result": {
+    "$error": "T1006"
+   }
+  },
+  {
+   "expression": "($string := 5; $string(?))",
+   "result": {
+    "$error": "T1008"
+   }
+  },
+  {
+   "expression": "($string := 5; $exists($string))",
+   "result": true
+  },
+  {
+   "expression": "($string := function($n) { $n <= 0 ? \"done\" : $string($n - 1) }; $string(3))",
+   "result": "done"
+  },
+  {
+   "expression": "($f := function($n) { $n <= 0 ? $string($n) : $f($n - 1) }; ($string := function($x) { \"z\" }; $f(3)))",
+   "result": "0"
+  },
+  {
+   "expression": "($f := function($n) { $n = 0 ? $string($n) : $f($n - 1) }; $string := function($x) { \"z\" }; $f(3))",
+   "result": "z"
+  },
+  {
+   "expression": "($f := function($n, $acc) { $n = 0 ? $string($acc) : $f($n - 1, $acc + 1) }; ($string := function($x) { \"z\" }; $f(5, 0)))",
+   "result": "5"
+  },
+  {
+   "expression": "($f := function($n) { $n <= 0 ? [$string($n)] : $append($f($n - 1), [$n]) }; ($string := function($x) { \"z\" }; $f(3)))",
+   "result": [
+    "0",
+    1,
+    2,
+    3
+   ]
+  },
+  {
+   "expression": "($mk := function() { function($x) { $string($x) } }; $h := $mk(); ($string := function($x) { \"z\" }; $h(1)))",
+   "result": "1"
+  },
+  {
+   "expression": "($mk := function() { ($string := function($x) { \"in\" }; function($x) { $string($x) }) }; $h := $mk(); ($string := function($x) { \"z\" }; $h(1)))",
+   "result": "in"
+  },
+  {
+   "expression": "($f := function($x) { function($y) { $string($x + $y) } }; $h := $f(1); ($string := function($x) { \"z\" }; $h(1)))",
+   "result": "2"
+  },
+  {
+   "expression": "($string := function($x) { \"z\" }; $g := function($x) { ($string := function($y) { \"in\" }; $string($x)) }; $g(1))",
+   "result": "in"
+  },
+  {
+   "expression": "($f := function($x) { $uppercase($x) }; $p := $f(?); ($uppercase := function($x) { \"z\" }; $p(\"a\")))",
+   "result": "A"
+  },
+  {
+   "expression": "($up := $uppercase(?); ($uppercase := function($x) { \"z\" }; $up(\"a\")))",
+   "result": "A"
+  },
+  {
+   "expression": "($c := $string ~> $uppercase; ($string := function($x) { \"z\" }; $c(1)))",
+   "result": "1"
+  },
+  {
+   "expression": "($f := $string; ($string := function($x) { \"z\" }; $f(1)))",
+   "result": "1"
+  },
+  {
+   "expression": "($f := function($x) { $string($x) }; ($string := function($x) { \"z\" }; ($f)(1)))",
+   "result": "1"
+  },
+  {
+   "expression": "($f := function($x) { $string($x) }; $p := ($f)(?); ($string := function($x) { \"z\" }; $p(1)))",
+   "result": "1"
+  },
+  {
+   "expression": "($f := function($x) { $string($x) }; ($string := function($x) { \"z\" }; [1].($f)($)))",
+   "result": "1"
+  },
+  {
+   "expression": "($p := ($uppercase)(?); $uppercase := function($x) { \"z\" }; $p(\"a\"))",
+   "result": "A"
+  },
+  {
+   "expression": "($p := ($uppercase)(?); ($uppercase := function($x) { \"z\" }; $p(\"a\")))",
+   "result": "A"
+  },
+  {
+   "expression": "($p := $uppercase(?); $uppercase := function($s) { \"u\" }; $p(\"a\"))",
+   "result": "A"
+  },
+  {
+   "expression": "($f := $sum; $p := $f(?); $f := function($x) { 0 }; $p([1, 2]))",
+   "result": 3
+  },
+  {
+   "expression": "($p := $notreal(?); $p(1))",
+   "result": {
+    "$error": "T1008"
+   }
+  },
+  {
+   "expression": "($A := function() { function() { $secret } }; $C := function($secret) { $A()() }; $C(\"leak\"))",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "($A := function() { function($v) { $string($v) } }; $C := function($string) { $map([1, 2], $A()) }; $C(function($x) { \"leak\" }))",
+   "result": [
+    "1",
+    "2"
+   ]
+  },
+  {
+   "expression": "($mk := function() { ($local := \"L\"; function() { $local & $other }) }; $C := function($other) { $mk()() }; $C(\"leak\"))",
+   "result": "L"
+  },
+  {
+   "expression": "($A := function() { function() { $secret } }; ($secret := \"leak\"; $g := $A(); $g()))",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "($outer := function() { ($k := function() { $m }; $m := 1; $inner := function($m) { $k() }; $inner(99)) }; $outer())",
+   "result": 1
+  },
+  {
+   "expression": "($outer := function() { ($k := function() { $m }; $m := 1; $inner := function($m) { $k() }; [$inner(99)]) }; $outer())",
+   "result": [
+    1
+   ]
+  },
+  {
+   "expression": "($other := function($f) { $f() }; $outer := function() { ($k := function() { $m }; $m := 1; $other($k)) }; $outer())",
+   "result": 1
+  },
+  {
+   "expression": "($m := \"root\"; $other := function($f) { $f() }; $outer := function() { ($k := function() { $m }; $m := 1; $other($k)) }; $outer())",
+   "result": 1
+  },
+  {
+   "expression": "($loop := function($n, $acc) { $n = 0 ? $acc : $loop($n - 1, $acc + 1) }; $loop(50000, 0))",
+   "result": 50000
+  },
+  {
+   "expression": "($a := function($n) { $n = 0 ? \"a\" : $b($n - 1) }; $b := function($n) { $n = 0 ? \"b\" : $a($n - 1) }; $a(5001))",
+   "result": "b"
+  },
+  {
+   "expression": "($c := $string ~> $eval; $c(\"[$exists($__chain_x), $exists($__chain_f), $exists($__temp_arg_0)]\"))",
+   "result": [
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "expression": "($m := $map; $m([\"$exists($__temp_arg_0)\", \"$exists($__temp_arg_1)\"], $eval))",
+   "result": [
+    false,
+    false
+   ]
+  },
+  {
+   "expression": "($x := 7; $m := $map; $m([\"$x\"], $eval))",
+   "result": 7
+  },
+  {
+   "expression": "($f := function($n, $acc) { ($g := function() { $n }; $n = 0 ? $acc : $f($n - 1, $acc + $g())) }; $f(5000, 0))",
+   "result": 12502500
+  },
+  {
+   "expression": "($f := function($n, $acc) { ($m := $map([$n], function($v) { $v }); $n = 0 ? $acc : $f($n - 1, $acc + $m)) }; $f(5000, 0))",
+   "result": 12502500
+  },
+  {
+   "expression": "($f := function($n, $acc) { ($g := function() { $n }; $n = 0 ? $map($acc, function($h) { $h() }) : $f($n - 1, $append($acc, [$g]))) }; $f(5, []))",
+   "result": [
+    5,
+    4,
+    3,
+    2,
+    1
+   ]
+  },
+  {
+   "expression": "($loop := function($n, $acc) { $n = 0 ? $map($acc, function($f) { $f() }) : ($mk := function() { function() { $n } }; $loop($n - 1, $append($acc, [$mk()]))) }; $loop(4, []))",
+   "result": [
+    4,
+    3,
+    2,
+    1
+   ]
+  },
+  {
+   "expression": "($other := function($a) { ($f := $a[0]; $f()) }; $outer := function($m) { ($mk := function() { ($z := 2; function() { $m + $z }) }; $other([$mk()])) }; $outer(5))",
+   "result": 7
+  },
+  {
+   "expression": "($other := function($o) { ($f := $o.h; $f()) }; $outer := function($m) { ($mk := function() { function() { $m } }; $other({\"h\": $mk()})) }; $outer(5))",
+   "result": 5
+  },
+  {
+   "expression": "($f := function($n, $prev, $x, $acc) { $n = 0 ? $acc : $f($n - 1, $c := function() { $late } ~> $string, $late := $n, $append($acc, $prev())) }; $f(3, function() { \"none\" }, 0, []))",
+   "result": [
+    "none",
+    "3",
+    "2"
+   ]
+  },
+  {
+   "expression": "($h := function($k) { function() { $k() } }; $f := function($n, $prev, $x, $acc) { $n = 0 ? $acc : $f($n - 1, $c := $h(function() { $late }), $late := $n, $append($acc, $prev())) }; $f(3, function() { \"none\" }, 0, []))",
+   "result": [
+    "none",
+    3,
+    2
+   ]
+  },
+  {
+   "expression": "($f := function($n, $prev, $x, $acc) { $n = 0 ? $acc : $f($n - 1, $c := (function() { $late } ~> $string) ~> $string, $late := $n, $append($acc, $prev())) }; $f(3, function() { \"none\" }, 0, []))",
+   "result": [
+    "none",
+    "3",
+    "2"
+   ]
+  },
+  {
+   "expression": "($f := function($n, $prev, $x, $acc) { $n = 0 ? $acc : $f($n - 1, $c := $string ~> function($x) { $string($late) }, $late := $n, $append($acc, $prev(1))) }; $f(3, function($v) { \"none\" }, 0, []))",
+   "result": [
+    "none",
+    "3",
+    "2"
+   ]
+  },
+  {
+   "expression": "($f := function($n, $prev, $x, $acc) { $n = 0 ? $acc : $f($n - 1, $c := function($a, $b) { $string($late) }(?, 1), $late := $n, $append($acc, $prev(0))) }; $f(3, function($v) { \"none\" }, 0, []))",
+   "result": [
+    "none",
+    "3",
+    "2"
+   ]
+  },
+  {
+   "expression": "($f := function($n, $prev, $x, $acc) { $n = 0 ? $acc : $f($n - 1, $c := $map([1], function($v) { function() { $late } })[0] ~> $string, $late := $n, $append($acc, $prev())) }; $f(3, function() { \"none\" }, 0, []))",
+   "result": [
+    "none",
+    "3",
+    "2"
+   ]
+  },
+  {
+   "expression": "($f := function($n, $prev, $x, $acc) { $n = 0 ? $acc : $f($n - 1, $c := $reduce([1, 2], function($a, $v) { function() { $late } }, 0) ~> $string, $late := $n, $append($acc, $prev())) }; $f(3, function() { \"none\" }, 0, []))",
+   "result": [
+    "none",
+    "3",
+    "2"
+   ]
+  },
+  {
+   "expression": "($f := function($n, $prev, $x, $acc) { $n = 0 ? $acc : $f($n - 1, $c := function() { $eval(\"$late\") } ~> $string, $late := $n, $append($acc, $prev())) }; $f(3, function() { \"none\" }, 0, []))",
+   "result": [
+    "none",
+    "3",
+    "2"
+   ]
+  },
+  {
+   "expression": "($f := function($n, $prev) { $n = 0 ? \"done\" : $f($n - 1, function() { $prev() + 1 }) }; $f(300, function() { 0 }))",
+   "result": "done"
+  },
+  {
+   "expression": "($f := function($n, $prev) { $n = 0 ? $prev() : $f($n - 1, function() { $prev() + 1 }) }; $f(50, function() { 0 }))",
+   "result": 50
+  },
+  {
+   "expression": "($f := function($n, $acc) { ($a := [function() { $n }]; $n = 0 ? $acc : $f($n - 1, $acc + 1)) }; $f(3000, 0))",
+   "result": 3000
+  },
+  {
+   "expression": "($f := function($n, $acc) { ($o := {\"k\": function() { $n }}; $n = 0 ? $acc : $f($n - 1, $acc + 1)) }; $f(3000, 0))",
+   "result": 3000
+  },
+  {
+   "expression": "($f := function($n, $acc) { ($q := $map([1, 2], function($v) { function() { $v } }); $n = 0 ? $acc : $f($n - 1, $acc + 1)) }; $f(3000, 0))",
+   "result": 3000
+  },
+  {
+   "expression": "($f := function($n, $acc) { ($g := function() { $n }; $l := [$g]; $n = 0 ? $acc : $f($n - 1, $acc + 1)) }; $f(3000, 0))",
+   "result": 3000
+  },
+  {
+   "expression": "($f := function($n, $acc) { ($mk := function($k) { $k = 0 ? function() { $n } : $mk($k - 1) }; $q := $mk(1); $n = 0 ? $acc : $f($n - 1, $acc + 1)) }; $f(3000, 0))",
+   "result": 3000
+  },
+  {
+   "expression": "($f := function($n, $acc) { ($fs := $map([1..1000], function($i) { function() { $i } }); $n = 0 ? $acc : $f($n - 1, $acc + 1)) }; $f(50, 0))",
+   "result": 50
+  },
+  {
+   "expression": "($f := function($n, $acc) { ($u := [{\"x\": [function() { 1 }]}, [1..2000].{\"a\": $}]; $n = 0 ? $acc : $f($n - 1, $acc + 1)) }; $f(50, 0))",
+   "result": 50
+  },
+  {
+   "expression": "($inc := function($x) { $x + 1 }; $loop := function($n) { $n >= 3000 ? $n : ($inc ~> $loop)($n) }; $loop(0))",
+   "result": 3000
+  },
+  {
+   "expression": "($loop := function($n) { $n >= 3000 ? $n : ($string ~> function($s) { $loop($number($s) + 1) })($n) }; $loop(0))",
+   "result": 3000
+  },
+  {
+   "expression": "($inc := function($x) { $x + 1 }; $loop := function($n) { ($c := $inc ~> $loop; $n >= 3000 ? $n : $c($n)) }; $loop(0))",
+   "result": 3000
+  },
+  {
+   "expression": "($loop := function($n) { $n >= 3000 ? $n : (function($s) { $loop($s + 1) })($n) }; $loop(0))",
+   "result": 3000
+  },
+  {
+   "expression": "($inc := function($x) { $x + 1 }; $c := $inc ~> $inc; $c(1))",
+   "result": 3
+  },
+  {
+   "expression": "($v := \"root\"; $h := function() { $eval(\"$v\") }; ($v := \"caller\"; $h()))",
+   "result": "caller"
+  },
+  {
+   "expression": "($v := \"def\"; $c := $string ~> function($s) { $eval($s) }; ($v := \"call\"; $c(\"$v\")))",
+   "result": "call"
+  },
+  {
+   "expression": "($v := \"root\"; $h := function() { $eval(\"$v := 9\") }; $w := ($v := \"caller\"; $h(); $v); [$w, $v])",
+   "result": [
+    9,
+    "root"
+   ]
+  },
+  {
+   "expression": "($v := \"root\"; $h := function() { ($r := $eval(\"$v\"); $r) }; ($v := \"caller\"; $h()))",
+   "result": "root"
+  },
+  {
+   "expression": "($v := \"root\"; $h := function() { $v = \"x\" ? 1 : $eval(\"$v\") }; ($v := \"caller\"; $h()))",
+   "result": "caller"
+  },
+  {
+   "expression": "($v := \"root\"; $e := $eval; $h := function() { $e(\"$v\") }; ($v := \"caller\"; $h()))",
+   "result": "caller"
+  },
+  {
+   "expression": "($v := \"root\"; $h := function() { $eval(\"$v\") }; $g := function() { $h() }; ($v := \"caller\"; $g()))",
+   "result": "caller"
+  },
+  {
+   "expression": "($v := \"root\"; $h := function() { $eval(\"$v\") }; $g := function() { ($r := $h(); $r) }; ($v := \"caller\"; $g()))",
+   "result": "root"
+  },
+  {
+   "expression": "($f := function($a) { $exists($eval(\"$a\")) }; $f(21))",
+   "result": true
+  },
+  {
+   "expression": "($f := function($a) { [$eval(\"$a * 2\")] }; $f(21))",
+   "result": [
+    42
+   ]
+  },
+  {
+   "expression": "($f := function($a) { $eval(\"$a * 2\") }; $f(21))",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "($f := function($a) { ($r := $eval(\"$a * 2\"); $r) }; $f(21))",
+   "result": 42
+  },
+  {
+   "expression": "($v := \"root\"; ($v := \"caller\"; $map([\"$v\"], function($s) { $eval($s) })))",
+   "result": "caller"
+  },
+  {
+   "expression": "($x := 1; $f := function() { $eval(\"$x\") }; ($x := 2; $f()))",
+   "result": 2
+  },
+  {
+   "expression": "($c := $string ~> $eval; $g := function($a) { $c(\"$a\") }; $g(3))",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "($f := function($k, $keep) { ($big := $k = 2000 ? [1..20000] : []; $k = 0 ? $keep() : $f($k - 1, $k = 2000 ? function() { $k } : $keep)) }; $f(2000, function() { 0 }))",
+   "result": 2000
+  },
+  {
+   "expression": "($f := function($k, $keep) { ($big := $k = 400 ? $reduce([1..200], function($a, $v) { {\"n\": $a} }, {}) : {}; $k = 0 ? $keep() : $f($k - 1, $k = 400 ? function() { $k } : $keep)) }; $f(400, function() { 0 }))",
+   "result": 400
+  },
+  {
+   "expression": "($n := 1; $f := function() { ($n := 2; $filter([1, 2], function($v) { ($n := 9; $eval(\"$n = 2\")) })) }; $f())",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "($n := 1; $f := function() { ($n := 2; $map([1], function($v) { $eval(\"$n\") })) }; $f())",
+   "result": 1
+  },
+  {
+   "expression": "($n := 1; $f := function() { ($n := 2; $map([1], function($v) { $eval(\"$n\") })) }; $g := function() { ($n := 3; $r := $f(); $r) }; $g())",
+   "result": 3
+  },
+  {
+   "expression": "($n := 1; $f := function() { ($n := 2; $r := $map([1], function($v) { $eval(\"$n\") }); $r) }; $f())",
+   "result": 2
+  },
+  {
+   "expression": "($n := 1; $cb := function($v) { $eval(\"$n\") }; $f := function() { ($n := 2; $map([1, 2], $cb)) }; $f())",
+   "result": [
+    1,
+    1
+   ]
+  },
+  {
+   "expression": "($n := 1; $f := function() { ($n := 2; $reduce([1, 2, 3], function($a, $v) { $eval(\"$n\") + $a }, 0)) }; $f())",
+   "result": 6
+  },
+  {
+   "expression": "($n := 1; $f := function() { ($n := 2; $map([1], function($v) { $map([1], function($w) { $eval(\"$n\") }) })) }; $f())",
+   "result": 1
+  },
+  {
+   "expression": "($n := 1; $f := function() { ($n := 2; $map([1], function($v) { ($n := 5; $map([1], function($w) { $eval(\"$n\") })) })) }; $f())",
+   "result": 1
+  },
+  {
+   "expression": "($n := 1; $f := function() { ($n := 2; $map([1], function($v) { ($n := 5; $r := $map([1], function($w) { $eval(\"$n\") }); $r) })) }; $f())",
+   "result": 5
+  },
+  {
+   "expression": "($n := 1; $f := function() { ($n := 2; $map([1, 2], function($v) { $v * 10 })) }; $f())",
+   "result": [
+    10,
+    20
+   ]
+  },
+  {
+   "expression": "($n := 1; $f := function() { ($n := 2; true ? $eval(\"$n\") : 0) }; ($n := 3; $f()))",
+   "result": 3
+  },
+  {
+   "expression": "($n := 1; $f := function() { ($n := 2; ($eval)(\"$n\")) }; ($n := 3; $f()))",
+   "result": 3
+  },
+  {
+   "expression": "($f := function($n) { $n = 0 ? 0 : $reduce([$n, 1], function($a, $b) { $f($a - 1) }) }; $f(1500))",
+   "result": 0
+  },
+  {
+   "expression": "($g := function($x) { $f($x - 1) }; $f := function($n) { $n = 0 ? 0 : $reduce([$n, 1], function($a, $b) { $g($a) }) }; $f(1500))",
+   "result": 0
+  },
+  {
+   "expression": "($f := function($n) { $n = 0 ? \"done\" : $map([$n], function($x) { $f($x - 1) }) }; $count($f(1500)))",
+   "result": 1
+  },
+  {
+   "expression": "($f := function($n) { $n = 0 ? \"done\" : $filter([$n], function($x) { $f($x - 1) }) }; $count($f(1500)))",
+   "result": 1
+  },
+  {
+   "expression": "($f := function($n) { $n = 0 ? \"done\" : $each({\"k\": $n}, function($x) { $f($x - 1) }) }; $count($f(1500)))",
+   "result": 1
+  },
+  {
+   "expression": "($d := $reduce([1..1500], function($a, $i) { {\"c\": [$a]} }, {\"v\": 1}); $f := function($n) { $n.c ? $map($n.c, $f) : $n.v }; $count($f($d)))",
+   "result": 1
+  },
+  {
+   "expression": "($f := function($n) { $n <= 0 ? 0 : ($f ~> $number)($n - 1) }; $f(1500))",
+   "result": 0
+  },
+  {
+   "expression": "($r := function($n) { $n <= 0 ? 0 : $map([$n], function($i) { $r($i - 1) }) }; ($r ~> $string)(4))",
+   "result": "[[[0]]]"
+  },
+  {
+   "expression": "($map([\"$w := 3\"], ($eval)); $w)",
+   "result": 3
+  },
+  {
+   "expression": "($x := 7; $map([\"$x\"], ($eval)))",
+   "result": 7
+  },
+  {
+   "expression": "($x := 7; $map([\"$x\"], ($string ~> $eval)))",
+   "result": 7
+  },
+  {
+   "expression": "($n := 1; $f := function() { ($n := 2; $x ?: $eval(\"$n\")) }; ($n := 3; $f()))",
+   "result": 3
+  },
+  {
+   "expression": "($n := 1; $f := function() { ($n := 2; $x ?? $eval(\"$n\")) }; ($n := 3; $f()))",
+   "result": 3
+  },
+  {
+   "expression": "($c := $eval ~> $string; $c(\"$z := 5\"); $z)",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "(\"$x := 4\" ~> ($eval ~> $string); $x)",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "($c := $eval ~> $string; $map([\"$z := 5\"], $c); $z)",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "($p := $eval(?); $c := $p ~> $string; $c(\"$w := 1\"); $w)",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "($c := ($eval ~> $string) ~> $string; $c(\"$z := 5\"); $z)",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "($n := \"outer\"; $c := ($n := \"def\"; $eval ~> $uppercase); ($n := \"call\"; $c(\"$n\")))",
+   "result": "DEF"
+  },
+  {
+   "expression": "($n := \"outer\"; $c := $eval ~> $uppercase; ($n := \"call\"; $c(\"$n\")))",
+   "result": "OUTER"
+  },
+  {
+   "expression": "($n := \"top\"; $c := $eval ~> $string; $f := function($n) { ($r := $c(\"$n\"); $r) }; $f(\"arg\"))",
+   "result": "top"
+  },
+  {
+   "expression": "($c := $string ~> $eval; $c(\"$z := 5\"); $z)",
+   "result": 5
+  },
+  {
+   "expression": "($c := $eval ~> $string; $c(\"[$exists($__chain_x), $exists($__chain_f), $exists($__temp_arg_0)]\"))",
+   "result": "[false,false,false]"
+  },
+  {
+   "expression": "($eval(\"$y := 5\"); $y)",
+   "result": 5
+  },
+  {
+   "expression": "($eval(\"$q := function() { 42 }\"); $q())",
+   "result": 42
+  },
+  {
+   "expression": "(($eval(\"$y := 5\")); $y)",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "($eval(\"$y := 5\"); $eval(\"$y + 1\"))",
+   "result": 6
+  },
+  {
+   "expression": "($m := $map; $m([\"$w := 3\"], $eval); $w)",
+   "result": 3
+  },
+  {
+   "expression": "($f := function() { ($eval(\"$y := 5\"); $y) }; $f())",
+   "result": 5
+  },
+  {
+   "expression": "($x := 7; $c := $string ~> $eval; $c(\"$x\"))",
+   "result": 7
+  },
+  {
+   "expression": "($x := 7; ($string ~> $eval)(\"$x\"))",
+   "result": 7
+  },
+  {
+   "expression": "($c := $string ~> $eval; $c(\"$z := 4\"); $z)",
+   "result": 4
+  },
+  {
+   "expression": "($x := 7; $c := $string ~> $eval; ($x := 8; $c(\"$x\")))",
+   "result": 8
+  },
+  {
+   "expression": "($mk := function() { ($x := \"in\"; $string ~> $eval) }; $x := \"out\"; $mk()(\"$x\"))",
+   "result": "out"
+  },
+  {
+   "expression": "($c := $string ~> $eval; $g := function($a) { ($r := $c(\"$a\"); $r) }; $g(3))",
+   "result": 3
+  },
+  {
    "expression": "$$arr",
    "result": {
     "$undefined": true
