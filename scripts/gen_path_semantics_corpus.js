@@ -188,6 +188,11 @@ const EXTRA = [
   'acct.Order.P^(>%.id)[$count($.\'@\') > 0]{N: N}', 'acct.Order.P^(>%.id)[0]{N: N}',
   'acct.Order.P^(>%.id)[true]{N: N}', 'acct.Order.P^(>%.id)[[0, 1]]{N: N}',
   'acct.Order.P^(>%.id)[N = "C"]^(N)',
+  'acct.Order.P[N = "C"][]^(%.id)[N = "C"]', 'acct.Order.P[N = "C"][]^(%.id){N: N}',
+  'acct.Order.P[N = "C"][]^(%.id)^(N)', 'acct.Order.P^(>%.id)^(N)#$k.$k', 'acct.Order.P^(>%.id)^(N)#$k[$k = 0]',
+  'acct.Order.P^(>%.id)[N = "C"]#$k', 'acct.Order.P^(>%.id)[N = "C"]#$k.{"k": $k, "v": $}',
+  'acct.Order.P^(>%.id)#$k[N = "C"]', 'acct.Order.P^(>%.id)#$k[$k = 1]', 'acct.Order.P^(>%.id)#$k.{"k": $k}',
+  'acct.Order.P[N = "C"]^(%.id)#$k[N = "C"]',
   // Outside a path, as a value, a sort of a tuple stream gives values.
   '($x := acct.Order.P^(>%.id); $x[N = "C"])', '(acct.Order.P^(>%.id))[N = "C"]',
   '(true ? acct.Order.P^(>%.id) : 0)[N = "C"]', '{"a": acct.Order.P^(>%.id)}.a[N = "C"]',

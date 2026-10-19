@@ -6980,6 +6980,78 @@
    }
   },
   {
+   "expression": "acct.Order.P[N = \"C\"][]^(%.id)[N = \"C\"]",
+   "result": [
+    {
+     "N": "C"
+    }
+   ]
+  },
+  {
+   "expression": "acct.Order.P[N = \"C\"][]^(%.id){N: N}",
+   "result": {
+    "C": "C"
+   }
+  },
+  {
+   "expression": "acct.Order.P[N = \"C\"][]^(%.id)^(N)",
+   "result": [
+    {
+     "N": "C"
+    }
+   ]
+  },
+  {
+   "expression": "acct.Order.P^(>%.id)^(N)#$k.$k",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "acct.Order.P^(>%.id)^(N)#$k[$k = 0]",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "acct.Order.P^(>%.id)[N = \"C\"]#$k",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "acct.Order.P^(>%.id)[N = \"C\"]#$k.{\"k\": $k, \"v\": $}",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "acct.Order.P^(>%.id)#$k[N = \"C\"]",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "acct.Order.P^(>%.id)#$k[$k = 1]",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "acct.Order.P^(>%.id)#$k.{\"k\": $k}",
+   "result": [
+    {},
+    {},
+    {}
+   ]
+  },
+  {
+   "expression": "acct.Order.P[N = \"C\"]^(%.id)#$k[N = \"C\"]",
+   "result": {
+    "N": "C"
+   }
+  },
+  {
    "expression": "($x := acct.Order.P^(>%.id); $x[N = \"C\"])",
    "result": {
     "N": "C"
