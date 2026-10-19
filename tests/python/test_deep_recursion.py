@@ -59,9 +59,7 @@ def _evaluate_on_small_stack(engine, expr, **kwargs):
         text=True,
         timeout=300,
     )
-    assert (
-        proc.returncode == 0
-    ), f"process crashed ({proc.returncode}): {proc.stderr[-2000:]}"
+    assert proc.returncode == 0, f"process crashed ({proc.returncode}): {proc.stderr[-2000:]}"
     return json.loads(proc.stdout)
 
 
@@ -166,7 +164,5 @@ def test_host_function_recursing_deep_inside_a_recursion(n, stack):
         text=True,
         timeout=300,
     )
-    assert (
-        proc.returncode == 0
-    ), f"process crashed ({proc.returncode}): {proc.stderr[-2000:]}"
+    assert proc.returncode == 0, f"process crashed ({proc.returncode}): {proc.stderr[-2000:]}"
     assert proc.stdout.strip() == "RecursionError"
