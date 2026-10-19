@@ -704,7 +704,7 @@ fn json_to_python(py: Python, value: &JValue) -> PyResult<Py<PyAny>> {
 
         JValue::String(s) => Ok((&**s).into_pyobject(py).unwrap().into_any().unbind()),
 
-        JValue::Array(arr) => {
+        JValue::Array(arr) => value::with_stack(|| {
             // Array of objects with shared keys: intern first object's keys as
             // Python strings to avoid repeated UTF-8 -> PyString conversion.
             let all_objects =
@@ -754,15 +754,15 @@ fn json_to_python(py: Python, value: &JValue) -> PyResult<Py<PyAny>> {
                 .map(|item| json_to_python(py, item))
                 .collect::<PyResult<Vec<_>>>()?;
             Ok(PyList::new(py, &items)?.unbind().into())
-        }
+        }),
 
-        JValue::Object(obj) => {
+        JValue::Object(obj) => value::with_stack(|| {
             let dict = PyDict::new(py);
             for (key, value) in obj.iter() {
                 dict.set_item(key, json_to_python(py, value)?)?;
             }
             Ok(dict.unbind().into())
-        }
+        }),
 
         JValue::Lambda { .. } | JValue::Builtin { .. } | JValue::Regex { .. } => Ok(py.None()),
 

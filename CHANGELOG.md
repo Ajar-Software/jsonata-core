@@ -65,6 +65,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Non-tail recursion goes about 10,000 calls deep**
+  ([#200](https://github.com/txjmb/jsonata-core/issues/200)). Evaluation stopped at 302 levels
+  with U1001, so `($f := function($n){ $n <= 0 ? 0 : 1 + $f($n - 1) }; $f(150))` failed where
+  jsonata-js gives 150. jsonata-js has no fixed limit; here U1001 now comes at 30,000 levels,
+  about 10,000 calls, on both engines. Deep levels run on stack segments allocated as needed,
+  so this holds on a 1MB thread stack (Windows' default) too. Converting a deeply nested result
+  to and from Python, serializing it, `$string`, `=` and `**` likewise no longer overflow a
+  small stack. `max_stack_depth` still raises D1011. A compiled sub-expression nested more than
+  128 levels deep now runs on the tree-walker.
 - **`@` on a block, `*` or `$` outside a path binds nothing**
   ([#213](https://github.com/txjmb/jsonata-core/issues/213)). jsonata-js only applies a
   binding to a path step, so `(acct.Order.P)@$v` is the three products (it was the input,

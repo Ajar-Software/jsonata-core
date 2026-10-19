@@ -103,6 +103,7 @@ fn ecommerce_100() -> JValue {
 ///
 /// Each order: {customer, total, items}.  ~half have total > 100 so the filter
 /// is selective (exercises both matching and non-matching elements).
+#[cfg(feature = "bench")]
 fn orders_100() -> JValue {
     let orders: Vec<JValue> = (0..100_usize)
         .map(|i| {
