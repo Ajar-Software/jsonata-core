@@ -40,8 +40,10 @@ const HOST_MIN_STACK: usize = 2 * 1024 * 1024;
 
 /// The most stack a host call on a fresh segment is given, however much the
 /// caller had: with `ulimit -s unlimited` the stack left is effectively
-/// unbounded, and a segment that size cannot be mapped.
-const HOST_MAX_STACK: usize = 64 * 1024 * 1024;
+/// unbounded, and a segment that size cannot be mapped. A configured stack
+/// up to this size is matched in full (the segment's pages are only touched
+/// as they are used).
+const HOST_MAX_STACK: usize = 1024 * 1024 * 1024;
 
 /// Where an evaluation was entered from Python: the stack pointer and the
 /// stack left there.
