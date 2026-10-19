@@ -106,3 +106,58 @@ def test_deeply_nested_expression_inside_recursion(engine):
 def test_too_deeply_nested_expression_raises_u1002(engine):
     out = _evaluate_on_small_stack(engine, "[" * 5000 + "1" + "]" * 5000)
     assert out["error"].startswith("U1002")
+
+
+_HOST_RUNNER = textwrap.dedent("""
+    import json, sys, threading
+    import jsonatapy
+
+    n, stack = int(sys.argv[1]), int(sys.argv[2])
+    deep = []
+    for _ in range(100_000):
+        deep = [deep]
+
+    def h():
+        try:
+            json.dumps(deep)
+            return "no error"
+        except RecursionError:
+            return "RecursionError"
+
+    def run():
+        expr = jsonatapy.compile(
+            '($f := function($n){ $n <= 0 ? $h() : $f($n - 1) & "" }; $f(%d))' % n
+        )
+        expr.register("h", h)
+        print(expr.evaluate(None), flush=True)
+
+    if stack:
+        threading.stack_size(stack)
+        t = threading.Thread(target=run)
+        t.start()
+        t.join()
+    else:
+        run()
+    """)
+
+
+@pytest.mark.parametrize(
+    "n,stack",
+    [(0, 0), (3000, 0), (9000, 0), (50, 1 << 20), (3000, 1 << 20), (9000, 1 << 20)],
+)
+def test_host_function_recursing_deep_inside_a_recursion(n, stack):
+    # A host function called deep inside a recursion runs where the
+    # evaluation has grown the stack. CPython's own guard must still turn its
+    # runaway C recursion into RecursionError there, rather than the process
+    # overflowing the stack. (n=0 on a 1MB thread is left out: there the call
+    # is on the caller's own stack, where CPython 3.13 itself overflows.)
+    proc = subprocess.run(
+        [sys.executable, "-c", _HOST_RUNNER, str(n), str(stack)],
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+    assert (
+        proc.returncode == 0
+    ), f"process crashed ({proc.returncode}): {proc.stderr[-2000:]}"
+    assert proc.stdout.strip() == "RecursionError"

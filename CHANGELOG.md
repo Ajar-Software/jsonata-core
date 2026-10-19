@@ -73,7 +73,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   so this holds on a 1MB thread stack (Windows' default) too. Converting a deeply nested result
   to and from Python, serializing it, `$string`, `=` and `**` likewise no longer overflow a
   small stack. `max_stack_depth` still raises D1011. A compiled sub-expression nested more than
-  128 levels deep now runs on the tree-walker.
+  128 levels deep now runs on the tree-walker. A Python host function called deep inside a
+  recursion gets a stack as large as its caller had, and on Python 3.14 CPython is told where
+  that stack is, so its own recursion still ends in `RecursionError` rather than a crash.
 - **`@` on a block, `*` or `$` outside a path binds nothing**
   ([#213](https://github.com/txjmb/jsonata-core/issues/213)). jsonata-js only applies a
   binding to a path step, so `(acct.Order.P)@$v` is the three products (it was the input,

@@ -144,6 +144,8 @@ pub mod functions;
 #[cfg(feature = "python")]
 pub mod lazy;
 pub mod parser;
+#[cfg(feature = "python")]
+mod pystack;
 mod signature;
 pub mod value;
 mod vm;
@@ -345,9 +347,12 @@ impl JsonataExpression {
     /// The collision/override rules were already validated at `register()` time,
     /// so these calls are not expected to fail; any error is still surfaced.
     fn register_host_fns(&self, py: Python, ev: &mut evaluator::Evaluator) -> PyResult<()> {
+        // Called right before the evaluation starts, so this is its entry.
+        let entry = pystack::StackEntry::here();
         for reg in &self.host_fns {
             let hf = PyHostFn {
                 func: reg.func.clone_ref(py),
+                entry,
             };
             if reg.is_override {
                 ev.register_fn_override(reg.name.clone(), hf)
@@ -402,6 +407,7 @@ impl JsonataExpression {
                 name.clone(),
                 PyHostFn {
                     func: func.clone_ref(py),
+                    entry: None,
                 },
             )
             .map_err(evaluator_error_to_py)?;
@@ -430,6 +436,7 @@ impl JsonataExpression {
                 name.clone(),
                 PyHostFn {
                     func: func.clone_ref(py),
+                    entry: None,
                 },
             )
             .map_err(evaluator_error_to_py)?;
@@ -801,6 +808,9 @@ struct HostFnReg {
 #[cfg(feature = "python")]
 struct PyHostFn {
     func: Py<PyAny>,
+    /// Where the evaluation calling this function started, so a call made
+    /// deep inside it can be given enough stack (see `pystack`).
+    entry: Option<pystack::StackEntry>,
 }
 
 #[cfg(feature = "python")]
@@ -816,6 +826,19 @@ impl evaluator::HostFn for PyHostFn {
         _ctx: &mut evaluator::HostCtx,
     ) -> Result<JValue, evaluator::EvaluatorError> {
         Python::attach(|py| {
+            pystack::with_python_stack(py, self.entry, || self.call_python(py, args))
+        })
+    }
+}
+
+#[cfg(feature = "python")]
+impl PyHostFn {
+    fn call_python(
+        &self,
+        py: Python<'_>,
+        args: &[JValue],
+    ) -> Result<JValue, evaluator::EvaluatorError> {
+        {
             let py_args: Vec<Bound<'_, PyAny>> = args
                 .iter()
                 .map(|a| json_to_python(py, a).map(|o| o.into_bound(py)))
@@ -842,7 +865,7 @@ impl evaluator::HostFn for PyHostFn {
             }
 
             lazy::convert(&result, false).map_err(pyerr_to_evaluator_error)
-        })
+        }
     }
 }
 
