@@ -3066,7 +3066,7 @@ fn js_to_number(value: &JValue) -> f64 {
 /// an empty string is 0, `0x`/`0o`/`0b` prefixes and `Infinity` are read,
 /// and anything else that isn't a decimal number is NaN.
 fn js_string_to_number(s: &str) -> f64 {
-    let s = s.trim_matches(|c: char| c.is_whitespace() || c == '\u{feff}');
+    let s = s.trim_matches(crate::functions::string::is_js_whitespace);
     if s.is_empty() {
         return 0.0;
     }
@@ -7945,7 +7945,8 @@ impl Evaluator {
                         out,
                         replacement,
                         found.text,
-                        &found.groups,
+                        found.groups.len(),
+                        |i| Ok(found.groups[i].map(Cow::Borrowed)),
                         || found.to_object(),
                         data,
                     )
@@ -7956,20 +7957,27 @@ impl Evaluator {
     }
 
     /// jsonata-js `replace`'s replacer applied to one match, appended to
-    /// `out`: a replacement string with `$0`/`$n` substituted, or a
-    /// replacement function's result for `match_object`.
-    fn replace_one(
+    /// `out`: a replacement string with `$0`/`$n` substituted (`group(i)`
+    /// gives group `i + 1` of `group_count`, see `substitute_capture_groups`),
+    /// or a replacement function's result for `match_object`.
+    fn replace_one<'g>(
         &mut self,
         out: &mut String,
         replacement: &JValue,
         text: &str,
-        groups: &[Option<&str>],
+        group_count: usize,
+        group: impl FnMut(usize) -> Result<Option<Cow<'g, str>>, EvaluatorError>,
         match_object: impl FnOnce() -> JValue,
         data: &JValue,
     ) -> Result<(), EvaluatorError> {
         if let JValue::String(template) = replacement {
-            crate::functions::string::substitute_capture_groups(out, template, text, groups);
-            return Ok(());
+            return crate::functions::string::substitute_capture_groups(
+                out,
+                template,
+                text,
+                group_count,
+                group,
+            );
         }
         match self.call_function_value(replacement, &[match_object()], data)? {
             JValue::String(replaced) => {
@@ -8023,25 +8031,22 @@ impl Evaluator {
                 Some(JValue::String(text)) => text.clone(),
                 _ => Rc::from(""),
             };
-            // `substitute += submatch` converts each group to a string;
-            // only an undefined one is skipped.
-            let groups: Vec<Option<String>> = match (replacement, found.get("groups")) {
-                (JValue::String(_), Some(JValue::Array(groups))) => groups
-                    .iter()
-                    .map(|group| match group {
-                        JValue::Undefined => Ok(None),
-                        group => js_to_string(group).map(Some),
-                    })
-                    .collect::<Result<_, _>>()?,
-                _ => Vec::new(),
+            // `substitute += submatch` converts a group the replacement
+            // refers to into a string; an undefined one is skipped.
+            let groups: &[JValue] = match found.get("groups") {
+                Some(JValue::Array(groups)) => groups,
+                _ => &[],
             };
-            let groups: Vec<Option<&str>> = groups.iter().map(Option::as_deref).collect();
             replaced.clear();
             self.replace_one(
                 &mut replaced,
                 replacement,
                 &text,
-                &groups,
+                groups.len(),
+                |i| match &groups[i] {
+                    JValue::Undefined => Ok(None),
+                    group => js_to_string(group).map(|text| Some(Cow::Owned(text))),
+                },
                 || current.clone(),
                 data,
             )?;

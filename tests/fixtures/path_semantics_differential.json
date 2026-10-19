@@ -9112,6 +9112,72 @@
    "result": "j0k"
   },
   {
+   "expression": "$replace(\"abcd\", function($s) { {\"match\": \"b\", \"start\": 1, \"groups\": [{\"a\": 1}, \"x\"], \"next\": function() { () }} }, \"plain\")",
+   "result": "aplaincd"
+  },
+  {
+   "expression": "$replace(\"abcd\", function($s) { {\"match\": \"b\", \"start\": 1, \"groups\": [{\"a\": 1}, \"x\"], \"next\": function() { () }} }, \"[$0]\")",
+   "result": "a[b]cd"
+  },
+  {
+   "expression": "$replace(\"abcd\", function($s) { {\"match\": \"b\", \"start\": 1, \"groups\": [{\"a\": 1}, \"x\"], \"next\": function() { () }} }, \"[$2]\")",
+   "result": "a[x]cd"
+  },
+  {
+   "expression": "$replace(\"abcd\", function($s) { {\"match\": \"b\", \"start\": 1, \"groups\": [{\"a\": 1}, \"x\"], \"next\": function() { () }} }, \"[$1]\")",
+   "result": {
+    "$error": "Cannot convert object to primitive value"
+   }
+  },
+  {
+   "expression": "$replace(\"abcdefghijkl\", /(a)(b)(c)(d)(e)(f)(g)(h)(i)(j)(k)/, \"$\\u000b1|\")",
+   "result": "a1|l"
+  },
+  {
+   "expression": "$replace(\"abcdefghijkl\", /(a)(b)(c)(d)(e)(f)(g)(h)(i)(j)(k)/, \"$﻿1|\")",
+   "result": "a1|l"
+  },
+  {
+   "expression": "$replace(\"abcdefghijkl\", /(a)(b)(c)(d)(e)(f)(g)(h)(i)(j)(k)/, \"$ 1|\")",
+   "result": "a1|l"
+  },
+  {
+   "expression": "$replace(\"abcdefghijkl\", /(a)(b)(c)(d)(e)(f)(g)(h)(i)(j)(k)/, \"$ 1|\")",
+   "result": "a1|l"
+  },
+  {
+   "expression": "$replace(\"abcdefghijkl\", /(a)(b)(c)(d)(e)(f)(g)(h)(i)(j)(k)/, \"$　1|\")",
+   "result": "a1|l"
+  },
+  {
+   "expression": "$replace(\"abcdefghijkl\", /(a)(b)(c)(d)(e)(f)(g)(h)(i)(j)(k)/, \"$1|\")",
+   "result": "$1|l"
+  },
+  {
+   "expression": "$replace(\"abcdefghijkl\", /(a)(b)(c)(d)(e)(f)(g)(h)(i)(j)(k)/, \"$\\t1|\")",
+   "result": "a1|l"
+  },
+  {
+   "expression": "$replace(\"abcd\", function($s) { {\"match\": \"b\", \"start\": \"1\", \"groups\": [], \"next\": function() { () }} }, \"-\")",
+   "result": "-abcd"
+  },
+  {
+   "expression": "$replace(\"abcd\", function($s) { {\"match\": \"b\", \"start\": \"﻿1\", \"groups\": [], \"next\": function() { () }} }, \"-\")",
+   "result": "a-"
+  },
+  {
+   "expression": "$replace(\"abcd\", function($s) { {\"match\": \"b\", \"start\": \" 1\", \"groups\": [], \"next\": function() { () }} }, \"-\")",
+   "result": "a-"
+  },
+  {
+   "expression": "$replace(\"abcd\", function($s) { {\"match\": \"b\", \"start\": \"\\u000b1\", \"groups\": [], \"next\": function() { () }} }, \"-\")",
+   "result": "a-"
+  },
+  {
+   "expression": "$replace(\"abcd\", function($s) { {\"match\": \"b\", \"start\": \" 1\", \"groups\": [], \"next\": function() { () }} }, \"-\")",
+   "result": "a-"
+  },
+  {
    "expression": "$error(\"x\") ?? 1",
    "result": {
     "$error": "D3137"

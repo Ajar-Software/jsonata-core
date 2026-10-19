@@ -6,6 +6,7 @@
 
 use crate::value::JValue;
 use indexmap::IndexMap;
+use std::borrow::Cow;
 use thiserror::Error;
 
 /// Function errors
@@ -512,19 +513,38 @@ pub mod string {
         crate::value::js_number_to_string(n)
     }
 
+    /// JavaScript's whitespace (`WhiteSpace` and `LineTerminator`), which
+    /// `parseInt`, `Number` and `trim` skip. Unlike `char::is_whitespace`,
+    /// it includes U+FEFF and leaves out U+0085.
+    pub fn is_js_whitespace(c: char) -> bool {
+        matches!(
+            c,
+            '\t' | '\n' | '\u{b}' | '\u{c}' | '\r' | ' ' | '\u{a0}' | '\u{1680}' | '\u{2000}'
+                ..='\u{200a}'
+                    | '\u{2028}'
+                    | '\u{2029}'
+                    | '\u{202f}'
+                    | '\u{205f}'
+                    | '\u{3000}'
+                    | '\u{feff}'
+        )
+    }
+
     /// jsonata-js `replace`'s string replacer: appends `replacement` to `out`
-    /// with `$$` as `$`, `$0` as the match and `$n` as group `n`. A group
-    /// that didn't take part in the match (`None`) or doesn't exist gives
-    /// nothing. As in jsonata-js, `$` takes at most as many digits as the
-    /// group count has (falling back to one fewer when that number is out of
-    /// range), they are read with `parseInt`, and a `$` not followed by a
-    /// number is kept.
-    pub fn substitute_capture_groups(
+    /// with `$$` as `$`, `$0` as the match and `$n` as group `n` of
+    /// `group_count`. `group(i)` gives group `i + 1`, and is only asked for
+    /// the groups the replacement refers to, as jsonata-js converts only
+    /// those; a group that is `None` or doesn't exist gives nothing. As in
+    /// jsonata-js, `$` takes at most as many digits as the group count has
+    /// (falling back to one fewer when that number is out of range), they are
+    /// read with `parseInt`, and a `$` not followed by a number is kept.
+    pub fn substitute_capture_groups<'g, E>(
         out: &mut String,
         replacement: &str,
         full_match: &str,
-        groups: &[Option<&str>],
-    ) {
+        group_count: usize,
+        mut group: impl FnMut(usize) -> Result<Option<Cow<'g, str>>, E>,
+    ) -> Result<(), E> {
         let bytes = replacement.as_bytes();
         let mut position = 0;
         let mut index = replacement.find('$');
@@ -544,25 +564,31 @@ pub mod string {
                     position += 1;
                 }
                 _ => {
-                    let max_digits = if groups.is_empty() {
+                    let max_digits = if group_count == 0 {
                         1
                     } else {
-                        (groups.len() as f64).log10().floor() as usize + 1
+                        (group_count as f64).log10().floor() as usize + 1
                     };
-                    let mut group = js_parse_int(&bytes[position..], max_digits);
-                    if max_digits > 1 && group.is_some_and(|n| n > groups.len() as i64) {
-                        group = js_parse_int(&bytes[position..], max_digits - 1);
+                    let rest = &replacement[position..];
+                    let mut number = js_parse_int(rest, max_digits);
+                    if max_digits > 1 && number.is_some_and(|n| n > group_count as i64) {
+                        number = js_parse_int(rest, max_digits - 1);
                     }
-                    match group {
+                    match number {
                         Some(n) => {
-                            if n >= 1 {
-                                if let Some(Some(text)) = groups.get(n as usize - 1) {
-                                    out.push_str(text);
+                            if n >= 1 && (n as usize) <= group_count {
+                                if let Some(text) = group(n as usize - 1)? {
+                                    out.push_str(&text);
                                 }
                             }
-                            // `index.toString().length`: within the ASCII
-                            // text the number was read from.
-                            position += n.to_string().len();
+                            // `position += index.toString().length`, in UTF-16
+                            // units: the number was read from whitespace, a
+                            // sign and digits, each one unit long.
+                            position += rest
+                                .chars()
+                                .take(n.to_string().len())
+                                .map(char::len_utf8)
+                                .sum::<usize>();
                         }
                         None => out.push('$'),
                     }
@@ -571,38 +597,35 @@ pub mod string {
             index = replacement[position..].find('$').map(|i| i + position);
         }
         out.push_str(&replacement[position..]);
+        Ok(())
     }
 
-    /// JavaScript `parseInt(text.substring(0, max_len), 10)` on ASCII text:
-    /// leading whitespace, an optional sign, then the digits. `None` is NaN.
-    /// A non-ASCII character ends the text, as `parseInt` would stop there.
-    fn js_parse_int(text: &[u8], max_len: usize) -> Option<i64> {
-        let text = &text[..text.len().min(max_len)];
-        let text = match text.iter().position(|b| !b.is_ascii()) {
-            Some(end) => &text[..end],
-            None => text,
+    /// JavaScript `parseInt(text.substring(0, max_len), 10)`, where
+    /// `max_len` counts UTF-16 units: leading whitespace, an optional sign,
+    /// then the digits. `None` is NaN.
+    fn js_parse_int(text: &str, max_len: usize) -> Option<i64> {
+        let mut units = 0;
+        let mut chars = text
+            .chars()
+            .take_while(|c| {
+                units += c.len_utf16();
+                units <= max_len
+            })
+            .skip_while(|c| is_js_whitespace(*c))
+            .peekable();
+        let negative = match chars.peek() {
+            Some('-') => true,
+            Some('+') => false,
+            _ => return parse_digits(chars),
         };
-        let blank = text.iter().take_while(|b| b.is_ascii_whitespace()).count();
-        let mut rest = &text[blank..];
-        let negative = match rest.first() {
-            Some(b'-') => true,
-            Some(b'+') => false,
-            _ => {
-                return parse_digits(rest);
-            }
-        };
-        rest = &rest[1..];
-        parse_digits(rest).map(|n| if negative { -n } else { n })
+        chars.next();
+        parse_digits(chars).map(|n| if negative { -n } else { n })
     }
 
-    fn parse_digits(text: &[u8]) -> Option<i64> {
-        let digits = text.iter().take_while(|b| b.is_ascii_digit()).count();
-        if digits == 0 {
-            return None;
-        }
-        text[..digits].iter().try_fold(0i64, |n, b| {
-            n.checked_mul(10)?.checked_add(i64::from(b - b'0'))
-        })
+    fn parse_digits(chars: impl Iterator<Item = char>) -> Option<i64> {
+        let mut digits = chars.map_while(|c| c.to_digit(10)).peekable();
+        digits.peek()?;
+        digits.try_fold(0i64, |n, d| n.checked_mul(10)?.checked_add(i64::from(d)))
     }
 
     /// One match of a regex, as jsonata-js's regex closure (`evaluateRegex`)
@@ -808,8 +831,9 @@ pub mod string {
         if let Some((pat, flags)) = extract_regex(pattern) {
             let re = build_regex(&pat, &flags)?;
             let output = replace_regex(RegexMatches::new(&re, s), limit, |found, out| {
-                substitute_capture_groups(out, replacement, found.text, &found.groups);
-                Ok::<_, FunctionError>(())
+                substitute_capture_groups(out, replacement, found.text, found.groups.len(), |i| {
+                    Ok::<_, FunctionError>(found.groups[i].map(Cow::Borrowed))
+                })
             })?;
             return Ok(JValue::string(output));
         }
