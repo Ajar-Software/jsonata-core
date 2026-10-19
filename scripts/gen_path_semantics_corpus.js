@@ -199,6 +199,45 @@ const EXTRA = [
   'acct.Order[1].P^(%.id)[0]{N: N}', 'acct.Order#$i.P[N = "C"]^($i)[0]{N: N}',
   'acct.Order.P^(>%.id)#$k{N: N}', 'acct.Order.P^(>%.id)#$k^(N)', 'acct.Order.P^(>%.id)#$k^(N).N',
   'acct.Order.P^(>%.id)#$k[$k > 0].N',
+  // A sort over one item returns that item's sequence unchanged, so it is
+  // unwrapped as any one-item sequence is; `[]` keeps it an array (#221).
+  'acct.Order[1].P^(N)', 'acct.Order[1].P^(%.id)', 'acct.Order.P[N="C"]^(N)', '[{"N":"C"}]^(N)',
+  'acct.Order[1].P[]^(N)', 'acct.Order[1].P^(N)[]', 'acct.Order[1].P^(N).N', 'acct.Order[1].P^(N)[0]',
+  'acct.Order[1].P^(N)#$i', 'acct.Order[1].P^(N)#$i.{"i": $i}', 'acct.Order[1].P^(N)@$v',
+  'acct.Order[1].P^(N){N: N}', 'acct.Order[1].P^(N)[N="C"]', 'acct.Order[1].P^(N)^(>N)',
+  'e^($)', 'acct.Order[1].P[N="Z"]^(N)', 'obj1^(p)', 'obj1^(p).p', 'arr[0]^($)', '[5]^($)',
+  '[[1, 2]]^($[0])', 'n[1]^($)', '(acct.Order[1].P)^(N)', '[acct.Order[1].P^(N)]',
+  '{"a": acct.Order[1].P^(N)}', '($x := acct.Order[1].P^(N); $x)', 'acct.Order[1].(P^(N))',
+  'acct.Order[1].P^(N).$', '$count(acct.Order[1].P^(N))', '$type(acct.Order[1].P^(N))',
+  'acct.Order^(id)[1].P^(N)', 'acct.Order[id="o2"]^(id)', 'acct.Order[id="o2"]^(id).P',
+  'acct.Order[1].P^(N)[0]#$i', 'acct.Order.P[N="C"]^(N)[]', 'acct.Order[1].P^(%.id)[]',
+  'acct.Order[1].P[]^(%.id)', '$map([1], function($v) { $$.acct.Order[1].P^(N) })',
+  'acct.Order[1].P^(N) ~> $type', 'acct.Order[1].P#$i^(N)', 'acct.Order[1].P^(N)[0][0]',
+  '$^(x)', 'acct^(x)', 'acct.Order[1]^(id)', 'acct.Order[1]^(id).P', '[[{"N":"C"}]]^(N)',
+  '[1]^($)[]', 'acct.Order[1].P^(N)^(N)', '[acct.Order[1].P][0]^(N)', 'obj1^(p)[]',
+  '($x := obj1; $x^(p))', '($x := obj1; $x^(p)[])', 'obj1^(p){"k": p}', 'obj1^(p)#$i{"k": $i}',
+  'objs[0].[2, 1]^($)', 'objs[0].[[2, 1]]^($[0])', 'objs.[p]^($[0])', 'obj1.[p]^($[0])',
+  'obj1.[p]^($[0])[]', 'n^($[0])', 'n[0]^($)', 'acct.Order[1].P[]^(N)[0]', '$x^(a)', '[]^($)',
+  'e[]^($)', 'acct.Order[1].P^(N)[]^(N)', 'acct.Order[1].(P)[]^(N)', '($x := obj1; $x[]^(p))',
+  'obj1.p^($)', 'obj1.p[]^($)', 'nn.$^($[0])', '[[1, 2]][0]^($)', '$map(obj1, function($v) { $v })^(p)',
+  '$append([], obj1)^(p)',
+  // Only a `[]` on a name or a dotted path keeps a sorted single item an array.
+  'obj1[]^(p)', '(obj1)[]^(p)', '(acct.Order[1].P)[]^(N)',
+  '(acct.Order.P[N="C"])[]^(N)', '($x := acct.Order.P[N="C"][]; $x^(N))', '($x := acct.Order.P[N="C"][]; $x[]^(N))',
+  '$.obj1[]^(p)', 'obj1[]^(p).p', 'obj1^(p)[].p', 'obj1[0][]^(p)', '[obj1][]^(p)',
+  '$map(obj1, function($v) { $v })[]^(p)', '(obj1^(p))[]^(p)', 'obj1[]^(p)^(p)', '[obj1][]^(p)^(p)',
+  // A `[]` after `#` or `@` applies to the path they make.
+  'arr#$pos[][$pos<3]^($)[-1]', '($x := obj1; $x#$i[]^(p))', '($x := obj1; $x[]#$i^(p))',
+  '($x := obj1; $x@$v[]^(p))', '(obj1)#$i[]^(p)', '[obj1]#$i[]^(p)', '($x := obj1; $x#$i[0][]^(p))',
+  'acct.Order[1].P#$i^(N)[]', 'acct.Order[1].P^(%.id)#$k', 'acct.Order[1].P^(%.id)#$k[]',
+  'acct.Order[1].P@$p^($p.N)', 'acct.Order[1].P@$p[]^($p.N)', 'acct.Order[1].P[]#$i^(N)', '(acct.Order[1].P)#$i^(N)',
+  'acct.Order[1].P#$i^(N).{"i": $i}', 'acct.Order[1].P^(%.id){N: %.id}', 'acct.Order[1].P[N="Z"]^(%.id)',
+  '[{"N":"C"}]#$i[]^(N)', 'arr[0]#$i[]^($)',
+  // A sort of data shaped like a tuple wrapper orders it as data. Steps after
+  // it still read that shape as a wrapper (#219).
+  '[{"@": 2, "__tuple__": true}, {"@": 1, "__tuple__": true}]^(`@`)', '[{"@": 2, "__tuple__": true}]^(`@`)',
+  'objs.{"@": p, "__tuple__": true}^(>`@`)', '($x := [{"@": 2, "__tuple__": true}, {"@": 1, "__tuple__": true}]; $x^(`@`))',
+  '[{"@": 2, "__tuple__": true}, {"@": 1, "__tuple__": true}]^($)',
   // After a sort, a tuple's `#$i` or `@$v` binding reads as a field named `i` or `v`.
   'acct.Order.P#$i^(>$i){"k": $keys($)}', 'acct.Order.P#$i^(>$i)[i = 1]', 'acct.Order.P#$i^(>$i)[$.i = 0]',
   'acct.Order.P#$i^(>$i){"x": $sum(i)}', 'acct.Order.P#$i^(>$i)^(i).N', 'acct.Order.P@$p^(>$p.N){"k": $keys($)}',
@@ -385,6 +424,8 @@ const ROOT_EXPRESSIONS = [
   '($f := function() { a }; $f())', '($f := function() { a[0] }; $f())',
   '$eval("a[0]")', '$eval("a[0]", $)', '$eval("a[0]", $$)', '$eval("{\\"x\\": a[0]}")',
   '$sort(a)', '$reverse(a)', 'a ~> $count', '(a)', '[1].(a[0])', '[1].{"x": $$.a[0]}',
+  // A sort over the top-level array, or over a path through it (#221).
+  '$^(a[0])', '$^($count(a))', 'a^($)', '$[1]^(a)', '$[1].a^($)', '*^($count(a))', '$$^(a[0])',
 ];
 
 // Operator combinations (#212). The reference suite tries each operator on

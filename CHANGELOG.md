@@ -65,6 +65,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A sort over one item gives that item, not a one-item array**
+  ([#221](https://github.com/txjmb/jsonata-core/issues/221)). jsonata-js sorts as a step after
+  its input, which flattens the input into a sequence, and returns a sequence of zero or one
+  item as is, so it is unwrapped: `acct.Order[1].P^(N)` is `{"N":"C"}` (it was `[{"N":"C"}]`),
+  `[{"N":"C"}]^(N)` likewise, and a sort over an empty array is undefined (it was `[]`). A `[]`
+  on the sorted path keeps the array (`P[]^(N)`, `P^(N)[]`, `$#$i[]^($)`); a `[]` on a block,
+  variable or constructor before the sort (`$x[]^(p)`, `$x[]#$i^(p)`) does not. A sort of objects that only look like
+  internal tuples (`{"@": 2, "__tuple__": true}`) now orders them as data instead of leaving
+  them unsorted.
 - **`$replace` drives a regex or a matcher function as jsonata-js does**
   ([#198](https://github.com/txjmb/jsonata-core/issues/198)). A replacement function's
   `$m.start` and `$m.end` count UTF-16 code units, so `$replace("éab", /a/, function($m)

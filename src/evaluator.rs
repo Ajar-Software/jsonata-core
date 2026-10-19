@@ -4542,17 +4542,38 @@ impl Evaluator {
                 let saved = self.keep_tuple_stream;
                 let tuple_input = Self::is_tuple_path_node(input) || Self::sorts_tuples(input);
                 self.keep_tuple_stream = tuple_input;
-                let value = self.evaluate_internal(input, data);
+                let value = if tuple_input {
+                    self.evaluate_internal(input, data)
+                } else {
+                    // jsonata-js sorts as a step after the input's last step,
+                    // which is then not the last step: its result is
+                    // flattened into a sequence, and `fn.sort` returns a
+                    // sequence of zero or one item as is, so the generic
+                    // unwrap applies to it (#221). The input's array, whole
+                    // (the last-step rule, a constructor, a block) or a
+                    // sequence, becomes a fresh sequence here, without any
+                    // `[]` mark of its own.
+                    self.evaluate_unwrapped_later(input, data)
+                        .map(|value| match value {
+                            JValue::Array(arr) if !arr.outer_wrapper => {
+                                collect_single_step_result(JValue::Array(arr), false)
+                            }
+                            other => other,
+                        })
+                };
                 // The sort terms are expressions of their own, which keep no
                 // tuple stream.
                 self.keep_tuple_stream = false;
-                let sorted = value.and_then(|value| self.evaluate_sort(&value, terms));
+                let sorted = value.and_then(|value| self.evaluate_sort(&value, terms, tuple_input));
                 self.keep_tuple_stream = saved;
                 let mut sorted = sorted?;
                 if let JValue::Array(arr) = &mut sorted {
                     // Only a tuple input gives tuples; input data shaped like
                     // a wrapper is left alone.
                     if tuple_input && starts_with_tuple(arr) {
+                        // A `[]` inside the input path doesn't carry over;
+                        // the path's own `[]` is applied below.
+                        arr.keep_singleton = false;
                         if saved {
                             // Sorting tuples gives a plain array of them in
                             // jsonata-js, which is no longer marked as a tuple
@@ -4573,13 +4594,11 @@ impl Evaluator {
                 // jsonata-js sorts as a step of the path, so the path's own
                 // result rules apply after the sort: a tuple-stream path
                 // re-collects into a fresh sequence, and `[]` keeps it.
-                if let AstNode::Path { steps } = &**input {
-                    if Self::is_tuple_path_node(input) {
-                        sorted.mark_sequence();
-                    }
-                    if Self::path_keeps_singleton_array(steps) {
-                        sorted.mark_keep_singleton();
-                    }
+                if Self::is_tuple_path_node(input) {
+                    sorted.mark_sequence();
+                }
+                if Self::sort_input_keeps_singleton(input) {
+                    sorted.mark_keep_singleton();
                 }
                 Ok(sorted)
             }
@@ -5400,12 +5419,34 @@ impl Evaluator {
                 return true;
             }
             if let AstNode::Sort { input, .. } = &step.node {
-                if let AstNode::Path { steps: inner } = input.as_ref() {
-                    return Self::path_keeps_singleton_array(inner);
-                }
+                return Self::sort_input_keeps_singleton(input);
             }
             false
         })
+    }
+
+    /// True when a sort keeps a single result as an array because its input
+    /// path has a `[]`. jsonata-js appends the sort to the input path, which
+    /// carries `keepSingletonArray` only when it is a name or a dotted chain:
+    /// a `[]` on a block, variable or constructor (`$x[]^(p)`) applies to
+    /// that value alone, which the sort step then collects anew (#221). A
+    /// `#` makes such a step a path, so a `[]` written after it
+    /// (`$#$pos[]^($)`, not `$x[]#$i^(p)`) applies to the whole path.
+    /// A sort of a sort is one path, so the inner sort's input counts.
+    fn sort_input_keeps_singleton(input: &AstNode) -> bool {
+        match input {
+            AstNode::Path { steps } if Self::is_non_path(steps) => {
+                let step = &steps[0];
+                let mut after_index = step.index_var.is_some();
+                step.stages.iter().any(|stage| {
+                    after_index |= matches!(stage, Stage::Index(_));
+                    after_index && matches!(stage, Stage::KeepArray)
+                })
+            }
+            AstNode::Path { steps } => Self::path_keeps_singleton_array(steps),
+            AstNode::Sort { input, .. } => Self::sort_input_keeps_singleton(input),
+            _ => false,
+        }
     }
 
     /// Bind a tuple wrapper's carried `$name`/`!label` keys into the current
@@ -5549,7 +5590,7 @@ impl Evaluator {
                 // evaluate_sort is tuple-aware (orders by each wrapper's `@`,
                 // with the carried keys bound), returning the wrappers in
                 // sorted order.
-                self.evaluate_sort(&stream, terms)?
+                self.evaluate_sort(&stream, terms, true)?
             } else {
                 // The sort's own input path (`arr` in `arr^($)#$i`) gives what
                 // it orders. Over a tuple path the sort returns the tuples,
@@ -8541,10 +8582,11 @@ impl Evaluator {
         &mut self,
         term_expr: &AstNode,
         element: &JValue,
+        tuples: bool,
     ) -> Result<JValue, EvaluatorError> {
         // For tuples (from index binding), extract the actual value from @ field
         let actual_element = if let JValue::Object(obj) = element {
-            if is_tuple_object(obj) {
+            if tuples && is_tuple_object(obj) {
                 obj.get("@").cloned().unwrap_or(JValue::Null)
             } else {
                 element.clone()
@@ -8592,11 +8634,14 @@ impl Evaluator {
         Ok(result)
     }
 
-    /// Evaluate sort operator
+    /// Evaluate sort operator. `tuples` is set when `data` is a tuple stream,
+    /// whose wrappers' `@` values are ordered with their bindings in scope;
+    /// otherwise input objects shaped like wrappers are ordinary data.
     fn evaluate_sort(
         &mut self,
         data: &JValue,
         terms: &[(AstNode, bool)],
+        tuples: bool,
     ) -> Result<JValue, EvaluatorError> {
         // If data is null, return null
         if data.is_null() {
@@ -8639,7 +8684,9 @@ impl Evaluator {
             // that collides with a live outer `:=` binding doesn't get
             // deleted once this row's sort terms are evaluated.
             let tuple_bindings = match element {
-                JValue::Object(obj) if is_tuple_object(obj) => Some(self.bind_tuple_keys(obj)),
+                JValue::Object(obj) if tuples && is_tuple_object(obj) => {
+                    Some(self.bind_tuple_keys(obj))
+                }
                 _ => None,
             };
 
@@ -8649,7 +8696,7 @@ impl Evaluator {
             // object and raise T2008. The carried focus/index/ancestor keys stay
             // reachable via the context bindings established just above.
             let term_data = match element {
-                JValue::Object(obj) if is_tuple_object(obj) => {
+                JValue::Object(obj) if tuples && is_tuple_object(obj) => {
                     obj.get("@").cloned().unwrap_or(JValue::Null)
                 }
                 other => other.clone(),
@@ -8664,7 +8711,7 @@ impl Evaluator {
                 self.context.bind("$".to_string(), term_data.clone());
 
                 // Evaluate the sort expression, distinguishing missing fields from explicit null
-                let sort_value = self.evaluate_sort_term(term_expr, element)?;
+                let sort_value = self.evaluate_sort_term(term_expr, element, tuples)?;
 
                 // Restore $ binding
                 if let Some(val) = saved_dollar {
