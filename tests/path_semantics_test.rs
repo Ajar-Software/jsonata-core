@@ -49,6 +49,19 @@ const KNOWN_DIVERGENCES: &[(&str, &str)] = &[
         "tree",
         "($m := \"root\"; $other := function($f) { $f() }; $outer := function() { ($k := function() { $m }; $m := 1; $other($k)) }; $outer())",
     ),
+    // Not yet matched (#191): `$r(4)` nests four sequences of one item.
+    // jsonata-js flattens only the outermost when the composition evaluates
+    // its first function's call as the argument of its second ("[[[0]]]");
+    // here a second level is flattened on the way out of that call
+    // ("[[0]]"). Called directly, as `$string($r(4))`, both give "[[[0]]]".
+    (
+        "compiled",
+        "($r := function($n) { $n <= 0 ? 0 : $map([$n], function($i) { $r($i - 1) }) }; ($r ~> $string)(4))",
+    ),
+    (
+        "tree",
+        "($r := function($n) { $n <= 0 ? 0 : $map([$n], function($i) { $r($i - 1) }) }; ($r ~> $string)(4))",
+    ),
     // Not yet matched (#191): jsonata-js parses `a ?: b` and `a ?? b` as
     // conditions, so `b` is a tail position and a `$eval` there runs where
     // the chain of tail calls began. Here only `?` branches, a block's last

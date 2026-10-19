@@ -489,6 +489,19 @@ const EXTRA = [
   '($n := 1; $f := function() { ($n := 2; $map([1, 2], function($v) { $v * 10 })) }; $f())',
   '($n := 1; $f := function() { ($n := 2; true ? $eval("$n") : 0) }; ($n := 3; $f()))',
   '($n := 1; $f := function() { ($n := 2; ($eval)("$n")) }; ($n := 3; $f()))',
+  // Recursion through such a builtin's callback nests on the native stack
+  // without passing through an ordinary evaluation step, and must still be
+  // guarded against overflowing it.
+  '($f := function($n) { $n = 0 ? 0 : $reduce([$n, 1], function($a, $b) { $f($a - 1) }) }; $f(1500))',
+  '($g := function($x) { $f($x - 1) }; $f := function($n) { $n = 0 ? 0 : $reduce([$n, 1], function($a, $b) { $g($a) }) }; $f(1500))',
+  '($f := function($n) { $n = 0 ? "done" : $map([$n], function($x) { $f($x - 1) }) }; $count($f(1500)))',
+  '($f := function($n) { $n = 0 ? "done" : $filter([$n], function($x) { $f($x - 1) }) }; $count($f(1500)))',
+  '($f := function($n) { $n = 0 ? "done" : $each({"k": $n}, function($x) { $f($x - 1) }) }; $count($f(1500)))',
+  '($d := $reduce([1..1500], function($a, $i) { {"c": [$a]} }, {"v": 1}); $f := function($n) { $n.c ? $map($n.c, $f) : $n.v }; $count($f($d)))',
+  '($f := function($n) { $n <= 0 ? 0 : ($f ~> $number)($n - 1) }; $f(1500))',
+  // Known divergence: through a composition, one more level of nested
+  // sequences is flattened than jsonata-js flattens.
+  '($r := function($n) { $n <= 0 ? 0 : $map([$n], function($i) { $r($i - 1) }) }; ($r ~> $string)(4))',
   // A callback evaluated once (#204) is applied in the caller's scope.
   '($map(["$w := 3"], ($eval)); $w)', '($x := 7; $map(["$x"], ($eval)))',
   '($x := 7; $map(["$x"], ($string ~> $eval)))',

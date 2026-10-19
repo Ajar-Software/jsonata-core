@@ -4969,6 +4969,51 @@ impl Evaluator {
         result
     }
 
+    /// Run `step` under the guard every evaluation level passes through in
+    /// `evaluate_unwrapped_later`: the depth count (D1011/U1001), the
+    /// timeout (D1012) and a fresh stack segment when the current one runs
+    /// low. For the evaluator's own recursion paths that do not go through
+    /// `evaluate_internal` (a tail call of a higher-order builtin or of a
+    /// composition, from the trampoline): a cycle through one of them would
+    /// otherwise grow the native stack unchecked until it overflowed.
+    fn guarded<T>(
+        &mut self,
+        step: impl FnOnce(&mut Self) -> Result<T, EvaluatorError>,
+    ) -> Result<T, EvaluatorError> {
+        self.recursion_depth += 1;
+        let effective_limit = match self.options.max_stack_depth {
+            Some(limit) => limit.min(MAX_EVAL_DEPTH),
+            None => MAX_EVAL_DEPTH,
+        };
+        if self.recursion_depth > effective_limit {
+            self.recursion_depth -= 1;
+            return Err(EvaluatorError::EvaluationError(
+                if effective_limit < MAX_EVAL_DEPTH {
+                    "D1011: Stack overflow. Check for non-terminating recursive function. Consider rewriting as tail-recursive".to_string()
+                } else {
+                    format!(
+                        "U1001: Stack overflow - maximum recursion depth ({}) exceeded",
+                        effective_limit
+                    )
+                },
+            ));
+        }
+        if let Some(timeout_ms) = self.options.timeout_ms {
+            if let Some(start) = self.start_time {
+                if start.elapsed().as_millis() as u64 > timeout_ms {
+                    self.recursion_depth -= 1;
+                    return Err(EvaluatorError::EvaluationError(format!(
+                        "D1012: Evaluation timeout after {} milliseconds. Check for infinite loop",
+                        timeout_ms
+                    )));
+                }
+            }
+        }
+        let result = stacker::maybe_grow(EVAL_RED_ZONE, EVAL_STACK_SEGMENT, || step(self));
+        self.recursion_depth -= 1;
+        result
+    }
+
     /// Internal evaluation implementation (separated to allow depth tracking)
     fn evaluate_internal_impl(
         &mut self,
@@ -8664,7 +8709,9 @@ impl Evaluator {
                         evaluated_args.push(self.evaluate_internal(arg, data)?);
                     }
                     if Self::composition_parts(&stored_lambda).is_some() {
-                        return self.tail_call_composition(stored_lambda, evaluated_args, data);
+                        return self.guarded(|ev| {
+                            ev.tail_call_composition(stored_lambda, evaluated_args, data)
+                        });
                     }
                     return Ok(LambdaResult::TailCall {
                         lambda: stored_lambda,
@@ -8675,18 +8722,13 @@ impl Evaluator {
                 // A builtin given a function with tail calls, as a tail call:
                 // jsonata-js passes it the function unwrapped, and applies it
                 // in the trampoline's environment, so that function's own
-                // chain of tail calls begins there.
+                // chain of tail calls begins there. Not `$sort`: jsonata-js
+                // 2.2.2 fails such a call with "comp is not a function", so
+                // there is no chain to match, and the usual path keeps the
+                // fast path for an inline comparator.
                 if matches!(
                     name.as_str(),
-                    "map"
-                        | "filter"
-                        | "reduce"
-                        | "single"
-                        | "sift"
-                        | "each"
-                        | "sort"
-                        | "match"
-                        | "replace"
+                    "map" | "filter" | "reduce" | "single" | "sift" | "each" | "match" | "replace"
                 ) && !has_placeholder
                     && self.context.lookup(name).is_none()
                     && self.builtin_unshadowed(name, None)
@@ -8702,7 +8744,8 @@ impl Evaluator {
                         .context
                         .callback_base
                         .replace((self.context.tail_base, height));
-                    let result = self.call_builtin_with_values(name, &evaluated_args, data);
+                    let result =
+                        self.guarded(|ev| ev.call_builtin_with_values(name, &evaluated_args, data));
                     self.context.callback_base = outer;
                     return Ok(LambdaResult::JValue(result?));
                 }
@@ -8740,7 +8783,9 @@ impl Evaluator {
                             evaluated_args.push(self.evaluate_internal(arg, data)?);
                         }
                         if Self::composition_parts(&stored_lambda).is_some() {
-                            return self.tail_call_composition(stored_lambda, evaluated_args, data);
+                            return self.guarded(|ev| {
+                                ev.tail_call_composition(stored_lambda, evaluated_args, data)
+                            });
                         }
                         return Ok(LambdaResult::TailCall {
                             lambda: stored_lambda,

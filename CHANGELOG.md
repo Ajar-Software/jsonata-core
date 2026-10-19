@@ -105,12 +105,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with all its bindings, the accumulator so far included, so its memory grows with the square
   of the number of passes (about 1.1 GB at 5,000 passes, where it was 41 MB). A builtin such as
   `$map` run as a tail call applies its function arguments where the chain of tail calls began,
-  as jsonata-js does. Still different from jsonata-js: the right side of `?:` and `??` is not a
+  as jsonata-js does (`$sort` excepted, since jsonata-js fails that call with "comp is not a
+  function"); recursion through such a callback, or through a tail-called composition, goes as
+  deep as other recursion and is U1001 without a base case, never a native stack overflow.
+  Still different from jsonata-js: the right side of `?:` and `??` is not a
   tail position here; a partial application of a user function does not carry the chain of
   tail calls, and a `$eval(?)` partial runs where it is called, not where it was made; function
   arguments of a builtin called outside a tail position are applied where the builtin runs, not
-  in jsonata-js's wrapper over the caller's environment; and a tail `$eval` takes the call
-  site's context as its input.
+  in jsonata-js's wrapper over the caller's environment; a tail `$eval` takes the call
+  site's context as its input; and a composition's first function flattens one more level of
+  nested one-item sequences than jsonata-js when its result comes from such a tail-called
+  builtin (`($r ~> $string)(4)` with a `$r` nesting `$map` is `"[[0]]"`, `"[[[0]]]"` there).
 - **A higher-order function evaluates its callback once, to a function value**
   ([#204](https://github.com/txjmb/jsonata-core/issues/204)). `$map`, `$filter`, `$reduce`,
   `$single`, `$sift`, `$each` and `$sort` evaluate a callback that is not an inline lambda or a

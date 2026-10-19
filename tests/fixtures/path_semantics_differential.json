@@ -10466,6 +10466,38 @@
    "result": 3
   },
   {
+   "expression": "($f := function($n) { $n = 0 ? 0 : $reduce([$n, 1], function($a, $b) { $f($a - 1) }) }; $f(1500))",
+   "result": 0
+  },
+  {
+   "expression": "($g := function($x) { $f($x - 1) }; $f := function($n) { $n = 0 ? 0 : $reduce([$n, 1], function($a, $b) { $g($a) }) }; $f(1500))",
+   "result": 0
+  },
+  {
+   "expression": "($f := function($n) { $n = 0 ? \"done\" : $map([$n], function($x) { $f($x - 1) }) }; $count($f(1500)))",
+   "result": 1
+  },
+  {
+   "expression": "($f := function($n) { $n = 0 ? \"done\" : $filter([$n], function($x) { $f($x - 1) }) }; $count($f(1500)))",
+   "result": 1
+  },
+  {
+   "expression": "($f := function($n) { $n = 0 ? \"done\" : $each({\"k\": $n}, function($x) { $f($x - 1) }) }; $count($f(1500)))",
+   "result": 1
+  },
+  {
+   "expression": "($d := $reduce([1..1500], function($a, $i) { {\"c\": [$a]} }, {\"v\": 1}); $f := function($n) { $n.c ? $map($n.c, $f) : $n.v }; $count($f($d)))",
+   "result": 1
+  },
+  {
+   "expression": "($f := function($n) { $n <= 0 ? 0 : ($f ~> $number)($n - 1) }; $f(1500))",
+   "result": 0
+  },
+  {
+   "expression": "($r := function($n) { $n <= 0 ? 0 : $map([$n], function($i) { $r($i - 1) }) }; ($r ~> $string)(4))",
+   "result": "[[[0]]]"
+  },
+  {
    "expression": "($map([\"$w := 3\"], ($eval)); $w)",
    "result": 3
   },

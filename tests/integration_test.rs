@@ -668,6 +668,64 @@ fn test_recursion_through_expression_calls() {
     );
 }
 
+/// The same through the callback of a higher-order builtin called as a tail
+/// call, which the trampoline runs without an ordinary evaluation step in
+/// between (#191): each level is guarded all the same, so deep recursion
+/// evaluates and with no base case it is U1001, not a crash.
+#[test]
+fn test_recursion_through_tail_called_builtin_callbacks() {
+    let outcome = on_small_stack(|| {
+        let mut out = String::new();
+        for expr in [
+            "($f := function($n){ $n = 0 ? 0 : $reduce([$n, 1], function($a, $b){ $f($a - 1) }) }; $f(5000))",
+            "($g := function($x){ $f($x - 1) }; \
+              $f := function($n){ $n = 0 ? 0 : $reduce([$n, 1], function($a, $b){ $g($a) }) }; $f(5000))",
+            "($f := function($n){ $n = 0 ? 'done' : $map([$n], function($x){ $f($x - 1) }) }; $count($f(5000)))",
+            "($f := function($n){ $n = 0 ? 'done' : $filter([$n], function($x){ $f($x - 1) }) }; $count($f(5000)))",
+            "($f := function($n){ $n = 0 ? 'done' : $each({'k': $n}, function($x){ $f($x - 1) }) }; $count($f(5000)))",
+            "($d := $reduce([1..3000], function($a, $i){ {'c': [$a]} }, {'v': 1}); \
+              $f := function($n){ $n.c ? $map($n.c, $f) : $n.v }; $count($f($d)))",
+            "($f := function($n){ $n <= 0 ? 0 : ($f ~> $number)($n - 1) }; $f(5000))",
+            "($f := function($n){ $map([$n], function($x){ $f($x + 1) }) }; $f(0))",
+            "($f := function($n){ $reduce([$n, 1], function($a, $b){ $f($a + 1) }) }; $f(0))",
+            "($f := function($n){ ($f ~> $number)($n + 1) }; $f(0))",
+        ] {
+            let (tree_walker, default) = eval_both_engines(expr, EvaluatorOptions::default());
+            out.push_str(&format!("{tree_walker} | {default}\n"));
+        }
+        out
+    });
+    let u1001 =
+        "Err(Evaluation error: U1001: Stack overflow - maximum recursion depth (30000) exceeded)";
+    assert_eq!(
+        outcome,
+        format!(
+            "Ok(0) | Ok(0)\nOk(0) | Ok(0)\nOk(1) | Ok(1)\nOk(1) | Ok(1)\nOk(1) | Ok(1)\n\
+             Ok(1) | Ok(1)\nOk(0) | Ok(0)\n{u1001} | {u1001}\n{u1001} | {u1001}\n{u1001} | {u1001}\n"
+        )
+    );
+}
+
+/// The same recursion stops at a timeout (D1012) when one is set.
+#[test]
+fn test_recursion_through_tail_called_builtin_callbacks_times_out() {
+    let outcome = on_small_stack(|| {
+        let options = EvaluatorOptions {
+            timeout_ms: Some(1),
+            ..Default::default()
+        };
+        let (tree_walker, default) = eval_both_engines(
+            "($f := function($n){ $map([$n], function($x){ $f($x + 1) }) }; $f(0))",
+            options,
+        );
+        format!("{tree_walker} | {default}")
+    });
+    assert!(
+        outcome.matches("U1001").count() + outcome.matches("D1012").count() == 2,
+        "expected U1001 or D1012 from both engines, got: {outcome}"
+    );
+}
+
 /// A user-configured `max_stack_depth` raises D1011, jsonata-js's error for
 /// its `stack` option, on both engines; recursion that fits under it runs.
 #[test]
