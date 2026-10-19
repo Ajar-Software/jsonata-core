@@ -154,7 +154,10 @@ fn divergences(
     for case in fixture["cases"].as_array().unwrap() {
         let src = case["expression"].as_str().unwrap();
         let expected = norm(&case["result"]);
-        let data = if case["root"] == true {
+        let empty_root = JValue::array(Vec::new());
+        let data = if case["root"] == "empty" {
+            &empty_root
+        } else if case["root"] == true {
             root_data
         } else {
             object_data

@@ -9,7 +9,8 @@
 // arguments, map stages). Expected values come from the pinned jsonata-js in
 // tests/jsonata-js; tests/path_semantics_test.rs compares both engines.
 //
-// Cases marked `root` run on ROOT_DATA, a top-level array, instead of DATA.
+// Cases marked `root` run on ROOT_DATA, a top-level array, instead of DATA;
+// those marked `root: "empty"` run on an empty top-level array.
 // Each case's result is the jsonata-js value, with undefined written as
 // {"$undefined": true} and an error as {"$error": "<code>"}.
 //
@@ -199,6 +200,123 @@ const EXTRA = [
   'acct.Order[1].P^(%.id)[0]{N: N}', 'acct.Order#$i.P[N = "C"]^($i)[0]{N: N}',
   'acct.Order.P^(>%.id)#$k{N: N}', 'acct.Order.P^(>%.id)#$k^(N)', 'acct.Order.P^(>%.id)#$k^(N).N',
   'acct.Order.P^(>%.id)#$k[$k > 0].N',
+  // A sort over one item returns that item's sequence unchanged, so it is
+  // unwrapped as any one-item sequence is; `[]` keeps it an array (#221).
+  'acct.Order[1].P^(N)', 'acct.Order[1].P^(%.id)', 'acct.Order.P[N="C"]^(N)', '[{"N":"C"}]^(N)',
+  'acct.Order[1].P[]^(N)', 'acct.Order[1].P^(N)[]', 'acct.Order[1].P^(N).N', 'acct.Order[1].P^(N)[0]',
+  'acct.Order[1].P^(N)#$i', 'acct.Order[1].P^(N)#$i.{"i": $i}', 'acct.Order[1].P^(N)@$v',
+  'acct.Order[1].P^(N){N: N}', 'acct.Order[1].P^(N)[N="C"]', 'acct.Order[1].P^(N)^(>N)',
+  'e^($)', 'acct.Order[1].P[N="Z"]^(N)', 'obj1^(p)', 'obj1^(p).p', 'arr[0]^($)', '[5]^($)',
+  '[[1, 2]]^($[0])', 'n[1]^($)', '(acct.Order[1].P)^(N)', '[acct.Order[1].P^(N)]',
+  '{"a": acct.Order[1].P^(N)}', '($x := acct.Order[1].P^(N); $x)', 'acct.Order[1].(P^(N))',
+  'acct.Order[1].P^(N).$', '$count(acct.Order[1].P^(N))', '$type(acct.Order[1].P^(N))',
+  'acct.Order^(id)[1].P^(N)', 'acct.Order[id="o2"]^(id)', 'acct.Order[id="o2"]^(id).P',
+  'acct.Order[1].P^(N)[0]#$i', 'acct.Order.P[N="C"]^(N)[]', 'acct.Order[1].P^(%.id)[]',
+  'acct.Order[1].P[]^(%.id)', '$map([1], function($v) { $$.acct.Order[1].P^(N) })',
+  'acct.Order[1].P^(N) ~> $type', 'acct.Order[1].P#$i^(N)', 'acct.Order[1].P^(N)[0][0]',
+  '$^(x)', 'acct^(x)', 'acct.Order[1]^(id)', 'acct.Order[1]^(id).P', '[[{"N":"C"}]]^(N)',
+  '[1]^($)[]', 'acct.Order[1].P^(N)^(N)', '[acct.Order[1].P][0]^(N)', 'obj1^(p)[]',
+  '($x := obj1; $x^(p))', '($x := obj1; $x^(p)[])', 'obj1^(p){"k": p}', 'obj1^(p)#$i{"k": $i}',
+  'objs[0].[2, 1]^($)', 'objs[0].[[2, 1]]^($[0])', 'objs.[p]^($[0])', 'obj1.[p]^($[0])',
+  'obj1.[p]^($[0])[]', 'n^($[0])', 'n[0]^($)', 'acct.Order[1].P[]^(N)[0]', '$x^(a)', '[]^($)',
+  'e[]^($)', 'acct.Order[1].P^(N)[]^(N)', 'acct.Order[1].(P)[]^(N)', '($x := obj1; $x[]^(p))',
+  'obj1.p^($)', 'obj1.p[]^($)', 'nn.$^($[0])', '[[1, 2]][0]^($)', '$map(obj1, function($v) { $v })^(p)',
+  '$append([], obj1)^(p)',
+  // Only a `[]` on a name or a dotted path keeps a sorted single item an array.
+  'obj1[]^(p)', '(obj1)[]^(p)', '(acct.Order[1].P)[]^(N)',
+  '(acct.Order.P[N="C"])[]^(N)', '($x := acct.Order.P[N="C"][]; $x^(N))', '($x := acct.Order.P[N="C"][]; $x[]^(N))',
+  '$.obj1[]^(p)', 'obj1[]^(p).p', 'obj1^(p)[].p', 'obj1[0][]^(p)', '[obj1][]^(p)',
+  '$map(obj1, function($v) { $v })[]^(p)', '(obj1^(p))[]^(p)', 'obj1[]^(p)^(p)', '[obj1][]^(p)^(p)',
+  // A `[]` after `#` or `@` applies to the path they make.
+  'arr#$pos[][$pos<3]^($)[-1]', '($x := obj1; $x#$i[]^(p))', '($x := obj1; $x[]#$i^(p))',
+  '($x := obj1; $x@$v[]^(p))', '(obj1)#$i[]^(p)', '[obj1]#$i[]^(p)', '($x := obj1; $x#$i[0][]^(p))',
+  'acct.Order[1].P#$i^(N)[]', 'acct.Order[1].P^(%.id)#$k', 'acct.Order[1].P^(%.id)#$k[]',
+  'acct.Order[1].P@$p^($p.N)', 'acct.Order[1].P@$p[]^($p.N)', 'acct.Order[1].P[]#$i^(N)', '(acct.Order[1].P)#$i^(N)',
+  'acct.Order[1].P#$i^(N).{"i": $i}', 'acct.Order[1].P^(%.id){N: %.id}', 'acct.Order[1].P[N="Z"]^(%.id)',
+  '[{"N":"C"}]#$i[]^(N)', 'arr[0]#$i[]^($)',
+  // A sort of data shaped like a tuple wrapper orders it as data. Steps after
+  // it still read that shape as a wrapper (#219).
+  '[{"@": 2, "__tuple__": true}, {"@": 1, "__tuple__": true}]^(`@`)', '[{"@": 2, "__tuple__": true}]^(`@`)',
+  'objs.{"@": p, "__tuple__": true}^(>`@`)', '($x := [{"@": 2, "__tuple__": true}, {"@": 1, "__tuple__": true}]; $x^(`@`))',
+  '[{"@": 2, "__tuple__": true}, {"@": 1, "__tuple__": true}]^($)',
+  // A sort's input that is not a path is the path's first step, evaluated
+  // once per item of an array input.
+  'n.(($[0])^($))', 'n.("x"^($))', 'n.($count($)^($))', '[[3,1]].("x"^($))', 'n.([$[0]]^($))',
+  'n.(($)^($))', 'n.($^($))', 'n.(($x := $; $x)^($))', 'n.((1, 2)^($))', 'objs.({"q": p}^(q))',
+  'n.($string($)^($))', 'n.([$]^($))', 'n.([$][0]^($))', 'n.(($)[0]^($))', 'n.(($)[]^($))',
+  // A block holding a path that starts with an array constructor is
+  // evaluated once against the whole input (jsonata-js `consarray`).
+  'n.(([3,1].$)^($))', '[[3,1]].(([3,1].$)^($))', 'n.((([3,1].$))^($))', 'n.(($y:=1; [3,1].$)^($))',
+  'n.(([3,1].$)[]^($))', 'n.(([$, 9].$)^($))', 'n.(([3,1])^($))', 'n.(([3,1][0])^($))',
+  '[[3,1]].(([3,1].$).$)', 'n.(([3,1].$).$)', 'n.((([3,1].$)).($ + 1))',
+  'n.(($y:=1; [3,1].$).$)', 'n.(([$, 9].$).$)', 'n.(([3,1]).$)', 'n.(($ ; [3].$).$)',
+  'n.(([3].$)^($))', '([3].$)^($)', '([3].$).$', '([3].$).{"a": $}', '([3].$)[]',
+  'n.(([3].$).$)', 'n.(($; 5).$)', '([3, 1].$)^($).$',
+  // A sort is a step of the path: `[3,1].$^($)` and `[3,1]^($).$` start with
+  // a consarray step too.
+  'n.(([3,1].$^($))^($))', 'n.(([3,1].$^($)).$)', 'n.(([$[0], 9].$^($)).$)', 'n.((([3,1].$)^($)).$)',
+  '([3].$^($)).$', 'objs.(([p].$^($)).$)', 'n.(([3,1]^($))^($))', 'n.([3,1]^($))',
+  'n.([3,1]^($).$)', 'n.(([3,1]^($).$).$)', 'n.([3,1]^($)^(-$).$)', 'n.([3,1][0]^($).$)',
+  'n.([$[0], 9]^($).$)', 'n.([[3],[1]]^($).$)', '[3,1]^($).$', '[3][0]^($).$', 'n.([3][0]^($)^($).$)', 'n.([3]^($).$)',
+  // A predicate on a consarray block leaves one value bare.
+  '([1,2].$)[0].$', '([3].$)[$=3].$', '([{"a":7}].$)[0].a', 'objs.(([$].$)[0].p)', '([1,2].$)[].$',
+  '([1,2].$)[$>0].$',
+  // A predicate on a first-step sort collects its value again, and the
+  // predicate's own paths are their own.
+  '[3][0]^($)[true].$', '[3][0]^($)[0].$', '([3].$)^($)[0].$', '([3].$)^($)[$=3].$',
+  '[3][0]^($)[true].$string()', 'n.([3][0]^($)[true].$)', '[3][0]^($)[$count($$.x.y)=0].$',
+  '[3][0]^($)[$exists($$.x.y) = false].$', '[3][0]^($)[$count($$.x.y)=1].$', '[3][0]^($)[$count($$.x.y)=2].$',
+  // A `[]` on a consarray block keeps its array.
+  '([1,2].$)[0][].$', '([1,2].$)[$=1][].$', '([1,2].$)[[0]][].$', '([3].$)[][0].$', 'n.(([1,2].$)[0][].$)',
+  // `[]` on a first-step sort is a mark, not a predicate.
+  '[3][0]^($)[].$', '([3].$)^($)[].$', '[3][0]^(>$)[].($)', '[{"x":3}][0]^(x)[].x', 'objs.([3][0]^($)[].$)',
+  '$map([1,2],function($q){([3].$)^($)[].$})', '[3][0]^($)[].x', '[3][0]^($)[][0].$', '[3][0]^($)[0][].$',
+  // A sort step passes its filtered value on as is; a sort with `#` sorts
+  // its input's one array as one item.
+  'nn^($)[0]^($)', 'n^(p)[-1]^($)', '[[3]]^($)[0]^($)', 'nn^($)[0]', '[[1,2]]^(1)[0]', 'nn^($)#$k',
+  'nn^($)#$k.$', '[[3]]^($)#$k', '$map([1], function($v){nn^($)#$k})', '$map([1], function($v){nn^($)[0]^($)})',
+  '$map([1], function($v){[[3]]^($)#$k})', '[[[1]]]^($)[0]^($)', '[[[1]]]^($)#$k', 'nn^($)^($)', '[[3]]^($)^($)',
+  'nn^($)[0][]^($)', 'n^($[0])[0]^($)', '[[3]]^($)[0]^($).$', 'n^(p)[-1]^($)[0]', 'one.z^($)#$k',
+  // An object constructor or group-by reads `$` as its own context, also
+  // inside a block, and groups a sort's result before the unwrap.
+  '[1].([[3]]^($)#$k.{"v":$})', '[1].($$.m.k.b^($)#$k.{"v":$})', '[1].([[3]]^($)#$k.{"v":$type($)})',
+  '[1].($a:=[[3]];$a^($)#$k.{"v":$})', '[1].([[3]]#$k.{"v":$})', '[1].([[5]].{"v":$})',
+  'm.k.b^($){$string($):$}', 'm.k.b^($){"k":$}', '[[5,6]]^($){$string($):$}', '[[5]]^($){$string($):$}',
+  'm.k.b^($)^($){"k":$}', '([m.k.b]^(>$){"v":$})', 'm.k.b^($).{"k":$}',
+  // A `[]` on a variable before a sort marks the path a `.` makes of it.
+  '($x:=[3]; $x[]^($).$)', '($x:=[3]; $x[]^($).[$])', '($x:=[3]; $x[]^($).{"a":$})', '($x:=[3]; $x[]^($)#$i.$)',
+  '($x:=[3]; $x[]^($))', '[[3]].($[]^($).$)', '[[3]].($[]^($))', '($x:=[[3]]; $x[]^($).$)',
+  // A `[]` on a sort marks its path node, which keeps a sequence but not a
+  // constructed array.
+  'nn^(>$)[].[$]', 'nn[].[$]', 'nn^(>$)^($)[].[$]', 'arr^(>$)[0][].$type($)', '[3]^(0)[]^($)[0].$',
+  // A sort of a sort, chained with predicates, in a block or over `%`.
+  'nn^(>%.id)^($string($))[].{"v":$}', 'nn^(>%.id)^($string($)).$type($)', '[1].($$.m.k.b^(0)[true]^(0).{"v":$})',
+  '[1].([[5]]^(0)[true]^(0).{"v":$})', 'acct.Order.([[[1]]]^(N)[true]^(0)[$count($)>0][0].{"v":$})',
+  'n.([[3]]^($)[0]^($).$)', 'n.([3,1]^($)^($)#$k.$)', 'n.([[5,6]]^($)#$k.{"v":$})',
+  'n.([3]^(0)[true]^(0)[true]#$k.{"v":$})',
+  // A field term on an array item is its items' fields.
+  '[[{"p":2},{"p":1}],[{"p":3}]]^(p)[[0]]^(>$)', '[[{"p":2},{"p":1}],[{"p":3}]]^(p)',
+  '[[{"p":null}],[{"p":1}]]^(p)', '[{"p":null},{"p":1}]^(p)', '[[{"p":1}],[{"q":1}]]^(p)', '[[{"p":2}],[{"p":1}]]^(p)',
+  '[[{"p":null},{"p":2}],[{"p":1}]]^(p)',
+  // The comparator checks for an undefined term before the types, and puts
+  // undefined last in either direction.
+  '[[{"p":null}],[{"q":1}]]^(p)', '[[{"p":2},{"p":1}],[{"q":1}]]^(p)', '[[{"p":true}],[{"q":1}]]^(p)',
+  '[[{"p":true}],[{"q":1}]]^(>p)', '[[{"p":true}],[{"q":1}]]^(p, $count($))', '{"x": [[{"p":true}],[{"q":1}]]}.(x#$i^(p))',
+  '{"x": [{"p":null},{"q":1}]}.(x^(p))', '[{"p":null},{"q":1},{"q":2}]^(p)', '[{"p":null},{"q":1},{"p":2}]^(p)',
+  // A leading array constructor counts as one (`consarray`) only on a
+  // dotted path; alone it maps over the input like any first step.
+  '[[1,2],[3]].([3]#$k{"k": $})', '[[1,2],[3]].([3,1]#$k{"k": $count($)})', '[[1,2],[3]].([3,1]#$k)',
+  '[[1,2],[3]].([3,1]#$k.$)', '[[1,2],[3]].([3,1]#$k{"k": $k})', '[[1,2],[3]].([3,1]@$k{"k": $})',
+  '[[1,2],[3]].([3,1]@$k.$k)', '[[1,2],[3]].([3,1]@$k.($))', '[[1,2],[3]].([$]#$k.[$, $k])',
+  '[[{"p":1}],[{"q":1}]]^(>p)','[[{"p":2}],[{"q":1}],[{"p":1}]]^(>p)', '[{"p":1},{"q":1}]^(>p)',
+  '[{"p":1},{"q":1},{"p":3},{"p":2}]^(>p)', '[{"p":1},{"q":1},{"p":3},{"p":2}]^(>p, q)',
+  '[{"p":1},{"q":1},{"p":"a"}]^(p)', '[{"p":1,"r":1},{"p":1,"r":"a"},{"p":2}]^(p, r)',
+  '[{"p":1,"r":1},{"p":2,"r":"a"}]^(p, r)', '[{"p":1},{"p":[1]}]^(p)', '[{"p":"a"},{"p":{}}]^(>p)',
+  // An object constructor binds `$` only where it is read.
+  '[1].($map($$.objs, function($x){ {"id": $x.id} }))', '[1].($$.objs@$i.{"a": $i.id, "b": $i.p})',
+  '[1].($reduce($$.objs, function($acc, $x){ $acc + {"v": $x.p}.v }, 0))', '[1].($$.objs.{"a": id, "s": $string()})',
+  '[1].($$.objs.{"a": id, "s": $})', '[1].($$.objs{$string(p): $})', '[1].($$.objs{id: p})',
+  '[1].($$.objs{"k": function(){$}()})',
   // After a sort, a tuple's `#$i` or `@$v` binding reads as a field named `i` or `v`.
   'acct.Order.P#$i^(>$i){"k": $keys($)}', 'acct.Order.P#$i^(>$i)[i = 1]', 'acct.Order.P#$i^(>$i)[$.i = 0]',
   'acct.Order.P#$i^(>$i){"x": $sum(i)}', 'acct.Order.P#$i^(>$i)^(i).N', 'acct.Order.P@$p^(>$p.N){"k": $keys($)}',
@@ -610,6 +728,24 @@ const ROOT_EXPRESSIONS = [
   '($f := function() { a }; $f())', '($f := function() { a[0] }; $f())',
   '$eval("a[0]")', '$eval("a[0]", $)', '$eval("a[0]", $$)', '$eval("{\\"x\\": a[0]}")',
   '$sort(a)', '$reverse(a)', 'a ~> $count', '(a)', '[1].(a[0])', '[1].{"x": $$.a[0]}',
+  // A sort over the top-level array, or over a path through it (#221).
+  '$^(a[0])', '$^($count(a))', 'a^($)', '$[1]^(a)', '$[1].a^($)', '*^($count(a))', '$$^(a[0])',
+  '(a[0])^($)', '(a[-1])^($)', '[a[0]]^($)', '$sum(a[0])^($)', '$count(a[0])^($)', '$string(a[0])^($)',
+  '(a[0])^($)#$i.$i', '(a[0])[]^($)', '[a[0]][]^($)', '"x"^($)', '(a)^($)', '[a]^($)', '$^($)', '($)^($)',
+  '(a[0])^($)[0]', '(b.c)^($)', '$map(a, function($v) { $v })^($)',
+  // A focus or index binding on a first step over the top-level array
+  // keeps that array whole as the tuple's `@`.
+  '[3]@$w.($)', '[3]@$w.({"v": $})', '[3]@$w.{"v": $}', '[3]@$w.$count($)', '[3]#$i.($)', '[3]#$i.{"v": $}',
+  // A leading array constructor is evaluated once, its focus or index
+  // ignored; with a focus the next step reads the path's input.
+  '[$]@$w.($)', '[$]@$w.{"v": $}.v', '[$]@$w#$i.[$]', '[a]@$w.{"v": $}', '[a]@$w.($w)', '[$]#$i.($i)',
+  '[1,2]@$w.$w', '[1,2]@$w.($)', '[a]#$i.($)', '[a]#$i.{"v": $, "i": $i}', 'a@$w.($)', 'a@$w.$w', 'a#$i.$i',
+];
+
+// The same steps over an empty top-level array.
+const EMPTY_ROOT_EXPRESSIONS = [
+  '"q"#$i.($)', '"q"@$w.($)', '[1,2]@$w.$w', '[1,2]@$w.($)', '[$]@$w.($)', '[1,2]#$i.($)', '[$]#$i.$i',
+  'a@$w.($)', '$@$w.($)', '[1]@$w.$count($)', '[1].($)', '$^($)', '[]',
 ];
 
 // Operator combinations (#212). The reference suite tries each operator on
@@ -676,6 +812,9 @@ async function main() {
   }
   for (const expression of new Set(ROOT_EXPRESSIONS)) {
     cases.push({ expression, root: true, result: await evaluate(expression, ROOT_DATA) });
+  }
+  for (const expression of new Set(EMPTY_ROOT_EXPRESSIONS)) {
+    cases.push({ expression, root: 'empty', result: await evaluate(expression, []) });
   }
   const fixture = {
     _comment: 'GENERATED by scripts/gen_path_semantics_corpus.js -- do not edit by hand.',

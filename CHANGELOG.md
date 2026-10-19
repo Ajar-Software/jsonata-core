@@ -116,6 +116,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   site's context as its input; and a composition's first function flattens one more level of
   nested one-item sequences than jsonata-js when its result comes from such a tail-called
   builtin (`($r ~> $string)(4)` with a `$r` nesting `$map` is `"[[0]]"`, `"[[[0]]]"` there).
+- **A sort over one item gives that item, not a one-item array**
+  ([#221](https://github.com/txjmb/jsonata-core/issues/221)). jsonata-js sorts as a step after
+  its input, which flattens the input into a sequence, and returns a sequence of zero or one
+  item as is, so it is unwrapped: `acct.Order[1].P^(N)` is `{"N":"C"}` (it was `[{"N":"C"}]`),
+  `[{"N":"C"}]^(N)` likewise, and a sort over an empty array is undefined (it was `[]`). A `[]`
+  on the sorted path keeps the array (`P[]^(N)`, `P^(N)[]`, `$#$i[]^($)`); a `[]` on a block,
+  variable or constructor before the sort (`$x[]^(p)`, `$x[]#$i^(p)`) does not. A sort whose
+  input is not a path (a block, literal, function call or array constructor) evaluates it once
+  per item of an array input, as a path's first step: over `[{"a":[2,1]},{"a":[3]}]`,
+  `(a[0])^($)` is `[2,3]` (it was `2`) and `$count(a[0])^($)` is `2` (it was `1`). A sort of
+  objects that only look like internal tuples (`{"@": 2, "__tuple__": true}`) now orders them as data instead of leaving
+  them unsorted. A group-by after a sort groups a single array as one item (`z^($){"k": $}` is
+  `{"k": [5]}` for `z: [[5]]`), an object constructor inside a `.( … )` block reads `$` as its
+  own context (`[1].([[5]].{"v": $})` is `{"v": 5}`), and a field sort term over an array item
+  reads its items' fields, so `[[{"p":2},{"p":1}],[{"p":3}]]^(p)` raises T2008 as in jsonata-js.
+  The order-by clause sorts with jsonata-js's merge sort and comparator: a missing term sorts
+  last in either direction (`[{"p":1},{"q":1}]^(>p)` keeps its order; it put `{"q":1}` first),
+  and is checked before the types, so `[{"p":null},{"q":1}]^(p)` keeps its order instead of
+  raising T2008. A leading array constructor with a focus or index binding is evaluated once,
+  the binding ignored, when a `.` follows it (jsonata-js `consarray`), so `[$]@$w.($)` over
+  `[1,2,3]` is `[1,2,3]` and `[a]@$w.{"v": $}` over `[{"a":1},{"a":2}]` is
+  `{"v": [{"a":1},{"a":2}]}`.
 - **A higher-order function evaluates its callback once, to a function value**
   ([#204](https://github.com/txjmb/jsonata-core/issues/204)). `$map`, `$filter`, `$reduce`,
   `$single`, `$sift`, `$each` and `$sort` evaluate a callback that is not an inline lambda or a

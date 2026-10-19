@@ -7120,6 +7120,2503 @@
    }
   },
   {
+   "expression": "acct.Order[1].P^(N)",
+   "result": {
+    "N": "C"
+   }
+  },
+  {
+   "expression": "acct.Order[1].P^(%.id)",
+   "result": {
+    "N": "C"
+   }
+  },
+  {
+   "expression": "acct.Order.P[N=\"C\"]^(N)",
+   "result": {
+    "N": "C"
+   }
+  },
+  {
+   "expression": "[{\"N\":\"C\"}]^(N)",
+   "result": {
+    "N": "C"
+   }
+  },
+  {
+   "expression": "acct.Order[1].P[]^(N)",
+   "result": [
+    {
+     "N": "C"
+    }
+   ]
+  },
+  {
+   "expression": "acct.Order[1].P^(N)[]",
+   "result": [
+    {
+     "N": "C"
+    }
+   ]
+  },
+  {
+   "expression": "acct.Order[1].P^(N).N",
+   "result": "C"
+  },
+  {
+   "expression": "acct.Order[1].P^(N)[0]",
+   "result": {
+    "N": "C"
+   }
+  },
+  {
+   "expression": "acct.Order[1].P^(N)#$i",
+   "result": {
+    "N": "C"
+   }
+  },
+  {
+   "expression": "acct.Order[1].P^(N)#$i.{\"i\": $i}",
+   "result": {
+    "i": 0
+   }
+  },
+  {
+   "expression": "acct.Order[1].P^(N)@$v",
+   "result": {
+    "$error": "S0216"
+   }
+  },
+  {
+   "expression": "acct.Order[1].P^(N){N: N}",
+   "result": {
+    "C": "C"
+   }
+  },
+  {
+   "expression": "acct.Order[1].P^(N)[N=\"C\"]",
+   "result": {
+    "N": "C"
+   }
+  },
+  {
+   "expression": "acct.Order[1].P^(N)^(>N)",
+   "result": {
+    "N": "C"
+   }
+  },
+  {
+   "expression": "e^($)",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "acct.Order[1].P[N=\"Z\"]^(N)",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "obj1^(p)",
+   "result": {
+    "p": 1
+   }
+  },
+  {
+   "expression": "obj1^(p).p",
+   "result": 1
+  },
+  {
+   "expression": "arr[0]^($)",
+   "result": 1
+  },
+  {
+   "expression": "[5]^($)",
+   "result": 5
+  },
+  {
+   "expression": "[[1, 2]]^($[0])",
+   "result": [
+    1,
+    2
+   ]
+  },
+  {
+   "expression": "n[1]^($)",
+   "result": 3
+  },
+  {
+   "expression": "(acct.Order[1].P)^(N)",
+   "result": {
+    "N": "C"
+   }
+  },
+  {
+   "expression": "[acct.Order[1].P^(N)]",
+   "result": [
+    {
+     "N": "C"
+    }
+   ]
+  },
+  {
+   "expression": "{\"a\": acct.Order[1].P^(N)}",
+   "result": {
+    "a": {
+     "N": "C"
+    }
+   }
+  },
+  {
+   "expression": "($x := acct.Order[1].P^(N); $x)",
+   "result": {
+    "N": "C"
+   }
+  },
+  {
+   "expression": "acct.Order[1].(P^(N))",
+   "result": {
+    "N": "C"
+   }
+  },
+  {
+   "expression": "acct.Order[1].P^(N).$",
+   "result": {
+    "N": "C"
+   }
+  },
+  {
+   "expression": "$count(acct.Order[1].P^(N))",
+   "result": 1
+  },
+  {
+   "expression": "$type(acct.Order[1].P^(N))",
+   "result": "object"
+  },
+  {
+   "expression": "acct.Order^(id)[1].P^(N)",
+   "result": {
+    "N": "C"
+   }
+  },
+  {
+   "expression": "acct.Order[id=\"o2\"]^(id)",
+   "result": {
+    "id": "o2",
+    "P": [
+     {
+      "N": "C"
+     }
+    ]
+   }
+  },
+  {
+   "expression": "acct.Order[id=\"o2\"]^(id).P",
+   "result": [
+    {
+     "N": "C"
+    }
+   ]
+  },
+  {
+   "expression": "acct.Order[1].P^(N)[0]#$i",
+   "result": {
+    "N": "C"
+   }
+  },
+  {
+   "expression": "acct.Order.P[N=\"C\"]^(N)[]",
+   "result": [
+    {
+     "N": "C"
+    }
+   ]
+  },
+  {
+   "expression": "acct.Order[1].P^(%.id)[]",
+   "result": [
+    {
+     "N": "C"
+    }
+   ]
+  },
+  {
+   "expression": "acct.Order[1].P[]^(%.id)",
+   "result": [
+    {
+     "N": "C"
+    }
+   ]
+  },
+  {
+   "expression": "$map([1], function($v) { $$.acct.Order[1].P^(N) })",
+   "result": {
+    "N": "C"
+   }
+  },
+  {
+   "expression": "acct.Order[1].P^(N) ~> $type",
+   "result": "object"
+  },
+  {
+   "expression": "acct.Order[1].P#$i^(N)",
+   "result": {
+    "N": "C"
+   }
+  },
+  {
+   "expression": "acct.Order[1].P^(N)[0][0]",
+   "result": {
+    "N": "C"
+   }
+  },
+  {
+   "expression": "$^(x)",
+   "result": {
+    "a": [
+     {
+      "b": [
+       1
+      ]
+     }
+    ],
+    "o": [
+     {
+      "t": [
+       "x"
+      ]
+     },
+     {
+      "t": [
+       "y",
+       "z"
+      ]
+     }
+    ],
+    "n": [
+     [
+      1,
+      2
+     ],
+     [
+      3
+     ]
+    ],
+    "nn": [
+     [
+      [
+       1
+      ]
+     ]
+    ],
+    "one": {
+     "z": [
+      7
+     ]
+    },
+    "e": [],
+    "m": {
+     "k": {
+      "b": [
+       [
+        1
+       ]
+      ]
+     }
+    },
+    "x": {
+     "y": [
+      1
+     ]
+    },
+    "arr": [
+     1,
+     2,
+     3
+    ],
+    "objs": [
+     {
+      "p": 1
+     },
+     {
+      "p": 2
+     }
+    ],
+    "obj1": [
+     {
+      "p": 1
+     }
+    ],
+    "v": 5,
+    "het": [
+     {
+      "a": 1,
+      "b": 5
+     },
+     {
+      "b": 0,
+      "a": 4
+     }
+    ],
+    "acct": {
+     "Order": [
+      {
+       "id": "o1",
+       "P": [
+        {
+         "N": "A"
+        },
+        {
+         "N": "B"
+        }
+       ]
+      },
+      {
+       "id": "o2",
+       "P": [
+        {
+         "N": "C"
+        }
+       ]
+      }
+     ]
+    }
+   }
+  },
+  {
+   "expression": "acct^(x)",
+   "result": {
+    "Order": [
+     {
+      "id": "o1",
+      "P": [
+       {
+        "N": "A"
+       },
+       {
+        "N": "B"
+       }
+      ]
+     },
+     {
+      "id": "o2",
+      "P": [
+       {
+        "N": "C"
+       }
+      ]
+     }
+    ]
+   }
+  },
+  {
+   "expression": "acct.Order[1]^(id)",
+   "result": {
+    "id": "o2",
+    "P": [
+     {
+      "N": "C"
+     }
+    ]
+   }
+  },
+  {
+   "expression": "acct.Order[1]^(id).P",
+   "result": [
+    {
+     "N": "C"
+    }
+   ]
+  },
+  {
+   "expression": "[[{\"N\":\"C\"}]]^(N)",
+   "result": [
+    {
+     "N": "C"
+    }
+   ]
+  },
+  {
+   "expression": "[1]^($)[]",
+   "result": [
+    1
+   ]
+  },
+  {
+   "expression": "acct.Order[1].P^(N)^(N)",
+   "result": {
+    "N": "C"
+   }
+  },
+  {
+   "expression": "[acct.Order[1].P][0]^(N)",
+   "result": {
+    "N": "C"
+   }
+  },
+  {
+   "expression": "obj1^(p)[]",
+   "result": [
+    {
+     "p": 1
+    }
+   ]
+  },
+  {
+   "expression": "($x := obj1; $x^(p))",
+   "result": {
+    "p": 1
+   }
+  },
+  {
+   "expression": "($x := obj1; $x^(p)[])",
+   "result": [
+    {
+     "p": 1
+    }
+   ]
+  },
+  {
+   "expression": "obj1^(p){\"k\": p}",
+   "result": {
+    "k": 1
+   }
+  },
+  {
+   "expression": "obj1^(p)#$i{\"k\": $i}",
+   "result": {
+    "k": 0
+   }
+  },
+  {
+   "expression": "objs[0].[2, 1]^($)",
+   "result": [
+    2,
+    1
+   ]
+  },
+  {
+   "expression": "objs[0].[[2, 1]]^($[0])",
+   "result": [
+    [
+     2,
+     1
+    ]
+   ]
+  },
+  {
+   "expression": "objs.[p]^($[0])",
+   "result": [
+    [
+     1
+    ],
+    [
+     2
+    ]
+   ]
+  },
+  {
+   "expression": "obj1.[p]^($[0])",
+   "result": [
+    1
+   ]
+  },
+  {
+   "expression": "obj1.[p]^($[0])[]",
+   "result": [
+    [
+     1
+    ]
+   ]
+  },
+  {
+   "expression": "n^($[0])",
+   "result": [
+    [
+     1,
+     2
+    ],
+    [
+     3
+    ]
+   ]
+  },
+  {
+   "expression": "n[0]^($)",
+   "result": [
+    1,
+    2
+   ]
+  },
+  {
+   "expression": "acct.Order[1].P[]^(N)[0]",
+   "result": [
+    {
+     "N": "C"
+    }
+   ]
+  },
+  {
+   "expression": "$x^(a)",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "[]^($)",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "e[]^($)",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "acct.Order[1].P^(N)[]^(N)",
+   "result": [
+    {
+     "N": "C"
+    }
+   ]
+  },
+  {
+   "expression": "acct.Order[1].(P)[]^(N)",
+   "result": [
+    {
+     "N": "C"
+    }
+   ]
+  },
+  {
+   "expression": "($x := obj1; $x[]^(p))",
+   "result": {
+    "p": 1
+   }
+  },
+  {
+   "expression": "obj1.p^($)",
+   "result": 1
+  },
+  {
+   "expression": "obj1.p[]^($)",
+   "result": [
+    1
+   ]
+  },
+  {
+   "expression": "nn.$^($[0])",
+   "result": [
+    1
+   ]
+  },
+  {
+   "expression": "[[1, 2]][0]^($)",
+   "result": [
+    1,
+    2
+   ]
+  },
+  {
+   "expression": "$map(obj1, function($v) { $v })^(p)",
+   "result": {
+    "p": 1
+   }
+  },
+  {
+   "expression": "$append([], obj1)^(p)",
+   "result": {
+    "p": 1
+   }
+  },
+  {
+   "expression": "obj1[]^(p)",
+   "result": [
+    {
+     "p": 1
+    }
+   ]
+  },
+  {
+   "expression": "(obj1)[]^(p)",
+   "result": {
+    "p": 1
+   }
+  },
+  {
+   "expression": "(acct.Order[1].P)[]^(N)",
+   "result": {
+    "N": "C"
+   }
+  },
+  {
+   "expression": "(acct.Order.P[N=\"C\"])[]^(N)",
+   "result": {
+    "N": "C"
+   }
+  },
+  {
+   "expression": "($x := acct.Order.P[N=\"C\"][]; $x^(N))",
+   "result": {
+    "N": "C"
+   }
+  },
+  {
+   "expression": "($x := acct.Order.P[N=\"C\"][]; $x[]^(N))",
+   "result": {
+    "N": "C"
+   }
+  },
+  {
+   "expression": "$.obj1[]^(p)",
+   "result": [
+    {
+     "p": 1
+    }
+   ]
+  },
+  {
+   "expression": "obj1[]^(p).p",
+   "result": [
+    1
+   ]
+  },
+  {
+   "expression": "obj1^(p)[].p",
+   "result": [
+    1
+   ]
+  },
+  {
+   "expression": "obj1[0][]^(p)",
+   "result": [
+    {
+     "p": 1
+    }
+   ]
+  },
+  {
+   "expression": "[obj1][]^(p)",
+   "result": {
+    "p": 1
+   }
+  },
+  {
+   "expression": "$map(obj1, function($v) { $v })[]^(p)",
+   "result": {
+    "p": 1
+   }
+  },
+  {
+   "expression": "(obj1^(p))[]^(p)",
+   "result": {
+    "p": 1
+   }
+  },
+  {
+   "expression": "obj1[]^(p)^(p)",
+   "result": [
+    {
+     "p": 1
+    }
+   ]
+  },
+  {
+   "expression": "[obj1][]^(p)^(p)",
+   "result": {
+    "p": 1
+   }
+  },
+  {
+   "expression": "arr#$pos[][$pos<3]^($)[-1]",
+   "result": [
+    3
+   ]
+  },
+  {
+   "expression": "($x := obj1; $x#$i[]^(p))",
+   "result": [
+    {
+     "p": 1
+    }
+   ]
+  },
+  {
+   "expression": "($x := obj1; $x[]#$i^(p))",
+   "result": {
+    "p": 1
+   }
+  },
+  {
+   "expression": "($x := obj1; $x@$v[]^(p))",
+   "result": {
+    "a": [
+     {
+      "b": [
+       1
+      ]
+     }
+    ],
+    "o": [
+     {
+      "t": [
+       "x"
+      ]
+     },
+     {
+      "t": [
+       "y",
+       "z"
+      ]
+     }
+    ],
+    "n": [
+     [
+      1,
+      2
+     ],
+     [
+      3
+     ]
+    ],
+    "nn": [
+     [
+      [
+       1
+      ]
+     ]
+    ],
+    "one": {
+     "z": [
+      7
+     ]
+    },
+    "e": [],
+    "m": {
+     "k": {
+      "b": [
+       [
+        1
+       ]
+      ]
+     }
+    },
+    "x": {
+     "y": [
+      1
+     ]
+    },
+    "arr": [
+     1,
+     2,
+     3
+    ],
+    "objs": [
+     {
+      "p": 1
+     },
+     {
+      "p": 2
+     }
+    ],
+    "obj1": [
+     {
+      "p": 1
+     }
+    ],
+    "v": 5,
+    "het": [
+     {
+      "a": 1,
+      "b": 5
+     },
+     {
+      "b": 0,
+      "a": 4
+     }
+    ],
+    "acct": {
+     "Order": [
+      {
+       "id": "o1",
+       "P": [
+        {
+         "N": "A"
+        },
+        {
+         "N": "B"
+        }
+       ]
+      },
+      {
+       "id": "o2",
+       "P": [
+        {
+         "N": "C"
+        }
+       ]
+      }
+     ]
+    }
+   }
+  },
+  {
+   "expression": "(obj1)#$i[]^(p)",
+   "result": [
+    {
+     "p": 1
+    }
+   ]
+  },
+  {
+   "expression": "[obj1]#$i[]^(p)",
+   "result": [
+    {
+     "p": 1
+    }
+   ]
+  },
+  {
+   "expression": "($x := obj1; $x#$i[0][]^(p))",
+   "result": [
+    {
+     "p": 1
+    }
+   ]
+  },
+  {
+   "expression": "acct.Order[1].P#$i^(N)[]",
+   "result": [
+    {
+     "N": "C"
+    }
+   ]
+  },
+  {
+   "expression": "acct.Order[1].P^(%.id)#$k",
+   "result": {
+    "N": "C"
+   }
+  },
+  {
+   "expression": "acct.Order[1].P^(%.id)#$k[]",
+   "result": [
+    {
+     "N": "C"
+    }
+   ]
+  },
+  {
+   "expression": "acct.Order[1].P@$p^($p.N)",
+   "result": {
+    "id": "o2",
+    "P": [
+     {
+      "N": "C"
+     }
+    ]
+   }
+  },
+  {
+   "expression": "acct.Order[1].P@$p[]^($p.N)",
+   "result": [
+    {
+     "id": "o2",
+     "P": [
+      {
+       "N": "C"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "expression": "acct.Order[1].P[]#$i^(N)",
+   "result": [
+    {
+     "N": "C"
+    }
+   ]
+  },
+  {
+   "expression": "(acct.Order[1].P)#$i^(N)",
+   "result": {
+    "N": "C"
+   }
+  },
+  {
+   "expression": "acct.Order[1].P#$i^(N).{\"i\": $i}",
+   "result": {
+    "i": 0
+   }
+  },
+  {
+   "expression": "acct.Order[1].P^(%.id){N: %.id}",
+   "result": {}
+  },
+  {
+   "expression": "acct.Order[1].P[N=\"Z\"]^(%.id)",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "[{\"N\":\"C\"}]#$i[]^(N)",
+   "result": [
+    {
+     "N": "C"
+    }
+   ]
+  },
+  {
+   "expression": "arr[0]#$i[]^($)",
+   "result": [
+    1
+   ]
+  },
+  {
+   "expression": "[{\"@\": 2, \"__tuple__\": true}, {\"@\": 1, \"__tuple__\": true}]^(`@`)",
+   "result": [
+    {
+     "@": 1,
+     "__tuple__": true
+    },
+    {
+     "@": 2,
+     "__tuple__": true
+    }
+   ]
+  },
+  {
+   "expression": "[{\"@\": 2, \"__tuple__\": true}]^(`@`)",
+   "result": {
+    "@": 2,
+    "__tuple__": true
+   }
+  },
+  {
+   "expression": "objs.{\"@\": p, \"__tuple__\": true}^(>`@`)",
+   "result": [
+    {
+     "@": 2,
+     "__tuple__": true
+    },
+    {
+     "@": 1,
+     "__tuple__": true
+    }
+   ]
+  },
+  {
+   "expression": "($x := [{\"@\": 2, \"__tuple__\": true}, {\"@\": 1, \"__tuple__\": true}]; $x^(`@`))",
+   "result": [
+    {
+     "@": 1,
+     "__tuple__": true
+    },
+    {
+     "@": 2,
+     "__tuple__": true
+    }
+   ]
+  },
+  {
+   "expression": "[{\"@\": 2, \"__tuple__\": true}, {\"@\": 1, \"__tuple__\": true}]^($)",
+   "result": {
+    "$error": "T2008"
+   }
+  },
+  {
+   "expression": "n.(($[0])^($))",
+   "result": [
+    1,
+    2,
+    3
+   ]
+  },
+  {
+   "expression": "n.(\"x\"^($))",
+   "result": [
+    "x",
+    "x",
+    "x"
+   ]
+  },
+  {
+   "expression": "n.($count($)^($))",
+   "result": [
+    1,
+    1,
+    1
+   ]
+  },
+  {
+   "expression": "[[3,1]].(\"x\"^($))",
+   "result": [
+    "x",
+    "x"
+   ]
+  },
+  {
+   "expression": "n.([$[0]]^($))",
+   "result": [
+    1,
+    2,
+    3
+   ]
+  },
+  {
+   "expression": "n.(($)^($))",
+   "result": [
+    1,
+    2,
+    3
+   ]
+  },
+  {
+   "expression": "n.($^($))",
+   "result": [
+    1,
+    2,
+    3
+   ]
+  },
+  {
+   "expression": "n.(($x := $; $x)^($))",
+   "result": [
+    1,
+    2,
+    3
+   ]
+  },
+  {
+   "expression": "n.((1, 2)^($))",
+   "result": {
+    "$error": "S0202"
+   }
+  },
+  {
+   "expression": "objs.({\"q\": p}^(q))",
+   "result": [
+    {
+     "q": 1
+    },
+    {
+     "q": 2
+    }
+   ]
+  },
+  {
+   "expression": "n.($string($)^($))",
+   "result": [
+    "1",
+    "2",
+    "3"
+   ]
+  },
+  {
+   "expression": "n.([$]^($))",
+   "result": [
+    1,
+    2,
+    3
+   ]
+  },
+  {
+   "expression": "n.([$][0]^($))",
+   "result": [
+    1,
+    2,
+    3
+   ]
+  },
+  {
+   "expression": "n.(($)[0]^($))",
+   "result": [
+    1,
+    2,
+    3
+   ]
+  },
+  {
+   "expression": "n.(($)[]^($))",
+   "result": [
+    1,
+    2,
+    3
+   ]
+  },
+  {
+   "expression": "n.(([3,1].$)^($))",
+   "result": [
+    1,
+    3,
+    1,
+    3
+   ]
+  },
+  {
+   "expression": "[[3,1]].(([3,1].$)^($))",
+   "result": [
+    1,
+    3
+   ]
+  },
+  {
+   "expression": "n.((([3,1].$))^($))",
+   "result": [
+    1,
+    3,
+    1,
+    3
+   ]
+  },
+  {
+   "expression": "n.(($y:=1; [3,1].$)^($))",
+   "result": [
+    1,
+    3,
+    1,
+    3
+   ]
+  },
+  {
+   "expression": "n.(([3,1].$)[]^($))",
+   "result": [
+    1,
+    3,
+    1,
+    3
+   ]
+  },
+  {
+   "expression": "n.(([$, 9].$)^($))",
+   "result": [
+    1,
+    2,
+    9,
+    3,
+    9
+   ]
+  },
+  {
+   "expression": "n.(([3,1])^($))",
+   "result": [
+    1,
+    1,
+    3,
+    3,
+    1,
+    3
+   ]
+  },
+  {
+   "expression": "n.(([3,1][0])^($))",
+   "result": [
+    3,
+    3,
+    3
+   ]
+  },
+  {
+   "expression": "[[3,1]].(([3,1].$).$)",
+   "result": [
+    3,
+    1
+   ]
+  },
+  {
+   "expression": "n.(([3,1].$).$)",
+   "result": [
+    3,
+    1,
+    3,
+    1
+   ]
+  },
+  {
+   "expression": "n.((([3,1].$)).($ + 1))",
+   "result": [
+    4,
+    2,
+    4,
+    2
+   ]
+  },
+  {
+   "expression": "n.(($y:=1; [3,1].$).$)",
+   "result": [
+    3,
+    1,
+    3,
+    1
+   ]
+  },
+  {
+   "expression": "n.(([$, 9].$).$)",
+   "result": [
+    1,
+    2,
+    9,
+    3,
+    9
+   ]
+  },
+  {
+   "expression": "n.(([3,1]).$)",
+   "result": [
+    3,
+    1,
+    3,
+    1,
+    3,
+    1
+   ]
+  },
+  {
+   "expression": "n.(($ ; [3].$).$)",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "n.(([3].$)^($))",
+   "result": [
+    3,
+    3
+   ]
+  },
+  {
+   "expression": "([3].$)^($)",
+   "result": 3
+  },
+  {
+   "expression": "([3].$).$",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "([3].$).{\"a\": $}",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "([3].$)[]",
+   "result": 3
+  },
+  {
+   "expression": "n.(([3].$).$)",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "n.(($; 5).$)",
+   "result": [
+    5,
+    5,
+    5
+   ]
+  },
+  {
+   "expression": "([3, 1].$)^($).$",
+   "result": [
+    1,
+    3
+   ]
+  },
+  {
+   "expression": "n.(([3,1].$^($))^($))",
+   "result": [
+    1,
+    3,
+    1,
+    3
+   ]
+  },
+  {
+   "expression": "n.(([3,1].$^($)).$)",
+   "result": [
+    1,
+    3,
+    1,
+    3
+   ]
+  },
+  {
+   "expression": "n.(([$[0], 9].$^($)).$)",
+   "result": [
+    1,
+    9,
+    3,
+    9
+   ]
+  },
+  {
+   "expression": "n.((([3,1].$)^($)).$)",
+   "result": [
+    1,
+    3,
+    1,
+    3
+   ]
+  },
+  {
+   "expression": "([3].$^($)).$",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "objs.(([p].$^($)).$)",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "n.(([3,1]^($))^($))",
+   "result": [
+    1,
+    1,
+    3,
+    3,
+    1,
+    3
+   ]
+  },
+  {
+   "expression": "n.([3,1]^($))",
+   "result": [
+    1,
+    1,
+    3,
+    3,
+    1,
+    3
+   ]
+  },
+  {
+   "expression": "n.([3,1]^($).$)",
+   "result": [
+    1,
+    3,
+    1,
+    3
+   ]
+  },
+  {
+   "expression": "n.(([3,1]^($).$).$)",
+   "result": [
+    1,
+    3,
+    1,
+    3
+   ]
+  },
+  {
+   "expression": "n.([3,1]^($)^(-$).$)",
+   "result": [
+    3,
+    1,
+    3,
+    1
+   ]
+  },
+  {
+   "expression": "n.([3,1][0]^($).$)",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "n.([$[0], 9]^($).$)",
+   "result": [
+    1,
+    9,
+    3,
+    9
+   ]
+  },
+  {
+   "expression": "n.([[3],[1]]^($).$)",
+   "result": {
+    "$error": "T2008"
+   }
+  },
+  {
+   "expression": "[3,1]^($).$",
+   "result": [
+    1,
+    3
+   ]
+  },
+  {
+   "expression": "[3][0]^($).$",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "n.([3][0]^($)^($).$)",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "n.([3]^($).$)",
+   "result": [
+    3,
+    3
+   ]
+  },
+  {
+   "expression": "([1,2].$)[0].$",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "([3].$)[$=3].$",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "([{\"a\":7}].$)[0].a",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "objs.(([$].$)[0].p)",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "([1,2].$)[].$",
+   "result": [
+    1,
+    2
+   ]
+  },
+  {
+   "expression": "([1,2].$)[$>0].$",
+   "result": [
+    1,
+    2
+   ]
+  },
+  {
+   "expression": "[3][0]^($)[true].$",
+   "result": 3
+  },
+  {
+   "expression": "[3][0]^($)[0].$",
+   "result": 3
+  },
+  {
+   "expression": "([3].$)^($)[0].$",
+   "result": 3
+  },
+  {
+   "expression": "([3].$)^($)[$=3].$",
+   "result": 3
+  },
+  {
+   "expression": "[3][0]^($)[true].$string()",
+   "result": "3"
+  },
+  {
+   "expression": "n.([3][0]^($)[true].$)",
+   "result": [
+    3,
+    3
+   ]
+  },
+  {
+   "expression": "[3][0]^($)[$count($$.x.y)=0].$",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "[3][0]^($)[$exists($$.x.y) = false].$",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "[3][0]^($)[$count($$.x.y)=1].$",
+   "result": 3
+  },
+  {
+   "expression": "[3][0]^($)[$count($$.x.y)=2].$",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "([1,2].$)[0][].$",
+   "result": [
+    1
+   ]
+  },
+  {
+   "expression": "([1,2].$)[$=1][].$",
+   "result": [
+    1
+   ]
+  },
+  {
+   "expression": "([1,2].$)[[0]][].$",
+   "result": [
+    1
+   ]
+  },
+  {
+   "expression": "([3].$)[][0].$",
+   "result": [
+    3
+   ]
+  },
+  {
+   "expression": "n.(([1,2].$)[0][].$)",
+   "result": [
+    1,
+    1
+   ]
+  },
+  {
+   "expression": "[3][0]^($)[].$",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "([3].$)^($)[].$",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "[3][0]^(>$)[].($)",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "[{\"x\":3}][0]^(x)[].x",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "objs.([3][0]^($)[].$)",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "$map([1,2],function($q){([3].$)^($)[].$})",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "[3][0]^($)[].x",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "[3][0]^($)[][0].$",
+   "result": [
+    3
+   ]
+  },
+  {
+   "expression": "[3][0]^($)[0][].$",
+   "result": [
+    3
+   ]
+  },
+  {
+   "expression": "nn^($)[0]^($)",
+   "result": [
+    [
+     1
+    ]
+   ]
+  },
+  {
+   "expression": "n^(p)[-1]^($)",
+   "result": [
+    3
+   ]
+  },
+  {
+   "expression": "[[3]]^($)[0]^($)",
+   "result": [
+    3
+   ]
+  },
+  {
+   "expression": "nn^($)[0]",
+   "result": [
+    [
+     1
+    ]
+   ]
+  },
+  {
+   "expression": "[[1,2]]^(1)[0]",
+   "result": [
+    1,
+    2
+   ]
+  },
+  {
+   "expression": "nn^($)#$k",
+   "result": [
+    [
+     1
+    ]
+   ]
+  },
+  {
+   "expression": "nn^($)#$k.$",
+   "result": [
+    1
+   ]
+  },
+  {
+   "expression": "[[3]]^($)#$k",
+   "result": [
+    3
+   ]
+  },
+  {
+   "expression": "$map([1], function($v){nn^($)#$k})",
+   "result": [
+    [
+     1
+    ]
+   ]
+  },
+  {
+   "expression": "$map([1], function($v){nn^($)[0]^($)})",
+   "result": [
+    [
+     1
+    ]
+   ]
+  },
+  {
+   "expression": "$map([1], function($v){[[3]]^($)#$k})",
+   "result": [
+    3
+   ]
+  },
+  {
+   "expression": "[[[1]]]^($)[0]^($)",
+   "result": [
+    [
+     1
+    ]
+   ]
+  },
+  {
+   "expression": "[[[1]]]^($)#$k",
+   "result": [
+    [
+     1
+    ]
+   ]
+  },
+  {
+   "expression": "nn^($)^($)",
+   "result": [
+    [
+     1
+    ]
+   ]
+  },
+  {
+   "expression": "[[3]]^($)^($)",
+   "result": [
+    3
+   ]
+  },
+  {
+   "expression": "nn^($)[0][]^($)",
+   "result": [
+    [
+     1
+    ]
+   ]
+  },
+  {
+   "expression": "n^($[0])[0]^($)",
+   "result": [
+    1,
+    2
+   ]
+  },
+  {
+   "expression": "[[3]]^($)[0]^($).$",
+   "result": 3
+  },
+  {
+   "expression": "n^(p)[-1]^($)[0]",
+   "result": 3
+  },
+  {
+   "expression": "one.z^($)#$k",
+   "result": 7
+  },
+  {
+   "expression": "[1].([[3]]^($)#$k.{\"v\":$})",
+   "result": {
+    "v": 3
+   }
+  },
+  {
+   "expression": "[1].($$.m.k.b^($)#$k.{\"v\":$})",
+   "result": {
+    "v": 1
+   }
+  },
+  {
+   "expression": "[1].([[3]]^($)#$k.{\"v\":$type($)})",
+   "result": {
+    "v": "number"
+   }
+  },
+  {
+   "expression": "[1].($a:=[[3]];$a^($)#$k.{\"v\":$})",
+   "result": {
+    "v": 3
+   }
+  },
+  {
+   "expression": "[1].([[3]]#$k.{\"v\":$})",
+   "result": {
+    "v": 3
+   }
+  },
+  {
+   "expression": "[1].([[5]].{\"v\":$})",
+   "result": {
+    "v": 5
+   }
+  },
+  {
+   "expression": "m.k.b^($){$string($):$}",
+   "result": {
+    "[1]": [
+     1
+    ]
+   }
+  },
+  {
+   "expression": "m.k.b^($){\"k\":$}",
+   "result": {
+    "k": [
+     1
+    ]
+   }
+  },
+  {
+   "expression": "[[5,6]]^($){$string($):$}",
+   "result": {
+    "[5,6]": [
+     5,
+     6
+    ]
+   }
+  },
+  {
+   "expression": "[[5]]^($){$string($):$}",
+   "result": {
+    "[5]": [
+     5
+    ]
+   }
+  },
+  {
+   "expression": "m.k.b^($)^($){\"k\":$}",
+   "result": {
+    "k": [
+     1
+    ]
+   }
+  },
+  {
+   "expression": "([m.k.b]^(>$){\"v\":$})",
+   "result": {
+    "v": [
+     1
+    ]
+   }
+  },
+  {
+   "expression": "m.k.b^($).{\"k\":$}",
+   "result": {
+    "k": 1
+   }
+  },
+  {
+   "expression": "($x:=[3]; $x[]^($).$)",
+   "result": [
+    3
+   ]
+  },
+  {
+   "expression": "($x:=[3]; $x[]^($).[$])",
+   "result": [
+    [
+     3
+    ]
+   ]
+  },
+  {
+   "expression": "($x:=[3]; $x[]^($).{\"a\":$})",
+   "result": [
+    {
+     "a": 3
+    }
+   ]
+  },
+  {
+   "expression": "($x:=[3]; $x[]^($)#$i.$)",
+   "result": [
+    3
+   ]
+  },
+  {
+   "expression": "($x:=[3]; $x[]^($))",
+   "result": 3
+  },
+  {
+   "expression": "[[3]].($[]^($).$)",
+   "result": 3
+  },
+  {
+   "expression": "[[3]].($[]^($))",
+   "result": 3
+  },
+  {
+   "expression": "($x:=[[3]]; $x[]^($).$)",
+   "result": [
+    3
+   ]
+  },
+  {
+   "expression": "nn^(>$)[].[$]",
+   "result": [
+    [
+     1
+    ]
+   ]
+  },
+  {
+   "expression": "nn[].[$]",
+   "result": [
+    [
+     [
+      1
+     ]
+    ]
+   ]
+  },
+  {
+   "expression": "nn^(>$)^($)[].[$]",
+   "result": [
+    [
+     1
+    ]
+   ]
+  },
+  {
+   "expression": "arr^(>$)[0][].$type($)",
+   "result": [
+    "number"
+   ]
+  },
+  {
+   "expression": "[3]^(0)[]^($)[0].$",
+   "result": [
+    3
+   ]
+  },
+  {
+   "expression": "nn^(>%.id)^($string($))[].{\"v\":$}",
+   "result": [
+    {
+     "v": [
+      1
+     ]
+    }
+   ]
+  },
+  {
+   "expression": "nn^(>%.id)^($string($)).$type($)",
+   "result": "array"
+  },
+  {
+   "expression": "[1].($$.m.k.b^(0)[true]^(0).{\"v\":$})",
+   "result": {
+    "v": 1
+   }
+  },
+  {
+   "expression": "[1].([[5]]^(0)[true]^(0).{\"v\":$})",
+   "result": {
+    "v": 5
+   }
+  },
+  {
+   "expression": "acct.Order.([[[1]]]^(N)[true]^(0)[$count($)>0][0].{\"v\":$})",
+   "result": [
+    {
+     "v": 1
+    },
+    {
+     "v": 1
+    }
+   ]
+  },
+  {
+   "expression": "n.([[3]]^($)[0]^($).$)",
+   "result": [
+    3,
+    3
+   ]
+  },
+  {
+   "expression": "n.([3,1]^($)^($)#$k.$)",
+   "result": [
+    1,
+    3,
+    1,
+    3
+   ]
+  },
+  {
+   "expression": "n.([[5,6]]^($)#$k.{\"v\":$})",
+   "result": [
+    {
+     "v": [
+      5,
+      6
+     ]
+    },
+    {
+     "v": [
+      5,
+      6
+     ]
+    }
+   ]
+  },
+  {
+   "expression": "n.([3]^(0)[true]^(0)[true]#$k.{\"v\":$})",
+   "result": [
+    {
+     "v": 3
+    },
+    {
+     "v": 3
+    }
+   ]
+  },
+  {
+   "expression": "[[{\"p\":2},{\"p\":1}],[{\"p\":3}]]^(p)[[0]]^(>$)",
+   "result": {
+    "$error": "T2008"
+   }
+  },
+  {
+   "expression": "[[{\"p\":2},{\"p\":1}],[{\"p\":3}]]^(p)",
+   "result": {
+    "$error": "T2008"
+   }
+  },
+  {
+   "expression": "[[{\"p\":null}],[{\"p\":1}]]^(p)",
+   "result": {
+    "$error": "T2008"
+   }
+  },
+  {
+   "expression": "[{\"p\":null},{\"p\":1}]^(p)",
+   "result": {
+    "$error": "T2008"
+   }
+  },
+  {
+   "expression": "[[{\"p\":1}],[{\"q\":1}]]^(p)",
+   "result": [
+    [
+     {
+      "p": 1
+     }
+    ],
+    [
+     {
+      "q": 1
+     }
+    ]
+   ]
+  },
+  {
+   "expression": "[[{\"p\":2}],[{\"p\":1}]]^(p)",
+   "result": [
+    [
+     {
+      "p": 1
+     }
+    ],
+    [
+     {
+      "p": 2
+     }
+    ]
+   ]
+  },
+  {
+   "expression": "[[{\"p\":null},{\"p\":2}],[{\"p\":1}]]^(p)",
+   "result": {
+    "$error": "T2008"
+   }
+  },
+  {
+   "expression": "[[{\"p\":null}],[{\"q\":1}]]^(p)",
+   "result": [
+    [
+     {
+      "p": null
+     }
+    ],
+    [
+     {
+      "q": 1
+     }
+    ]
+   ]
+  },
+  {
+   "expression": "[[{\"p\":2},{\"p\":1}],[{\"q\":1}]]^(p)",
+   "result": [
+    [
+     {
+      "p": 2
+     },
+     {
+      "p": 1
+     }
+    ],
+    [
+     {
+      "q": 1
+     }
+    ]
+   ]
+  },
+  {
+   "expression": "[[{\"p\":true}],[{\"q\":1}]]^(p)",
+   "result": [
+    [
+     {
+      "p": true
+     }
+    ],
+    [
+     {
+      "q": 1
+     }
+    ]
+   ]
+  },
+  {
+   "expression": "[[{\"p\":true}],[{\"q\":1}]]^(>p)",
+   "result": [
+    [
+     {
+      "p": true
+     }
+    ],
+    [
+     {
+      "q": 1
+     }
+    ]
+   ]
+  },
+  {
+   "expression": "[[{\"p\":true}],[{\"q\":1}]]^(p, $count($))",
+   "result": [
+    [
+     {
+      "p": true
+     }
+    ],
+    [
+     {
+      "q": 1
+     }
+    ]
+   ]
+  },
+  {
+   "expression": "{\"x\": [[{\"p\":true}],[{\"q\":1}]]}.(x#$i^(p))",
+   "result": [
+    [
+     {
+      "p": true
+     }
+    ],
+    [
+     {
+      "q": 1
+     }
+    ]
+   ]
+  },
+  {
+   "expression": "{\"x\": [{\"p\":null},{\"q\":1}]}.(x^(p))",
+   "result": [
+    {
+     "p": null
+    },
+    {
+     "q": 1
+    }
+   ]
+  },
+  {
+   "expression": "[{\"p\":null},{\"q\":1},{\"q\":2}]^(p)",
+   "result": [
+    {
+     "p": null
+    },
+    {
+     "q": 1
+    },
+    {
+     "q": 2
+    }
+   ]
+  },
+  {
+   "expression": "[{\"p\":null},{\"q\":1},{\"p\":2}]^(p)",
+   "result": {
+    "$error": "T2008"
+   }
+  },
+  {
+   "expression": "[[1,2],[3]].([3]#$k{\"k\": $})",
+   "result": [
+    {
+     "k": [
+      3,
+      3
+     ]
+    },
+    {
+     "k": 3
+    }
+   ]
+  },
+  {
+   "expression": "[[1,2],[3]].([3,1]#$k{\"k\": $count($)})",
+   "result": [
+    {
+     "k": 4
+    },
+    {
+     "k": 2
+    }
+   ]
+  },
+  {
+   "expression": "[[1,2],[3]].([3,1]#$k)",
+   "result": [
+    3,
+    1,
+    3,
+    1,
+    3,
+    1
+   ]
+  },
+  {
+   "expression": "[[1,2],[3]].([3,1]#$k.$)",
+   "result": [
+    3,
+    1,
+    3,
+    1
+   ]
+  },
+  {
+   "expression": "[[1,2],[3]].([3,1]#$k{\"k\": $k})",
+   "result": [
+    {
+     "k": [
+      0,
+      1,
+      0,
+      1
+     ]
+    },
+    {
+     "k": [
+      0,
+      1
+     ]
+    }
+   ]
+  },
+  {
+   "expression": "[[1,2],[3]].([3,1]@$k{\"k\": $})",
+   "result": [
+    {
+     "k": [
+      3,
+      1
+     ]
+    },
+    {
+     "k": [
+      3,
+      1
+     ]
+    }
+   ]
+  },
+  {
+   "expression": "[[1,2],[3]].([3,1]@$k.$k)",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "[[1,2],[3]].([3,1]@$k.($))",
+   "result": [
+    1,
+    2,
+    3
+   ]
+  },
+  {
+   "expression": "[[1,2],[3]].([$]#$k.[$, $k])",
+   "result": [
+    1,
+    2,
+    3
+   ]
+  },
+  {
+   "expression": "[[{\"p\":1}],[{\"q\":1}]]^(>p)",
+   "result": [
+    [
+     {
+      "p": 1
+     }
+    ],
+    [
+     {
+      "q": 1
+     }
+    ]
+   ]
+  },
+  {
+   "expression": "[[{\"p\":2}],[{\"q\":1}],[{\"p\":1}]]^(>p)",
+   "result": [
+    [
+     {
+      "p": 2
+     }
+    ],
+    [
+     {
+      "p": 1
+     }
+    ],
+    [
+     {
+      "q": 1
+     }
+    ]
+   ]
+  },
+  {
+   "expression": "[{\"p\":1},{\"q\":1}]^(>p)",
+   "result": [
+    {
+     "p": 1
+    },
+    {
+     "q": 1
+    }
+   ]
+  },
+  {
+   "expression": "[{\"p\":1},{\"q\":1},{\"p\":3},{\"p\":2}]^(>p)",
+   "result": [
+    {
+     "p": 3
+    },
+    {
+     "p": 2
+    },
+    {
+     "p": 1
+    },
+    {
+     "q": 1
+    }
+   ]
+  },
+  {
+   "expression": "[{\"p\":1},{\"q\":1},{\"p\":3},{\"p\":2}]^(>p, q)",
+   "result": [
+    {
+     "p": 3
+    },
+    {
+     "p": 2
+    },
+    {
+     "p": 1
+    },
+    {
+     "q": 1
+    }
+   ]
+  },
+  {
+   "expression": "[{\"p\":1},{\"q\":1},{\"p\":\"a\"}]^(p)",
+   "result": {
+    "$error": "T2007"
+   }
+  },
+  {
+   "expression": "[{\"p\":1,\"r\":1},{\"p\":1,\"r\":\"a\"},{\"p\":2}]^(p, r)",
+   "result": {
+    "$error": "T2007"
+   }
+  },
+  {
+   "expression": "[{\"p\":1,\"r\":1},{\"p\":2,\"r\":\"a\"}]^(p, r)",
+   "result": [
+    {
+     "p": 1,
+     "r": 1
+    },
+    {
+     "p": 2,
+     "r": "a"
+    }
+   ]
+  },
+  {
+   "expression": "[{\"p\":1},{\"p\":[1]}]^(p)",
+   "result": {
+    "$error": "T2008"
+   }
+  },
+  {
+   "expression": "[{\"p\":\"a\"},{\"p\":{}}]^(>p)",
+   "result": {
+    "$error": "T2008"
+   }
+  },
+  {
+   "expression": "[1].($map($$.objs, function($x){ {\"id\": $x.id} }))",
+   "result": [
+    {},
+    {}
+   ]
+  },
+  {
+   "expression": "[1].($$.objs@$i.{\"a\": $i.id, \"b\": $i.p})",
+   "result": [
+    {
+     "b": 1
+    },
+    {
+     "b": 2
+    }
+   ]
+  },
+  {
+   "expression": "[1].($reduce($$.objs, function($acc, $x){ $acc + {\"v\": $x.p}.v }, 0))",
+   "result": 3
+  },
+  {
+   "expression": "[1].($$.objs.{\"a\": id, \"s\": $string()})",
+   "result": [
+    {
+     "s": "{\"p\":1}"
+    },
+    {
+     "s": "{\"p\":2}"
+    }
+   ]
+  },
+  {
+   "expression": "[1].($$.objs.{\"a\": id, \"s\": $})",
+   "result": [
+    {
+     "s": {
+      "p": 1
+     }
+    },
+    {
+     "s": {
+      "p": 2
+     }
+    }
+   ]
+  },
+  {
+   "expression": "[1].($$.objs{$string(p): $})",
+   "result": {
+    "1": {
+     "p": 1
+    },
+    "2": {
+     "p": 2
+    }
+   }
+  },
+  {
+   "expression": "[1].($$.objs{id: p})",
+   "result": {}
+  },
+  {
+   "expression": "[1].($$.objs{\"k\": function(){$}()})",
+   "result": {
+    "k": [
+     {
+      "p": 1
+     },
+     {
+      "p": 2
+     }
+    ]
+   }
+  },
+  {
    "expression": "acct.Order.P#$i^(>$i){\"k\": $keys($)}",
    "result": {
     "k": [
@@ -12157,6 +14654,826 @@
      4
     ]
    }
+  },
+  {
+   "expression": "$^(a[0])",
+   "root": true,
+   "result": {
+    "$error": "T2008"
+   }
+  },
+  {
+   "expression": "$^($count(a))",
+   "root": true,
+   "result": [
+    {
+     "a": [
+      3
+     ]
+    },
+    {
+     "a": [
+      [
+       4
+      ]
+     ],
+     "b": {
+      "c": [
+       2
+      ]
+     }
+    },
+    {
+     "a": [
+      1,
+      2
+     ],
+     "b": {
+      "c": [
+       [
+        1
+       ]
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "expression": "a^($)",
+   "root": true,
+   "result": {
+    "$error": "T2008"
+   }
+  },
+  {
+   "expression": "$[1]^(a)",
+   "root": true,
+   "result": {
+    "a": [
+     3
+    ]
+   }
+  },
+  {
+   "expression": "$[1].a^($)",
+   "root": true,
+   "result": 3
+  },
+  {
+   "expression": "*^($count(a))",
+   "root": true,
+   "result": [
+    {
+     "a": [
+      3
+     ]
+    },
+    {
+     "a": [
+      [
+       4
+      ]
+     ],
+     "b": {
+      "c": [
+       2
+      ]
+     }
+    },
+    {
+     "a": [
+      1,
+      2
+     ],
+     "b": {
+      "c": [
+       [
+        1
+       ]
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "expression": "$$^(a[0])",
+   "root": true,
+   "result": {
+    "$error": "T2008"
+   }
+  },
+  {
+   "expression": "(a[0])^($)",
+   "root": true,
+   "result": [
+    1,
+    3,
+    4
+   ]
+  },
+  {
+   "expression": "(a[-1])^($)",
+   "root": true,
+   "result": [
+    2,
+    3,
+    4
+   ]
+  },
+  {
+   "expression": "[a[0]]^($)",
+   "root": true,
+   "result": [
+    1,
+    3,
+    4
+   ]
+  },
+  {
+   "expression": "$sum(a[0])^($)",
+   "root": true,
+   "result": 8
+  },
+  {
+   "expression": "$count(a[0])^($)",
+   "root": true,
+   "result": 3
+  },
+  {
+   "expression": "$string(a[0])^($)",
+   "root": true,
+   "result": "[1,3,4]"
+  },
+  {
+   "expression": "(a[0])^($)#$i.$i",
+   "root": true,
+   "result": [
+    0,
+    1,
+    2
+   ]
+  },
+  {
+   "expression": "(a[0])[]^($)",
+   "root": true,
+   "result": [
+    1,
+    3,
+    4
+   ]
+  },
+  {
+   "expression": "[a[0]][]^($)",
+   "root": true,
+   "result": [
+    1,
+    3,
+    4
+   ]
+  },
+  {
+   "expression": "\"x\"^($)",
+   "root": true,
+   "result": "x"
+  },
+  {
+   "expression": "(a)^($)",
+   "root": true,
+   "result": {
+    "$error": "T2008"
+   }
+  },
+  {
+   "expression": "[a]^($)",
+   "root": true,
+   "result": {
+    "$error": "T2008"
+   }
+  },
+  {
+   "expression": "$^($)",
+   "root": true,
+   "result": {
+    "$error": "T2008"
+   }
+  },
+  {
+   "expression": "($)^($)",
+   "root": true,
+   "result": {
+    "$error": "T2008"
+   }
+  },
+  {
+   "expression": "(a[0])^($)[0]",
+   "root": true,
+   "result": 1
+  },
+  {
+   "expression": "(b.c)^($)",
+   "root": true,
+   "result": {
+    "$error": "T2008"
+   }
+  },
+  {
+   "expression": "$map(a, function($v) { $v })^($)",
+   "root": true,
+   "result": {
+    "$error": "T2008"
+   }
+  },
+  {
+   "expression": "[3]@$w.($)",
+   "root": true,
+   "result": [
+    {
+     "a": [
+      1,
+      2
+     ],
+     "b": {
+      "c": [
+       [
+        1
+       ]
+      ]
+     }
+    },
+    {
+     "a": [
+      3
+     ]
+    },
+    {
+     "a": [
+      [
+       4
+      ]
+     ],
+     "b": {
+      "c": [
+       2
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "expression": "[3]@$w.({\"v\": $})",
+   "root": true,
+   "result": {
+    "v": [
+     {
+      "a": [
+       1,
+       2
+      ],
+      "b": {
+       "c": [
+        [
+         1
+        ]
+       ]
+      }
+     },
+     {
+      "a": [
+       3
+      ]
+     },
+     {
+      "a": [
+       [
+        4
+       ]
+      ],
+      "b": {
+       "c": [
+        2
+       ]
+      }
+     }
+    ]
+   }
+  },
+  {
+   "expression": "[3]@$w.{\"v\": $}",
+   "root": true,
+   "result": {
+    "v": [
+     {
+      "a": [
+       1,
+       2
+      ],
+      "b": {
+       "c": [
+        [
+         1
+        ]
+       ]
+      }
+     },
+     {
+      "a": [
+       3
+      ]
+     },
+     {
+      "a": [
+       [
+        4
+       ]
+      ],
+      "b": {
+       "c": [
+        2
+       ]
+      }
+     }
+    ]
+   }
+  },
+  {
+   "expression": "[3]@$w.$count($)",
+   "root": true,
+   "result": 3
+  },
+  {
+   "expression": "[3]#$i.($)",
+   "root": true,
+   "result": 3
+  },
+  {
+   "expression": "[3]#$i.{\"v\": $}",
+   "root": true,
+   "result": {
+    "v": 3
+   }
+  },
+  {
+   "expression": "[$]@$w.($)",
+   "root": true,
+   "result": [
+    {
+     "a": [
+      1,
+      2
+     ],
+     "b": {
+      "c": [
+       [
+        1
+       ]
+      ]
+     }
+    },
+    {
+     "a": [
+      3
+     ]
+    },
+    {
+     "a": [
+      [
+       4
+      ]
+     ],
+     "b": {
+      "c": [
+       2
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "expression": "[$]@$w.{\"v\": $}.v",
+   "root": true,
+   "result": [
+    {
+     "a": [
+      1,
+      2
+     ],
+     "b": {
+      "c": [
+       [
+        1
+       ]
+      ]
+     }
+    },
+    {
+     "a": [
+      3
+     ]
+    },
+    {
+     "a": [
+      [
+       4
+      ]
+     ],
+     "b": {
+      "c": [
+       2
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "expression": "[$]@$w#$i.[$]",
+   "root": true,
+   "result": [
+    {
+     "a": [
+      1,
+      2
+     ],
+     "b": {
+      "c": [
+       [
+        1
+       ]
+      ]
+     }
+    },
+    {
+     "a": [
+      3
+     ]
+    },
+    {
+     "a": [
+      [
+       4
+      ]
+     ],
+     "b": {
+      "c": [
+       2
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "expression": "[a]@$w.{\"v\": $}",
+   "root": true,
+   "result": {
+    "v": [
+     {
+      "a": [
+       1,
+       2
+      ],
+      "b": {
+       "c": [
+        [
+         1
+        ]
+       ]
+      }
+     },
+     {
+      "a": [
+       3
+      ]
+     },
+     {
+      "a": [
+       [
+        4
+       ]
+      ],
+      "b": {
+       "c": [
+        2
+       ]
+      }
+     }
+    ]
+   }
+  },
+  {
+   "expression": "[a]@$w.($w)",
+   "root": true,
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "[$]#$i.($i)",
+   "root": true,
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "[1,2]@$w.$w",
+   "root": true,
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "[1,2]@$w.($)",
+   "root": true,
+   "result": [
+    {
+     "a": [
+      1,
+      2
+     ],
+     "b": {
+      "c": [
+       [
+        1
+       ]
+      ]
+     }
+    },
+    {
+     "a": [
+      3
+     ]
+    },
+    {
+     "a": [
+      [
+       4
+      ]
+     ],
+     "b": {
+      "c": [
+       2
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "expression": "[a]#$i.($)",
+   "root": true,
+   "result": [
+    1,
+    2,
+    3,
+    4
+   ]
+  },
+  {
+   "expression": "[a]#$i.{\"v\": $, \"i\": $i}",
+   "root": true,
+   "result": [
+    {
+     "v": 1
+    },
+    {
+     "v": 2
+    },
+    {
+     "v": 3
+    },
+    {
+     "v": 4
+    }
+   ]
+  },
+  {
+   "expression": "a@$w.($)",
+   "root": true,
+   "result": [
+    {
+     "a": [
+      1,
+      2
+     ],
+     "b": {
+      "c": [
+       [
+        1
+       ]
+      ]
+     }
+    },
+    {
+     "a": [
+      3
+     ]
+    },
+    {
+     "a": [
+      [
+       4
+      ]
+     ],
+     "b": {
+      "c": [
+       2
+      ]
+     }
+    },
+    {
+     "a": [
+      1,
+      2
+     ],
+     "b": {
+      "c": [
+       [
+        1
+       ]
+      ]
+     }
+    },
+    {
+     "a": [
+      3
+     ]
+    },
+    {
+     "a": [
+      [
+       4
+      ]
+     ],
+     "b": {
+      "c": [
+       2
+      ]
+     }
+    },
+    {
+     "a": [
+      1,
+      2
+     ],
+     "b": {
+      "c": [
+       [
+        1
+       ]
+      ]
+     }
+    },
+    {
+     "a": [
+      3
+     ]
+    },
+    {
+     "a": [
+      [
+       4
+      ]
+     ],
+     "b": {
+      "c": [
+       2
+      ]
+     }
+    },
+    {
+     "a": [
+      1,
+      2
+     ],
+     "b": {
+      "c": [
+       [
+        1
+       ]
+      ]
+     }
+    },
+    {
+     "a": [
+      3
+     ]
+    },
+    {
+     "a": [
+      [
+       4
+      ]
+     ],
+     "b": {
+      "c": [
+       2
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "expression": "a@$w.$w",
+   "root": true,
+   "result": [
+    1,
+    2,
+    3,
+    4
+   ]
+  },
+  {
+   "expression": "a#$i.$i",
+   "root": true,
+   "result": [
+    0,
+    1,
+    2,
+    3
+   ]
+  },
+  {
+   "expression": "\"q\"#$i.($)",
+   "root": "empty",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "\"q\"@$w.($)",
+   "root": "empty",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "[1,2]@$w.$w",
+   "root": "empty",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "[1,2]@$w.($)",
+   "root": "empty",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "[$]@$w.($)",
+   "root": "empty",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "[1,2]#$i.($)",
+   "root": "empty",
+   "result": [
+    1,
+    2
+   ]
+  },
+  {
+   "expression": "[$]#$i.$i",
+   "root": "empty",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "a@$w.($)",
+   "root": "empty",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "$@$w.($)",
+   "root": "empty",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "[1]@$w.$count($)",
+   "root": "empty",
+   "result": 0
+  },
+  {
+   "expression": "[1].($)",
+   "root": "empty",
+   "result": 1
+  },
+  {
+   "expression": "$^($)",
+   "root": "empty",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "[]",
+   "root": "empty",
+   "result": []
   }
  ]
 }
