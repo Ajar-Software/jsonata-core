@@ -727,9 +727,13 @@ fn get_field_cached(
                 return Ok(values.pop().expect("length checked"));
             }
             let mut results: Vec<JValue> = Vec::with_capacity(values.len());
+            // Flat (#196) when no array was flattened in: what is pushed is
+            // then a non-array, or a `cons` array a step keeps whole.
+            let mut flat = true;
             for v in values {
                 match v {
                     JValue::Array(inner) if !(per_item && inner.cons) => {
+                        flat = false;
                         results.extend(inner.iter().cloned())
                     }
                     other => results.push(other),
@@ -739,7 +743,7 @@ fn get_field_cached(
             Ok(match results.len() {
                 0 => JValue::Undefined,
                 1 => results.pop().unwrap(),
-                _ => JValue::sequence(results),
+                _ => JValue::sequence_flat(results, flat),
             })
         }
         _ => Ok(JValue::Undefined),
