@@ -538,85 +538,206 @@ fn test_with_variables() {
     assert_eq!(result, JValue::from(json!(90.0)));
 }
 
-/// Deep non-tail recursion must hit the soft recursion-depth guard and return
-/// a graceful U1001 error - not overrun the *real* OS stack and crash the
-/// process. Windows' default thread stack (~1MB) is much smaller than
-/// Linux's (~8MB), so this is run on a thread with an explicitly small stack
-/// to make the platform-independent of the test host: reference test suite
-/// case `tail-recursion/case005` crashed the whole process on windows-latest
-/// CI runners before the fix (see GitHub issue #34).
-#[test]
-fn test_deep_recursion_does_not_overflow_native_stack() {
-    // JValue/EvaluatorError are Rc-based (deliberately !Send for speed), so the
-    // evaluation has to stay inside the spawned closure - only a plain String
-    // summary crosses the join boundary.
-    let handle = std::thread::Builder::new()
-        .stack_size(1024 * 1024) // 1MB, matching Windows' default thread stack
-        .spawn(|| {
-            let data = JValue::Null;
-            let ast = parse("($inf := function($n){$n+$inf($n-1)}; $inf(5))").unwrap();
-            let mut evaluator = Evaluator::new();
-            match evaluator.evaluate(&ast, &data) {
-                Ok(v) => format!("Ok({v:?})"),
-                Err(e) => format!("Err({e})"),
-            }
-        })
-        .unwrap();
-
-    let outcome = handle
-        .join()
-        .expect("evaluation overflowed the native stack instead of returning a graceful error");
-
-    assert!(
-        outcome.contains("U1001"),
-        "expected a U1001 stack-overflow error, got: {outcome}"
-    );
-}
-
-/// A user-configured `max_stack_depth` tighter than the hardcoded native-stack
-/// ceiling (302) must trip D1011, not U1001 — the tree-walker's own guardrail,
-/// not the Rust-specific native-stack safety net.
-#[test]
-fn test_max_stack_depth_raises_d1011_not_u1001() {
-    let data = JValue::Null;
-    let ast = parse("($inf := function($n){$n+$inf($n-1)}; $inf(5))").unwrap();
-    let context = Context::new();
-    let options = jsonata_core::evaluator::EvaluatorOptions {
-        max_stack_depth: Some(10),
-        ..Default::default()
-    };
-    let mut evaluator = Evaluator::with_options(context, options);
-    let result = evaluator.evaluate(&ast, &data);
-    let err = result.expect_err("expected a D1011 stack-overflow error");
-    assert!(
-        err.to_string().contains("D1011"),
-        "expected D1011, got: {err}"
-    );
-}
-
-/// A `max_stack_depth` at or above the hardcoded ceiling changes nothing — the
-/// hardcoded 302 ceiling (and its U1001 error) remains the effective, always-on
-/// backstop (GitHub issue #34).
-#[test]
-fn test_max_stack_depth_above_hardcoded_ceiling_still_raises_u1001() {
-    let handle = std::thread::Builder::new()
+/// Run `f` on a thread with a 1MB stack, Windows' default for a main thread
+/// (Linux gives 8MB), so the deep-recursion tests below fail by crashing the
+/// test process if any recursive path overruns the real stack (GitHub issues
+/// #34, #200). `JValue` is `!Send`, so only a `String` summary comes back.
+fn on_small_stack(f: impl FnOnce() -> String + Send + 'static) -> String {
+    std::thread::Builder::new()
         .stack_size(1024 * 1024)
-        .spawn(|| {
-            let data = JValue::Null;
-            let ast = parse("($inf := function($n){$n+$inf($n-1)}; $inf(5))").unwrap();
-            let options = jsonata_core::evaluator::EvaluatorOptions {
-                max_stack_depth: Some(100_000),
-                ..Default::default()
-            };
-            let mut evaluator = Evaluator::with_options(Context::new(), options);
-            match evaluator.evaluate(&ast, &data) {
-                Ok(v) => format!("Ok({v:?})"),
-                Err(e) => format!("Err({e})"),
-            }
-        })
-        .unwrap();
-    let outcome = handle.join().unwrap();
+        .spawn(f)
+        .unwrap()
+        .join()
+        .expect("evaluation overflowed the native stack instead of returning")
+}
+
+/// Evaluate `expr` with the tree-walker and with the default dispatch
+/// (`Expression`, which uses the bytecode VM when it can) and return both
+/// outcomes as text.
+fn eval_both_engines(expr: &str, options: EvaluatorOptions) -> (String, String) {
+    fn show(r: Result<JValue, jsonata_core::evaluator::EvaluatorError>) -> String {
+        match r {
+            Ok(v) => format!("Ok({})", v.to_json_string().unwrap()),
+            Err(e) => format!("Err({e})"),
+        }
+    }
+    let ast = parse(expr).unwrap();
+    let tree_walker = show(
+        Evaluator::with_options(Context::new(), options.clone()).evaluate(&ast, &JValue::Null),
+    );
+    let default = show(
+        jsonata_core::Expression::compile_with_options(expr, options)
+            .unwrap()
+            .evaluate(&JValue::Null),
+    );
+    (tree_walker, default)
+}
+
+const NON_TAIL_RECURSION: &str = "($f := function($n){ $n <= 0 ? 0 : 1 + $f($n - 1) }; $f(N))";
+
+/// Non-tail recursion goes as deep as jsonata-js lets it (GitHub issue #200):
+/// it used to stop at 302 evaluation levels, about 100 calls, with U1001.
+/// jsonata-js has no fixed limit. On a 1MB stack, too.
+#[test]
+fn test_deep_non_tail_recursion_evaluates() {
+    let outcome = on_small_stack(|| {
+        let mut out = String::new();
+        for n in [150, 1000, 5000, 9000] {
+            let expr = NON_TAIL_RECURSION.replace('N', &n.to_string());
+            let (tree_walker, default) = eval_both_engines(&expr, EvaluatorOptions::default());
+            out.push_str(&format!("{n}: {tree_walker} {default}\n"));
+        }
+        out
+    });
+    assert_eq!(
+        outcome,
+        "150: Ok(150) Ok(150)\n1000: Ok(1000) Ok(1000)\n5000: Ok(5000) Ok(5000)\n\
+         9000: Ok(9000) Ok(9000)\n"
+    );
+}
+
+/// A recursive function can build a value as deep as its recursion. Comparing
+/// it, turning it into a string or JSON, and dropping it must not overflow a
+/// small stack either. (The array depth is kept low because dropping a
+/// `JValue` is still plainly recursive, and an unoptimized build's drop of
+/// nested arrays overflows 1MB at a few thousand levels.)
+#[test]
+fn test_deep_value_built_by_recursion() {
+    let outcome = on_small_stack(|| {
+        let expr = "($f := function($n){ $n <= 0 ? {} : {'a': $f($n - 1)} }; \
+                    $v := $f(9000); [$v = $f(9000), $length($string($v))])";
+        let (tree_walker, default) = eval_both_engines(expr, EvaluatorOptions::default());
+        let ast = parse("($f := function($n){ $n <= 0 ? [] : [[$f($n - 1)]] }; $f(1500))").unwrap();
+        let deep = Evaluator::new().evaluate(&ast, &JValue::Null).unwrap();
+        let json = deep.to_json_string().unwrap();
+        let reparsed_equal = JValue::from_json_str(&json).map(|v| v == deep);
+        format!("{tree_walker} {default} {} {reparsed_equal:?}", json.len())
+    });
+    // 9000 levels of `{"a":` plus the innermost `{}` and the closing braces.
+    // The arrays nest 1500 deep, so their JSON is 3002 characters, which
+    // serde_json's own 128-level parse limit rejects reading back.
+    let string_len = 9000 * 6 + 2;
+    assert!(
+        outcome.starts_with(&format!(
+            "Ok([true,{string_len}]) Ok([true,{string_len}]) 3002 Err("
+        )),
+        "got: {outcome}"
+    );
+}
+
+/// Recursion with no base case stops with U1001 at the built-in limit, on
+/// both engines, instead of exhausting the stack or memory.
+#[test]
+fn test_unbounded_recursion_raises_u1001() {
+    let outcome = on_small_stack(|| {
+        let (tree_walker, default) = eval_both_engines(
+            "($inf := function($n){$n+$inf($n-1)}; $inf(5))",
+            EvaluatorOptions::default(),
+        );
+        format!("{tree_walker}\n{default}")
+    });
+    assert_eq!(
+        outcome,
+        "Err(Evaluation error: U1001: Stack overflow - maximum recursion depth (30000) exceeded)\n\
+         Err(Evaluation error: U1001: Stack overflow - maximum recursion depth (30000) exceeded)"
+    );
+}
+
+/// The same through calls of an expression (`($f)(x)`, `($g := $f; $g)(x)`),
+/// which go through `apply_call_value` rather than a named call: deep
+/// recursion evaluates, and with no base case it is U1001, not a crash.
+#[test]
+fn test_recursion_through_expression_calls() {
+    let outcome = on_small_stack(|| {
+        let mut out = String::new();
+        for expr in [
+            "($f := function($n){ $n <= 0 ? 0 : 1 + ($f)($n - 1) }; ($f)(5000))",
+            "($f := function($n){ $n <= 0 ? 0 : 1 + ($g := $f; $g)($n - 1) }; $f(3000))",
+            "($inf := function($n){ $n + ($inf)($n - 1) }; ($inf)(5))",
+        ] {
+            let (tree_walker, default) = eval_both_engines(expr, EvaluatorOptions::default());
+            out.push_str(&format!("{tree_walker} | {default}\n"));
+        }
+        out
+    });
+    let u1001 =
+        "Err(Evaluation error: U1001: Stack overflow - maximum recursion depth (30000) exceeded)";
+    assert_eq!(
+        outcome,
+        format!("Ok(5000) | Ok(5000)\nOk(3000) | Ok(3000)\n{u1001} | {u1001}\n")
+    );
+}
+
+/// A user-configured `max_stack_depth` raises D1011, jsonata-js's error for
+/// its `stack` option, on both engines; recursion that fits under it runs.
+#[test]
+fn test_max_stack_depth_raises_d1011() {
+    let outcome = on_small_stack(|| {
+        let options = |depth| EvaluatorOptions {
+            max_stack_depth: Some(depth),
+            ..Default::default()
+        };
+        let mut out = String::new();
+        for (expr, depth) in [
+            ("($inf := function($n){$n+$inf($n-1)}; $inf(5))", 10),
+            (&*NON_TAIL_RECURSION.replace('N', "3000"), 5000),
+            (&*NON_TAIL_RECURSION.replace('N', "3000"), 10_000),
+        ] {
+            let (tree_walker, default) = eval_both_engines(expr, options(depth));
+            out.push_str(&format!("{depth}: {tree_walker} | {default}\n"));
+        }
+        out
+    });
+    let d1011 = "Err(Evaluation error: D1011: Stack overflow. Check for non-terminating recursive function. \
+                 Consider rewriting as tail-recursive)";
+    assert_eq!(
+        outcome,
+        format!("10: {d1011} | {d1011}\n5000: {d1011} | {d1011}\n10000: Ok(3000) | Ok(3000)\n")
+    );
+}
+
+/// A `max_stack_depth` at or above the built-in limit changes nothing: the
+/// built-in limit (and its U1001) still applies.
+#[test]
+fn test_max_stack_depth_above_built_in_limit_still_raises_u1001() {
+    let outcome = on_small_stack(|| {
+        let options = EvaluatorOptions {
+            max_stack_depth: Some(100_000),
+            ..Default::default()
+        };
+        eval_both_engines("($inf := function($n){$n+$inf($n-1)}; $inf(5))", options).0
+    });
     assert!(outcome.contains("U1001"), "expected U1001, got: {outcome}");
+}
+
+/// A deeply nested expression evaluated at every level of a deep recursion:
+/// compiled sub-expressions (here a `$map` body) and tree-walked ones must
+/// both fit in the stack left at that depth, and an expression nested past
+/// the parser's limit is still a clean U1002.
+#[test]
+fn test_deeply_nested_expression_inside_deep_recursion() {
+    let outcome = on_small_stack(|| {
+        let mut out = String::new();
+        for nesting in [50, 300] {
+            let inner = format!("{}$x{}", "(".repeat(nesting), "+0)".repeat(nesting));
+            let expr = format!(
+                "($f := function($n){{ $n <= 0 ? 0 : 1 + $f($map([$n], function($x){{{inner}}}) - 1) }}; $f(3000))"
+            );
+            let (tree_walker, default) = eval_both_engines(&expr, EvaluatorOptions::default());
+            out.push_str(&format!("{nesting}: {tree_walker} {default}\n"));
+        }
+        let too_deep = format!("{}1{}", "[".repeat(5000), "]".repeat(5000));
+        match parse(&too_deep) {
+            Ok(_) => out.push_str("parsed"),
+            Err(e) => out.push_str(&e.to_string()),
+        }
+        out
+    });
+    assert!(
+        outcome.starts_with("50: Ok(3000) Ok(3000)\n300: Ok(3000) Ok(3000)\n"),
+        "got: {outcome}"
+    );
+    assert!(outcome.contains("U1002"), "got: {outcome}");
 }
 
 /// Object construction must drop keys whose value is an undefined (no-match)

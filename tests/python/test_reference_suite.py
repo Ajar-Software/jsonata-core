@@ -264,10 +264,19 @@ def test_reference_suite(test_id: str, group_name: str, spec: dict[str, Any], en
     has_error_code = "code" in spec
     has_error_obj = "error" in spec
 
+    # A case with a `timelimit` and a `depth` runs under the reference
+    # runner's own guard (`timeboxExpression` in run-test-suite.js), which
+    # raises U1001 once evaluation nests deeper than `depth`. jsonata-js itself
+    # has no depth limit, so the case's U1001 comes from the runner, not the
+    # library. Mirror it with `max_stack_depth`, whose D1011 stands in for the
+    # runner's U1001 below. (The time limit is not mirrored: a runaway tail
+    # recursion already stops at the trampoline's iteration cap.)
+    runner_depth = spec.get("depth") if "timelimit" in spec else None
+
     # Execute test
     try:
         # Compile expression
-        compiled = jsonatapy.compile(expr)
+        compiled = jsonatapy.compile(expr, max_stack_depth=runner_depth)
 
         # Evaluate with optional bindings
         if data is None:
@@ -321,6 +330,8 @@ def test_reference_suite(test_id: str, group_name: str, spec: dict[str, Any], en
             # Expected an error with specific code
             expected_code = spec["code"]
             actual_code = extract_error_code(error_msg)
+            if runner_depth is not None and actual_code == "D1011":
+                actual_code = "U1001"  # the runner's depth guard, see above
 
             if actual_code is None:
                 # Error occurred but no code in message

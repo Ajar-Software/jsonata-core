@@ -4,7 +4,7 @@
 #![allow(clippy::explicit_counter_loop)]
 #![allow(clippy::approx_constant)]
 
-use crate::value::JValue;
+use crate::value::{with_stack, JValue};
 use indexmap::IndexMap;
 use std::borrow::Cow;
 use thiserror::Error;
@@ -198,8 +198,8 @@ pub mod string {
                 "D1001: Number out of range: {}",
                 n
             ))),
-            JValue::Array(arr) => arr.iter().try_for_each(reject_non_finite),
-            JValue::Object(obj) => obj.values().try_for_each(reject_non_finite),
+            JValue::Array(arr) => with_stack(|| arr.iter().try_for_each(reject_non_finite)),
+            JValue::Object(obj) => with_stack(|| obj.values().try_for_each(reject_non_finite)),
             _ => Ok(()),
         }
     }
@@ -258,7 +258,7 @@ pub mod string {
                         out.push_str(item_sep);
                     }
                     out.push_str(&open_sep);
-                    write_stringified(v, indent, depth + 1, out);
+                    with_stack(|| write_stringified(v, indent, depth + 1, out));
                 }
                 out.push_str(&close_sep);
                 out.push(']');
@@ -276,7 +276,7 @@ pub mod string {
                     out.push_str(&open_sep);
                     write_json_escaped(k, out);
                     out.push_str(key_sep);
-                    write_stringified(v, indent, depth + 1, out);
+                    with_stack(|| write_stringified(v, indent, depth + 1, out));
                 }
                 out.push_str(&close_sep);
                 out.push('}');
@@ -926,12 +926,14 @@ pub mod boolean {
             JValue::Number(n) => *n != 0.0,
             JValue::String(s) => !s.is_empty(),
             JValue::Array(arr) => {
-                if arr.len() == 1 {
-                    to_boolean(&arr[0])
-                } else {
-                    // Empty arrays are falsy; multi-element: true if any element is truthy
-                    arr.iter().any(to_boolean)
-                }
+                with_stack(|| {
+                    if arr.len() == 1 {
+                        to_boolean(&arr[0])
+                    } else {
+                        // Empty arrays are falsy; multi-element: true if any element is truthy
+                        arr.iter().any(to_boolean)
+                    }
+                })
             }
             JValue::Object(obj) => !obj.is_empty(),
             // Functions are false, a regex being one (#205).
@@ -1937,14 +1939,14 @@ pub mod array {
             (JValue::Bool(a), JValue::Bool(b)) => a == b,
             (JValue::Number(a), JValue::Number(b)) => a == b,
             (JValue::String(a), JValue::String(b)) => a == b,
-            (JValue::Array(a), JValue::Array(b)) => {
+            (JValue::Array(a), JValue::Array(b)) => with_stack(|| {
                 a.len() == b.len() && a.iter().zip(b.iter()).all(|(x, y)| values_equal(x, y))
-            }
-            (JValue::Object(a), JValue::Object(b)) => {
+            }),
+            (JValue::Object(a), JValue::Object(b)) => with_stack(|| {
                 a.len() == b.len()
                     && a.iter()
                         .all(|(k, v)| b.get(k).is_some_and(|v2| values_equal(v, v2)))
-            }
+            }),
             #[cfg(feature = "python")]
             (JValue::LazyPyDict(x), JValue::Object(bm)) => x.to_object_ref().is_some_and(|am| {
                 am.len() == bm.len()
