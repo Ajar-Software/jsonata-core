@@ -53,6 +53,30 @@ fn invalid_call_message(args: &[AstNode]) -> String {
 
 /// Running out of input while expecting something is S0203; finding the wrong
 /// thing is S0202. A missing *parameter name* is its own code, S0208.
+/// Whether `node` is a path node in jsonata-js, so that a group-by on it is
+/// the path's `group` rather than a step's. A name or a `.` makes a path, and
+/// so do `^` and `#` on anything; `[` and `@` keep their operand's kind. A
+/// one-step `Path` whose step isn't a name came from `[` on a non-path
+/// (`$x[0]`, `*[0]`, `(e)[0]`).
+fn is_group_path(node: &AstNode) -> bool {
+    match node {
+        AstNode::Path { steps } => {
+            steps.len() > 1 || matches!(steps.first().map(|s| &s.node), Some(AstNode::Name(_)))
+        }
+        AstNode::Sort { .. } => true,
+        AstNode::Binary {
+            op: BinaryOp::IndexBind,
+            ..
+        } => true,
+        AstNode::Binary {
+            op: BinaryOp::FocusBind,
+            lhs,
+            ..
+        } => is_group_path(lhs),
+        _ => false,
+    }
+}
+
 fn expected_message(expected: &str, found: &str) -> String {
     if expected == "parameter name" {
         return "S0208: Parameter of function definition must be a variable name (start with $)"
@@ -1382,6 +1406,36 @@ impl Parser {
                 break;
             }
 
+            // A group-by on a path belongs to the whole path, as in jsonata-js,
+            // where `{` sets `group` on the path node and later `.`, `[`, `^`,
+            // `#` and `@` keep extending that same path. So `a.b{k: v}.c`
+            // groups `a.b.c`, and `a.b{k: v}[0]` filters step `b` (#208). The
+            // group is taken off here, the operator applies to the path, and
+            // the group goes back on around the result. A group on anything
+            // else (a block, `$x`, `*`) stays a step of its own.
+            let path_group = match &lhs {
+                AstNode::ObjectTransform { input, .. }
+                    if is_group_path(input)
+                        && matches!(
+                            self.current_token,
+                            Token::Dot
+                                | Token::LeftBracket
+                                | Token::Caret
+                                | Token::Hash
+                                | Token::At
+                        ) =>
+                {
+                    match std::mem::replace(&mut lhs, AstNode::Undefined) {
+                        AstNode::ObjectTransform { input, pattern } => {
+                            lhs = *input;
+                            Some(pattern)
+                        }
+                        _ => unreachable!(),
+                    }
+                }
+                _ => None,
+            };
+
             // Handle infix operators
             match &self.current_token {
                 Token::Dot => {
@@ -1435,38 +1489,37 @@ impl Parser {
                             ))));
                             self.bump_parse_depth()?;
                             lhs = AstNode::Path { steps };
-                            continue;
-                        }
+                        } else {
+                            // Parse the expression(s) to apply - may be block with semicolons
+                            let mut expressions = vec![self.parse_expression(0)?];
 
-                        // Parse the expression(s) to apply - may be block with semicolons
-                        let mut expressions = vec![self.parse_expression(0)?];
-
-                        while self.current_token == Token::Semicolon {
-                            self.advance()?;
-                            if self.current_token == Token::RightParen {
-                                break;
+                            while self.current_token == Token::Semicolon {
+                                self.advance()?;
+                                if self.current_token == Token::RightParen {
+                                    break;
+                                }
+                                expressions.push(self.parse_expression(0)?);
                             }
-                            expressions.push(self.parse_expression(0)?);
+
+                            self.expect(Token::RightParen)?;
+
+                            // Always a Block, even with one expression: a `.(...)` step
+                            // is a jsonata-js block, which gets a frame of its own, and
+                            // the Block is what tells it apart from a `.$fn(...)` step,
+                            // whose FunctionApplication holds the call itself. (The
+                            // `.function(){...}(...)` desugaring is a Block too.)
+                            let expr = AstNode::Block(expressions);
+
+                            // Create FunctionApplication node as a path step
+                            let mut steps = match lhs {
+                                AstNode::Path { steps } => steps,
+                                _ => vec![PathStep::new(lhs)],
+                            };
+
+                            steps.push(PathStep::new(AstNode::FunctionApplication(Box::new(expr))));
+                            self.bump_parse_depth()?;
+                            lhs = AstNode::Path { steps };
                         }
-
-                        self.expect(Token::RightParen)?;
-
-                        // Always a Block, even with one expression: a `.(...)` step
-                        // is a jsonata-js block, which gets a frame of its own, and
-                        // the Block is what tells it apart from a `.$fn(...)` step,
-                        // whose FunctionApplication holds the call itself. (The
-                        // `.function(){...}(...)` desugaring is a Block too.)
-                        let expr = AstNode::Block(expressions);
-
-                        // Create FunctionApplication node as a path step
-                        let mut steps = match lhs {
-                            AstNode::Path { steps } => steps,
-                            _ => vec![PathStep::new(lhs)],
-                        };
-
-                        steps.push(PathStep::new(AstNode::FunctionApplication(Box::new(expr))));
-                        self.bump_parse_depth()?;
-                        lhs = AstNode::Path { steps };
                     } else {
                         // Normal dot path
                         let rhs = self.parse_expression(right_bp)?;
@@ -1544,16 +1597,26 @@ impl Parser {
                     }
                 }
                 Token::LeftBracket => {
-                    // S0209: A predicate cannot follow a grouping expression in a step
-                    // Check if lhs is an ObjectTransform (grouping expression)
-                    if matches!(lhs, AstNode::ObjectTransform { .. }) {
+                    self.advance()?;
+
+                    // S0209: A predicate cannot follow a grouping expression in a step.
+                    // `[]` is not a predicate: jsonata-js sets keepArray on the
+                    // grouped node instead, so `$x{k: v}[]` is the one-step path
+                    // checked here when a predicate follows it.
+                    let grouped = match &lhs {
+                        AstNode::ObjectTransform { .. } => true,
+                        AstNode::Path { steps } => matches!(
+                            steps.last().map(|s| &s.node),
+                            Some(AstNode::ObjectTransform { .. })
+                        ),
+                        _ => false,
+                    };
+                    if grouped && self.current_token != Token::RightBracket {
                         return Err(ParserError::InvalidSyntax(
                             "S0209: A predicate cannot follow a grouping expression in a step"
                                 .to_string(),
                         ));
                     }
-
-                    self.advance()?;
 
                     // A postfix predicate or `[]` attaches to the last step of
                     // the path as a stage, as jsonata-js does: on a path it
@@ -1951,6 +2014,13 @@ impl Parser {
                         rhs: Box::new(rhs),
                     };
                 }
+            }
+
+            if let Some(pattern) = path_group {
+                lhs = AstNode::ObjectTransform {
+                    input: Box::new(lhs),
+                    pattern,
+                };
             }
         }
 

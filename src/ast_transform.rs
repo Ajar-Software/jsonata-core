@@ -1464,6 +1464,33 @@ fn seek_parent_step(
     )
 }
 
+/// One level of seekParent's `name`/`wildcard` case: the level drops, and at
+/// zero `step` is tagged as the ancestor the label binds to. Returns the
+/// remaining level.
+fn tag_ancestor_step(
+    step: &mut PathStep,
+    label: &str,
+    level: usize,
+    state: &mut AncestryState,
+) -> usize {
+    let remaining = level - 1;
+    if remaining == 0 {
+        match &step.ancestor_label {
+            // Reuse: an earlier `%` already tagged this exact step.
+            // Record the alias instead of overwriting (see
+            // AncestryState's doc comment).
+            Some(existing) => {
+                state.aliases.insert(label.to_string(), existing.clone());
+            }
+            None => {
+                step.ancestor_label = Some(label.to_string());
+            }
+        }
+        step.is_tuple = true;
+    }
+    remaining
+}
+
 fn seek_parent_step_impl(
     step: &mut PathStep,
     label: &str,
@@ -1473,24 +1500,7 @@ fn seek_parent_step_impl(
 ) -> Result<usize, AstTransformError> {
     let depth = depth + 1;
     match &mut step.node {
-        AstNode::Name(_) | AstNode::Wildcard => {
-            let remaining = level - 1;
-            if remaining == 0 {
-                match &step.ancestor_label {
-                    // Reuse: an earlier `%` already tagged this exact step.
-                    // Record the alias instead of overwriting (see
-                    // AncestryState's doc comment).
-                    Some(existing) => {
-                        state.aliases.insert(label.to_string(), existing.clone());
-                    }
-                    None => {
-                        step.ancestor_label = Some(label.to_string());
-                    }
-                }
-                step.is_tuple = true;
-            }
-            Ok(remaining)
-        }
+        AstNode::Name(_) | AstNode::Wildcard => Ok(tag_ancestor_step(step, label, level, state)),
         // Chained %.%: this step is itself another (already independently
         // resolved-or-pending) `%` -- extend the level and keep walking
         // further back, exactly mirroring seekParent's `case 'parent':
@@ -1524,6 +1534,15 @@ fn seek_parent_step_impl(
             // resolve `%` against `Order` rather than raising S0217.
             None => Ok(level),
         },
+        // A group-by on a bare `*` or `%` as a step (`*{...}.%`): jsonata-js
+        // puts the group on that node, so seekParent sees a wildcard, tagged
+        // here as one, or a parent, which adds a level (#209).
+        AstNode::ObjectTransform { input, .. } if matches!(**input, AstNode::Wildcard) => {
+            Ok(tag_ancestor_step(step, label, level, state))
+        }
+        AstNode::ObjectTransform { input, .. } if matches!(**input, AstNode::Parent(_)) => {
+            Ok(level + 1)
+        }
         // A group-by reached as a step (`(a.b{...}).%`): seek through its
         // input, as seek_parent_wrapped does.
         AstNode::ObjectTransform { .. } => {
@@ -1581,6 +1600,13 @@ fn seek_parent_wrapped_impl(
         // A group-by. jsonata-js keeps the group on the path node, so
         // seekParent walks the grouped path's steps; here that path is the
         // group-by's input.
+        // A bare `*` or `%` that isn't a path step, such as the tail of
+        // `acct.(*).%` or `acct.(*{...}).%`. seekParent counts the level as
+        // it does for a step, but evaluating the node binds nothing, so a
+        // `%` that resolves at a `*` here is undefined, as in jsonata-js
+        // (#209).
+        AstNode::Wildcard => Ok(level - 1),
+        AstNode::Parent(_) => Ok(level + 1),
         AstNode::ObjectTransform { input, .. } => {
             seek_parent_wrapped(input.as_mut(), label, level, state, depth)
         }

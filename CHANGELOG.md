@@ -11,6 +11,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **A group-by on a path groups the whole path** (#208). In jsonata-js the `{...}` is the path's
+  group, and later `.` steps, filters, sorts and binds extend that same path before it is
+  grouped. So `acct.Order.P{N: N}.A` groups `acct.Order.P.A` and gives `{}` (it was `"A"`),
+  `acct.Order.P{N: N}[0]` filters step `P` (it was S0209), and a second group-by on the same
+  path, as in `acct.Order{id: id}.P{N: N}`, is S0210. A group-by on a block, `$x` or `*`
+  still applies to that step alone, and `[]` after it keeps the array instead of raising S0209.
 - **Rust API: `JValue::Array` holds a `JArray`** instead of an `Rc<Vec<JValue>>` (#184). `JArray`
   dereferences to `Vec<JValue>`, so code that reads arrays is unaffected. Code that builds them
   calls `JValue::array(vec)`, and `JArray::make_mut`, `into_vec` and `ptr_eq` replace

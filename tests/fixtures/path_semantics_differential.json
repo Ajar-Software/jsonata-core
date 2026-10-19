@@ -6136,6 +6136,555 @@
    }
   },
   {
+   "expression": "acct.Order.P{N: N}.A",
+   "result": {}
+  },
+  {
+   "expression": "acct.Order.P{N: N}.Z",
+   "result": {}
+  },
+  {
+   "expression": "acct.Order.P{N: nope}.A",
+   "result": {}
+  },
+  {
+   "expression": "acct.Order.P{N: N}.%",
+   "result": {}
+  },
+  {
+   "expression": "acct.Order.P{N: N}[%.id=\"o1\"]",
+   "result": {
+    "A": "A",
+    "B": "B"
+   }
+  },
+  {
+   "expression": "acct.Order.P{N: N}[0]",
+   "result": {
+    "A": "A",
+    "C": "C"
+   }
+  },
+  {
+   "expression": "acct.Order.P{N: N}[0].N",
+   "result": {}
+  },
+  {
+   "expression": "acct{\"a\": 1}.Order",
+   "result": {
+    "a": 1
+   }
+  },
+  {
+   "expression": "acct.Order{\"a\": 1}[0]",
+   "result": {
+    "a": 1
+   }
+  },
+  {
+   "expression": "acct.Order{id: id}.P{N: N}",
+   "result": {
+    "$error": "S0210"
+   }
+  },
+  {
+   "expression": "acct.Order{\"k\": id}@$o.P",
+   "result": {}
+  },
+  {
+   "expression": "acct.Order{\"k\": id}#$i.P",
+   "result": {}
+  },
+  {
+   "expression": "acct.Order@$o.P{N: $o.id}.N",
+   "result": {}
+  },
+  {
+   "expression": "(acct.Order.P{N: N}).A",
+   "result": "A"
+  },
+  {
+   "expression": "(objs){\"k\": p}.k",
+   "result": [
+    1,
+    2
+   ]
+  },
+  {
+   "expression": "(objs){\"k\": p}[].k",
+   "result": [
+    1,
+    2
+   ]
+  },
+  {
+   "expression": "(objs){\"k\": p}[]",
+   "result": {
+    "k": [
+     1,
+     2
+    ]
+   }
+  },
+  {
+   "expression": "(objs){\"k\": p}[][0]",
+   "result": {
+    "$error": "S0209"
+   }
+  },
+  {
+   "expression": "(objs){\"k\": p}[0]",
+   "result": {
+    "$error": "S0209"
+   }
+  },
+  {
+   "expression": "(objs)[0]{\"k\": p}[]",
+   "result": {
+    "k": 1
+   }
+  },
+  {
+   "expression": "[(objs){\"k\": p}[]]",
+   "result": [
+    {
+     "k": [
+      1,
+      2
+     ]
+    }
+   ]
+  },
+  {
+   "expression": "$x{\"k\": 1}[].k",
+   "result": [
+    1
+   ]
+  },
+  {
+   "expression": "$x{\"a\": 1}[0]",
+   "result": {
+    "$error": "S0209"
+   }
+  },
+  {
+   "expression": "[1, 2, 3]{\"num\": $}[true]",
+   "result": {
+    "$error": "S0209"
+   }
+  },
+  {
+   "expression": "acct.(*{\"k\": 1}).%",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "acct.Order.(*{\"k\": N}).%",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "acct.Order.P.(%{\"x\": id}).%",
+   "result": [
+    {
+     "Order": [
+      {
+       "id": "o1",
+       "P": [
+        {
+         "N": "A"
+        },
+        {
+         "N": "B"
+        }
+       ]
+      },
+      {
+       "id": "o2",
+       "P": [
+        {
+         "N": "C"
+        }
+       ]
+      }
+     ]
+    },
+    {
+     "Order": [
+      {
+       "id": "o1",
+       "P": [
+        {
+         "N": "A"
+        },
+        {
+         "N": "B"
+        }
+       ]
+      },
+      {
+       "id": "o2",
+       "P": [
+        {
+         "N": "C"
+        }
+       ]
+      }
+     ]
+    },
+    {
+     "Order": [
+      {
+       "id": "o1",
+       "P": [
+        {
+         "N": "A"
+        },
+        {
+         "N": "B"
+        }
+       ]
+      },
+      {
+       "id": "o2",
+       "P": [
+        {
+         "N": "C"
+        }
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "expression": "*{N: N}.%",
+   "result": {
+    "a": [
+     {
+      "b": [
+       1
+      ]
+     }
+    ],
+    "o": [
+     {
+      "t": [
+       "x"
+      ]
+     },
+     {
+      "t": [
+       "y",
+       "z"
+      ]
+     }
+    ],
+    "n": [
+     [
+      1,
+      2
+     ],
+     [
+      3
+     ]
+    ],
+    "nn": [
+     [
+      [
+       1
+      ]
+     ]
+    ],
+    "one": {
+     "z": [
+      7
+     ]
+    },
+    "e": [],
+    "m": {
+     "k": {
+      "b": [
+       [
+        1
+       ]
+      ]
+     }
+    },
+    "x": {
+     "y": [
+      1
+     ]
+    },
+    "arr": [
+     1,
+     2,
+     3
+    ],
+    "objs": [
+     {
+      "p": 1
+     },
+     {
+      "p": 2
+     }
+    ],
+    "obj1": [
+     {
+      "p": 1
+     }
+    ],
+    "v": 5,
+    "het": [
+     {
+      "a": 1,
+      "b": 5
+     },
+     {
+      "b": 0,
+      "a": 4
+     }
+    ],
+    "acct": {
+     "Order": [
+      {
+       "id": "o1",
+       "P": [
+        {
+         "N": "A"
+        },
+        {
+         "N": "B"
+        }
+       ]
+      },
+      {
+       "id": "o2",
+       "P": [
+        {
+         "N": "C"
+        }
+       ]
+      }
+     ]
+    }
+   }
+  },
+  {
+   "expression": "*{N: N}.%.id",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "acct.*{\"k\": 1}.%",
+   "result": {
+    "k": 1
+   }
+  },
+  {
+   "expression": "acct.Order.P.%{\"x\": id}.%",
+   "result": {}
+  },
+  {
+   "expression": "acct.(*).%",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "acct.Order.P.(%).%",
+   "result": [
+    {
+     "Order": [
+      {
+       "id": "o1",
+       "P": [
+        {
+         "N": "A"
+        },
+        {
+         "N": "B"
+        }
+       ]
+      },
+      {
+       "id": "o2",
+       "P": [
+        {
+         "N": "C"
+        }
+       ]
+      }
+     ]
+    },
+    {
+     "Order": [
+      {
+       "id": "o1",
+       "P": [
+        {
+         "N": "A"
+        },
+        {
+         "N": "B"
+        }
+       ]
+      },
+      {
+       "id": "o2",
+       "P": [
+        {
+         "N": "C"
+        }
+       ]
+      }
+     ]
+    },
+    {
+     "Order": [
+      {
+       "id": "o1",
+       "P": [
+        {
+         "N": "A"
+        },
+        {
+         "N": "B"
+        }
+       ]
+      },
+      {
+       "id": "o2",
+       "P": [
+        {
+         "N": "C"
+        }
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "expression": "acct.Order.P.(%).%.id",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "acct.Order.(*).%.%",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "(acct.Order.P.(%{\"x\": id})).%",
+   "result": [
+    {
+     "Order": [
+      {
+       "id": "o1",
+       "P": [
+        {
+         "N": "A"
+        },
+        {
+         "N": "B"
+        }
+       ]
+      },
+      {
+       "id": "o2",
+       "P": [
+        {
+         "N": "C"
+        }
+       ]
+      }
+     ]
+    },
+    {
+     "Order": [
+      {
+       "id": "o1",
+       "P": [
+        {
+         "N": "A"
+        },
+        {
+         "N": "B"
+        }
+       ]
+      },
+      {
+       "id": "o2",
+       "P": [
+        {
+         "N": "C"
+        }
+       ]
+      }
+     ]
+    },
+    {
+     "Order": [
+      {
+       "id": "o1",
+       "P": [
+        {
+         "N": "A"
+        },
+        {
+         "N": "B"
+        }
+       ]
+      },
+      {
+       "id": "o2",
+       "P": [
+        {
+         "N": "C"
+        }
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "expression": "acct.Order[%.id = \"o1\"]{\"k\": 1}",
+   "result": {}
+  },
+  {
+   "expression": "acct.Order.P[%.id = \"zz\"]{\"k\": 1}",
+   "result": {}
+  },
+  {
+   "expression": "acct.Order[id = \"zz\"]{\"k\": $count($)}",
+   "result": {
+    "k": 0
+   }
+  },
+  {
+   "expression": "nope{\"k\": $count($)}",
+   "result": {
+    "k": 0
+   }
+  },
+  {
+   "expression": "objs#$i[$i > 5]{\"k\": 1}",
+   "result": {}
+  },
+  {
+   "expression": "(acct.Order.P[%.id = \"zz\"]){\"k\": 1}",
+   "result": {
+    "k": 1
+   }
+  },
+  {
    "expression": "$match(\"aba\", /a/)",
    "result": [
     {

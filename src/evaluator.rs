@@ -4083,7 +4083,8 @@ impl Evaluator {
                 // group-by key/value expressions can read the carried `$focus`
                 // bindings off each wrapper (e.g. `...@$e...{ $e.FirstName: ... }`).
                 let saved_keep = self.keep_tuple_stream;
-                self.keep_tuple_stream = Self::is_tuple_path_node(input);
+                let tuple_input = Self::is_tuple_path_node(input);
+                self.keep_tuple_stream = tuple_input;
                 let input_value = self.evaluate_internal(input, data);
                 self.keep_tuple_stream = saved_keep;
                 let input_value = input_value?;
@@ -4110,7 +4111,13 @@ impl Evaluator {
                     other => vec![other],
                 };
 
-                // If array is empty, add undefined to enable literal JSON object generation
+                // If array is empty, add undefined to enable literal JSON object
+                // generation. An empty tuple stream gets no such item: jsonata-js
+                // reduces it tuple by tuple, so it makes no group and gives `{}`
+                // (#215).
+                if items.is_empty() && tuple_input {
+                    return Ok(JValue::object(IndexMap::new()));
+                }
                 let items = if items.is_empty() {
                     vec![JValue::Undefined]
                 } else {
