@@ -238,6 +238,11 @@ const EXTRA = [
   '[{"@": 2, "__tuple__": true}, {"@": 1, "__tuple__": true}]^(`@`)', '[{"@": 2, "__tuple__": true}]^(`@`)',
   'objs.{"@": p, "__tuple__": true}^(>`@`)', '($x := [{"@": 2, "__tuple__": true}, {"@": 1, "__tuple__": true}]; $x^(`@`))',
   '[{"@": 2, "__tuple__": true}, {"@": 1, "__tuple__": true}]^($)',
+  // A sort's input that is not a path is the path's first step, evaluated
+  // once per item of an array input.
+  'n.(($[0])^($))', 'n.("x"^($))', 'n.($count($)^($))', '[[3,1]].("x"^($))', 'n.([$[0]]^($))',
+  'n.(($)^($))', 'n.($^($))', 'n.(($x := $; $x)^($))', 'n.((1, 2)^($))', 'objs.({"q": p}^(q))',
+  'n.($string($)^($))', 'n.([$]^($))', 'n.([$][0]^($))', 'n.(($)[0]^($))', 'n.(($)[]^($))',
   // After a sort, a tuple's `#$i` or `@$v` binding reads as a field named `i` or `v`.
   'acct.Order.P#$i^(>$i){"k": $keys($)}', 'acct.Order.P#$i^(>$i)[i = 1]', 'acct.Order.P#$i^(>$i)[$.i = 0]',
   'acct.Order.P#$i^(>$i){"x": $sum(i)}', 'acct.Order.P#$i^(>$i)^(i).N', 'acct.Order.P@$p^(>$p.N){"k": $keys($)}',
@@ -426,6 +431,9 @@ const ROOT_EXPRESSIONS = [
   '$sort(a)', '$reverse(a)', 'a ~> $count', '(a)', '[1].(a[0])', '[1].{"x": $$.a[0]}',
   // A sort over the top-level array, or over a path through it (#221).
   '$^(a[0])', '$^($count(a))', 'a^($)', '$[1]^(a)', '$[1].a^($)', '*^($count(a))', '$$^(a[0])',
+  '(a[0])^($)', '(a[-1])^($)', '[a[0]]^($)', '$sum(a[0])^($)', '$count(a[0])^($)', '$string(a[0])^($)',
+  '(a[0])^($)#$i.$i', '(a[0])[]^($)', '[a[0]][]^($)', '"x"^($)', '(a)^($)', '[a]^($)', '$^($)', '($)^($)',
+  '(a[0])^($)[0]', '(b.c)^($)', '$map(a, function($v) { $v })^($)',
 ];
 
 // Operator combinations (#212). The reference suite tries each operator on

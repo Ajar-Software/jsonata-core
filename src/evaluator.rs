@@ -4553,13 +4553,7 @@ impl Evaluator {
                     // (the last-step rule, a constructor, a block) or a
                     // sequence, becomes a fresh sequence here, without any
                     // `[]` mark of its own.
-                    self.evaluate_unwrapped_later(input, data)
-                        .map(|value| match value {
-                            JValue::Array(arr) if !arr.outer_wrapper => {
-                                collect_single_step_result(JValue::Array(arr), false)
-                            }
-                            other => other,
-                        })
+                    self.evaluate_sort_input(input, data)
                 };
                 // The sort terms are expressions of their own, which keep no
                 // tuple stream.
@@ -5422,6 +5416,76 @@ impl Evaluator {
                 return Self::sort_input_keeps_singleton(input);
             }
             false
+        })
+    }
+
+    /// Evaluate a non-tuple sort input as the first step of the path
+    /// jsonata-js makes of it, collected as a step that is not the last.
+    /// A name path, a variable or a sort is evaluated once against the whole
+    /// input. Any other expression (a block, literal, function call or array
+    /// constructor) is a first step, mapped over the items of an array input
+    /// one by one; the top-level array is one item, the bare array. Its
+    /// results are flattened into a fresh sequence: jsonata-js marks an array
+    /// constructor `consarray` only on a `.` path, so one is flattened here.
+    fn evaluate_sort_input(
+        &mut self,
+        input: &AstNode,
+        data: &JValue,
+    ) -> Result<JValue, EvaluatorError> {
+        let first = match input {
+            AstNode::Path { steps } if !Self::is_non_path(steps) => None,
+            AstNode::Path { steps } => Some(&steps[0].node),
+            other => Some(other),
+        };
+        let whole = match first {
+            None => true,
+            Some(node) => matches!(
+                node,
+                AstNode::Variable(_) | AstNode::ParentVariable(_) | AstNode::Sort { .. }
+            ),
+        };
+        let uncons = |value: JValue| match value {
+            JValue::Array(mut arr) if first.is_some() && arr.cons => {
+                arr.cons = false;
+                JValue::Array(arr)
+            }
+            other => other,
+        };
+        let per_item = match data {
+            JValue::Array(arr) if !whole && !arr.outer_wrapper => Some(arr.clone()),
+            _ => None,
+        };
+        let Some(items) = per_item else {
+            let item = match data {
+                JValue::Array(arr) if !whole && arr.outer_wrapper => data.bare(),
+                _ => data.clone(),
+            };
+            let value = if whole {
+                self.evaluate_unwrapped_later(input, &item)?
+            } else {
+                self.with_dollar_bound(&item, |ev| ev.evaluate_unwrapped_later(input, &item))?
+            };
+            let value = uncons(value);
+            return Ok(match value {
+                JValue::Array(arr) if !arr.outer_wrapper => {
+                    collect_single_step_result(JValue::Array(arr), false)
+                }
+                other => other,
+            });
+        };
+        let mut results = Vec::with_capacity(items.len());
+        for item in items.iter() {
+            // `$` is the item, as in any path step.
+            let value = uncons(
+                self.with_dollar_bound(item, |ev| ev.evaluate_unwrapped_later(input, item))?,
+            );
+            if !value.is_undefined() {
+                results.push(value);
+            }
+        }
+        Ok(match results.len() {
+            0 => JValue::Undefined,
+            _ => collect_step_results(results, false),
         })
     }
 

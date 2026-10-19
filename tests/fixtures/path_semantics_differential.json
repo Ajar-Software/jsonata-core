@@ -8130,6 +8130,126 @@
    }
   },
   {
+   "expression": "n.(($[0])^($))",
+   "result": [
+    1,
+    2,
+    3
+   ]
+  },
+  {
+   "expression": "n.(\"x\"^($))",
+   "result": [
+    "x",
+    "x",
+    "x"
+   ]
+  },
+  {
+   "expression": "n.($count($)^($))",
+   "result": [
+    1,
+    1,
+    1
+   ]
+  },
+  {
+   "expression": "[[3,1]].(\"x\"^($))",
+   "result": [
+    "x",
+    "x"
+   ]
+  },
+  {
+   "expression": "n.([$[0]]^($))",
+   "result": [
+    1,
+    2,
+    3
+   ]
+  },
+  {
+   "expression": "n.(($)^($))",
+   "result": [
+    1,
+    2,
+    3
+   ]
+  },
+  {
+   "expression": "n.($^($))",
+   "result": [
+    1,
+    2,
+    3
+   ]
+  },
+  {
+   "expression": "n.(($x := $; $x)^($))",
+   "result": [
+    1,
+    2,
+    3
+   ]
+  },
+  {
+   "expression": "n.((1, 2)^($))",
+   "result": {
+    "$error": "S0202"
+   }
+  },
+  {
+   "expression": "objs.({\"q\": p}^(q))",
+   "result": [
+    {
+     "q": 1
+    },
+    {
+     "q": 2
+    }
+   ]
+  },
+  {
+   "expression": "n.($string($)^($))",
+   "result": [
+    "1",
+    "2",
+    "3"
+   ]
+  },
+  {
+   "expression": "n.([$]^($))",
+   "result": [
+    1,
+    2,
+    3
+   ]
+  },
+  {
+   "expression": "n.([$][0]^($))",
+   "result": [
+    1,
+    2,
+    3
+   ]
+  },
+  {
+   "expression": "n.(($)[0]^($))",
+   "result": [
+    1,
+    2,
+    3
+   ]
+  },
+  {
+   "expression": "n.(($)[]^($))",
+   "result": [
+    1,
+    2,
+    3
+   ]
+  },
+  {
    "expression": "acct.Order.P#$i^(>$i){\"k\": $keys($)}",
    "result": {
     "k": [
@@ -11750,6 +11870,127 @@
   },
   {
    "expression": "$$^(a[0])",
+   "root": true,
+   "result": {
+    "$error": "T2008"
+   }
+  },
+  {
+   "expression": "(a[0])^($)",
+   "root": true,
+   "result": [
+    1,
+    3,
+    4
+   ]
+  },
+  {
+   "expression": "(a[-1])^($)",
+   "root": true,
+   "result": [
+    2,
+    3,
+    4
+   ]
+  },
+  {
+   "expression": "[a[0]]^($)",
+   "root": true,
+   "result": [
+    1,
+    3,
+    4
+   ]
+  },
+  {
+   "expression": "$sum(a[0])^($)",
+   "root": true,
+   "result": 8
+  },
+  {
+   "expression": "$count(a[0])^($)",
+   "root": true,
+   "result": 3
+  },
+  {
+   "expression": "$string(a[0])^($)",
+   "root": true,
+   "result": "[1,3,4]"
+  },
+  {
+   "expression": "(a[0])^($)#$i.$i",
+   "root": true,
+   "result": [
+    0,
+    1,
+    2
+   ]
+  },
+  {
+   "expression": "(a[0])[]^($)",
+   "root": true,
+   "result": [
+    1,
+    3,
+    4
+   ]
+  },
+  {
+   "expression": "[a[0]][]^($)",
+   "root": true,
+   "result": [
+    1,
+    3,
+    4
+   ]
+  },
+  {
+   "expression": "\"x\"^($)",
+   "root": true,
+   "result": "x"
+  },
+  {
+   "expression": "(a)^($)",
+   "root": true,
+   "result": {
+    "$error": "T2008"
+   }
+  },
+  {
+   "expression": "[a]^($)",
+   "root": true,
+   "result": {
+    "$error": "T2008"
+   }
+  },
+  {
+   "expression": "$^($)",
+   "root": true,
+   "result": {
+    "$error": "T2008"
+   }
+  },
+  {
+   "expression": "($)^($)",
+   "root": true,
+   "result": {
+    "$error": "T2008"
+   }
+  },
+  {
+   "expression": "(a[0])^($)[0]",
+   "root": true,
+   "result": 1
+  },
+  {
+   "expression": "(b.c)^($)",
+   "root": true,
+   "result": {
+    "$error": "T2008"
+   }
+  },
+  {
+   "expression": "$map(a, function($v) { $v })^($)",
    "root": true,
    "result": {
     "$error": "T2008"

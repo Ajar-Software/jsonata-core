@@ -71,8 +71,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   item as is, so it is unwrapped: `acct.Order[1].P^(N)` is `{"N":"C"}` (it was `[{"N":"C"}]`),
   `[{"N":"C"}]^(N)` likewise, and a sort over an empty array is undefined (it was `[]`). A `[]`
   on the sorted path keeps the array (`P[]^(N)`, `P^(N)[]`, `$#$i[]^($)`); a `[]` on a block,
-  variable or constructor before the sort (`$x[]^(p)`, `$x[]#$i^(p)`) does not. A sort of objects that only look like
-  internal tuples (`{"@": 2, "__tuple__": true}`) now orders them as data instead of leaving
+  variable or constructor before the sort (`$x[]^(p)`, `$x[]#$i^(p)`) does not. A sort whose
+  input is not a path (a block, literal, function call or array constructor) evaluates it once
+  per item of an array input, as a path's first step: over `[{"a":[2,1]},{"a":[3]}]`,
+  `(a[0])^($)` is `[2,3]` (it was `2`) and `$count(a[0])^($)` is `2` (it was `1`). A sort of
+  objects that only look like internal tuples (`{"@": 2, "__tuple__": true}`) now orders them as data instead of leaving
   them unsorted.
 - **`$replace` drives a regex or a matcher function as jsonata-js does**
   ([#198](https://github.com/txjmb/jsonata-core/issues/198)). A replacement function's
