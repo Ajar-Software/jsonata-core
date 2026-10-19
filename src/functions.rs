@@ -513,11 +513,13 @@ pub mod string {
     }
 
     /// Helper to perform capture group substitution in replacement string
-    /// Handles $0 (full match), $1, $2, etc. (capture groups), and $$ (literal $)
-    fn substitute_capture_groups(
+    /// Handles $0 (full match), $1, $2, etc. (capture groups), and $$ (literal $).
+    /// This is jsonata-js `replace`'s string replacer; a group that didn't
+    /// take part in the match is `None`.
+    pub fn substitute_capture_groups(
         replacement: &str,
         full_match: &str,
-        groups: &[Option<regex::Match>],
+        groups: &[Option<&str>],
     ) -> String {
         let mut result = String::new();
         let mut position = 0;
@@ -588,8 +590,8 @@ pub mod string {
                             position += used_digits;
                         } else if group_num > 0 && group_num <= groups.len() {
                             // Valid group reference
-                            if let Some(m) = &groups[group_num - 1] {
-                                result.push_str(m.as_str());
+                            if let Some(m) = groups[group_num - 1] {
+                                result.push_str(m);
                             }
                             // If group didn't match (None), add nothing (empty string)
                             position += used_digits;
@@ -616,48 +618,128 @@ pub mod string {
         result
     }
 
-    /// $match(str, regex, limit) with a regex, following jsonata-js `match` and its regex
-    /// closure (`evaluateRegex`): every match from the start of the string, up
-    /// to `limit`, each as `{match, index, groups}`, in a sequence. jsonata-js
-    /// regexes are always global, so a `g` flag changes nothing. As in jsonata-js,
-    /// the next match is looked for after each one, even when the limit has
-    /// been reached, and a zero-length match found that way is D1004, since
-    /// matching would never move on. `index` counts UTF-16 code units, as
-    /// JavaScript strings do.
+    /// One match of a regex, as jsonata-js's regex closure (`evaluateRegex`)
+    /// describes it. `start` and `end` count UTF-16 code units, as
+    /// JavaScript strings do; `byte_start` and `byte_end` index the Rust
+    /// string. A group that didn't take part in the match is `None`.
+    pub struct RegexMatch<'s> {
+        pub text: &'s str,
+        pub start: usize,
+        pub end: usize,
+        pub byte_start: usize,
+        pub byte_end: usize,
+        pub groups: Vec<Option<&'s str>>,
+    }
+
+    impl RegexMatch<'_> {
+        /// The `{match, start, end, groups}` object jsonata-js hands a
+        /// `$replace` replacement function. jsonata-js also gives it a `next`
+        /// function, which isn't reproduced here.
+        pub fn to_object(&self) -> JValue {
+            let mut obj = IndexMap::with_capacity(4);
+            obj.insert("match".to_string(), JValue::string(self.text));
+            obj.insert("start".to_string(), JValue::from(self.start as i64));
+            obj.insert("end".to_string(), JValue::from(self.end as i64));
+            obj.insert("groups".to_string(), self.groups_value());
+            JValue::object(obj)
+        }
+
+        fn groups_value(&self) -> JValue {
+            JValue::array(
+                self.groups
+                    .iter()
+                    .map(|group| group.map_or(JValue::Undefined, JValue::string))
+                    .collect(),
+            )
+        }
+    }
+
+    /// The successive matches of a regex over a string, following
+    /// jsonata-js `evaluateRegex`: the first call to `next_match` is the
+    /// closure applied to the string, each later one is the previous match's
+    /// `next()`. jsonata-js regexes are always global, so a `g` flag changes
+    /// nothing. A later match that is zero-length is D1004, since matching
+    /// would never move on; the first match may be zero-length.
+    pub struct RegexMatches<'r, 's> {
+        re: &'r Regex,
+        s: &'s str,
+        /// Where the next search starts (`lastIndex`); `None` before the first.
+        from: Option<usize>,
+        /// The UTF-16 offset of byte `counted_to`, kept as the search moves on.
+        counted_to: usize,
+        utf16_index: usize,
+    }
+
+    impl<'r, 's> RegexMatches<'r, 's> {
+        pub fn new(re: &'r Regex, s: &'s str) -> Self {
+            RegexMatches {
+                re,
+                s,
+                from: None,
+                counted_to: 0,
+                utf16_index: 0,
+            }
+        }
+
+        pub fn next_match(&mut self) -> Result<Option<RegexMatch<'s>>, FunctionError> {
+            let caps = match self.from {
+                None => self.re.captures(self.s),
+                Some(from) if from >= self.s.len() => None,
+                Some(from) => {
+                    let caps = self.re.captures_at(self.s, from);
+                    if caps.as_ref().is_some_and(|caps| caps[0].is_empty()) {
+                        return Err(FunctionError::RuntimeError(
+                            "D1004: Regular expression matches zero length string".to_string(),
+                        ));
+                    }
+                    caps
+                }
+            };
+            let Some(caps) = caps else {
+                self.from = Some(self.s.len());
+                return Ok(None);
+            };
+            let found = caps.get(0).expect("group 0 is the whole match");
+            self.utf16_index += self.s[self.counted_to..found.start()]
+                .encode_utf16()
+                .count();
+            self.counted_to = found.start();
+            self.from = Some(found.end());
+            let text = found.as_str();
+            Ok(Some(RegexMatch {
+                text,
+                start: self.utf16_index,
+                end: self.utf16_index + text.encode_utf16().count(),
+                byte_start: found.start(),
+                byte_end: found.end(),
+                groups: (1..caps.len())
+                    .map(|i| caps.get(i).map(|group| group.as_str()))
+                    .collect(),
+            }))
+        }
+    }
+
+    /// $match(str, regex, limit) with a regex, following jsonata-js `match`:
+    /// every match from the start of the string (see `RegexMatches`), up to
+    /// `limit`, each as `{match, index, groups}`, in a sequence. As in
+    /// jsonata-js, the next match is looked for after each one, even when the
+    /// limit has been reached, so a zero-length match found that way is still
+    /// D1004. `index` counts UTF-16 code units.
     pub fn match_regex(re: &Regex, s: &str, limit: Option<usize>) -> Result<JValue, FunctionError> {
         let mut results = Vec::new();
         if limit == Some(0) {
             return Ok(JValue::sequence(results));
         }
-        // The UTF-16 offset of `counted_to`, kept as the search moves forward.
-        let (mut counted_to, mut utf16_index) = (0, 0);
-        let mut next = re.captures(s);
-        while let Some(caps) = next {
-            let found = caps.get(0).expect("group 0 is the whole match");
-            utf16_index += s[counted_to..found.start()].encode_utf16().count();
-            counted_to = found.start();
-            let groups = (1..caps.len())
-                .map(|i| match caps.get(i) {
-                    Some(group) => JValue::string(group.as_str()),
-                    None => JValue::Undefined,
-                })
-                .collect();
+        let mut matches = RegexMatches::new(re, s);
+        let mut current = matches.next_match()?;
+        while let Some(found) = current {
             let mut match_obj = IndexMap::with_capacity(3);
-            match_obj.insert("match".to_string(), JValue::string(found.as_str()));
-            match_obj.insert("index".to_string(), JValue::from(utf16_index as i64));
-            match_obj.insert("groups".to_string(), JValue::array(groups));
+            match_obj.insert("match".to_string(), JValue::string(found.text));
+            match_obj.insert("index".to_string(), JValue::from(found.start as i64));
+            match_obj.insert("groups".to_string(), found.groups_value());
             results.push(JValue::object(match_obj));
 
-            next = if found.end() >= s.len() {
-                None
-            } else {
-                re.captures_at(s, found.end())
-            };
-            if next.as_ref().is_some_and(|caps| caps[0].is_empty()) {
-                return Err(FunctionError::RuntimeError(
-                    "D1004: Regular expression matches zero length string".to_string(),
-                ));
-            }
+            current = matches.next_match()?;
             if limit.is_some_and(|limit| results.len() >= limit) {
                 break;
             }
@@ -665,7 +747,43 @@ pub mod string {
         Ok(JValue::sequence(results))
     }
 
-    /// $replace(str, pattern, replacement, limit) - Replace substring or regex matches
+    /// jsonata-js `replace`'s loop over the matches of a regex: each match,
+    /// up to `limit`, is replaced by what `replacer` returns for it. As in
+    /// jsonata-js, the next match is looked for after each replacement, even
+    /// when the limit has been reached, so a zero-length match found that way
+    /// is still D1004.
+    pub fn replace_regex<E: From<FunctionError>>(
+        s: &str,
+        re: &Regex,
+        limit: Option<usize>,
+        mut replacer: impl FnMut(&RegexMatch) -> Result<String, E>,
+    ) -> Result<String, E> {
+        if limit == Some(0) {
+            return Ok(s.to_string());
+        }
+        let mut result = String::with_capacity(s.len());
+        let mut position = 0;
+        let mut count = 0;
+        let mut matches = RegexMatches::new(re, s);
+        let mut current = matches.next_match()?;
+        while let Some(found) = current {
+            if limit.is_some_and(|limit| count >= limit) {
+                break;
+            }
+            result.push_str(&s[position..found.byte_start]);
+            result.push_str(&replacer(&found)?);
+            position = found.byte_end;
+            count += 1;
+            current = matches.next_match()?;
+        }
+        result.push_str(&s[position..]);
+        Ok(result)
+    }
+
+    /// $replace(str, pattern, replacement, limit) with a substring or regex
+    /// pattern and a replacement string. In the replacement, `$0` is the
+    /// match and `$1`... its groups when the pattern is a regex; a substring
+    /// pattern's replacement is used as it is, as in jsonata-js.
     pub fn replace(
         s: &str,
         pattern: &JValue,
@@ -675,40 +793,13 @@ pub mod string {
         // Check if pattern is a regex
         if let Some((pat, flags)) = extract_regex(pattern) {
             let re = build_regex(&pat, &flags)?;
-
-            let mut count = 0;
-            let mut last_match = 0;
-            let mut output = String::new();
-
-            for cap in re.captures_iter(s) {
-                if limit.is_some_and(|lim| count >= lim) {
-                    break;
-                }
-
-                let m = cap.get(0).unwrap();
-
-                // D1004: Regular expression matches zero length string
-                if m.as_str().is_empty() {
-                    return Err(FunctionError::RuntimeError(
-                        "D1004: Regular expression matches zero length string".to_string(),
-                    ));
-                }
-
-                output.push_str(&s[last_match..m.start()]);
-
-                // Collect capture groups
-                let groups: Vec<Option<regex::Match>> =
-                    (1..cap.len()).map(|i| cap.get(i)).collect();
-
-                // Perform capture group substitution
-                let substituted = substitute_capture_groups(replacement, m.as_str(), &groups);
-                output.push_str(&substituted);
-
-                last_match = m.end();
-                count += 1;
-            }
-
-            output.push_str(&s[last_match..]);
+            let output = replace_regex(s, &re, limit, |found| {
+                Ok::<_, FunctionError>(substitute_capture_groups(
+                    replacement,
+                    found.text,
+                    &found.groups,
+                ))
+            })?;
             return Ok(JValue::string(output));
         }
 

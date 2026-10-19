@@ -8822,6 +8822,146 @@
    }
   },
   {
+   "expression": "$replace(\"éab\", /a/, function($m) { $string($m.start) })",
+   "result": "é1b"
+  },
+  {
+   "expression": "$replace(\"éaéaéa\", /a/, function($m) { $string($m.start) })",
+   "result": "é1é3é5"
+  },
+  {
+   "expression": "$replace(\"éaéaéa\", /a/, function($m) { $string($m.start) }, 2)",
+   "result": "é1é3éa"
+  },
+  {
+   "expression": "$replace(\"😀a😀a\", /a/, function($m) { $string($m.start) & \"/\" & $string($m.end) })",
+   "result": "😀2/3😀5/6"
+  },
+  {
+   "expression": "$replace(\"éa1éb2\", /([a-z])(\\d)/, function($m) { $string($m.start) & $m.groups[1] & $m.groups[0] })",
+   "result": "é11aé42b"
+  },
+  {
+   "expression": "$replace(\"abc\", /(b)(x)?/, function($m) { $string($count($m.groups)) })",
+   "result": "a2c"
+  },
+  {
+   "expression": "$replace(\"abc\", /(b)(x)?/, function($m) { $string($m.groups) })",
+   "result": "a[\"b\",null]c"
+  },
+  {
+   "expression": "$replace(\"abc\", /b/, function($m) { $m.match & \"!\" }, 5)",
+   "result": "ab!c"
+  },
+  {
+   "expression": "$replace(\"abc\", /b/, function($m) { \"x\" }, 0)",
+   "result": "abc"
+  },
+  {
+   "expression": "$replace(\"abc\", /b/, function($m) { 5 })",
+   "result": {
+    "$error": "D3012"
+   }
+  },
+  {
+   "expression": "$replace(\"a1b2\", /(\\d)/, \"<$1>\")",
+   "result": "a<1>b<2>"
+  },
+  {
+   "expression": "$replace(\"abc\", /x*/, function($m) { \"-\" })",
+   "result": {
+    "$error": "D1004"
+   }
+  },
+  {
+   "expression": "$replace(\"abc\", /x*/, \"-\")",
+   "result": {
+    "$error": "D1004"
+   }
+  },
+  {
+   "expression": "$replace(\"abc\", /x*/, \"-\", 0)",
+   "result": "abc"
+  },
+  {
+   "expression": "$replace(\"abc\", /a|x*/, \"-\", 1)",
+   "result": {
+    "$error": "D1004"
+   }
+  },
+  {
+   "expression": "$replace(\"abc\", /a|x*/, function($m) { \"-\" }, 1)",
+   "result": {
+    "$error": "D1004"
+   }
+  },
+  {
+   "expression": "$replace(\"abc\", /x*$/, \"-\")",
+   "result": "abc-"
+  },
+  {
+   "expression": "$replace(\"abc\", /x*$/, function($m) { \"-\" })",
+   "result": "abc-"
+  },
+  {
+   "expression": "$replace(\"\", /x*/, \"-\")",
+   "result": "-"
+  },
+  {
+   "expression": "$replace(\"aba\", /a|x*$/, \"-\")",
+   "result": "-b-"
+  },
+  {
+   "expression": "$replace(\"aba\", /a|x*$/, function($m) { \"-\" }, 1)",
+   "result": "-ba"
+  },
+  {
+   "expression": "$replace(\"abc\", function($s) { {\"match\": \"b\", \"start\": 1, \"groups\": [], \"next\": function() { undefined }} }, \"x\")",
+   "result": "axc"
+  },
+  {
+   "expression": "$replace(\"abc\", function($s) { {\"match\": \"b\", \"start\": 1, \"groups\": [], \"next\": function() { undefined }} }, \"x\", 0)",
+   "result": "abc"
+  },
+  {
+   "expression": "$replace(\"abc\", function($s) { {\"match\": \"b\", \"start\": 1, \"groups\": [], \"next\": function() { undefined }} }, function($m) { $string($keys($m)) })",
+   "result": "a[\"match\",\"start\",\"groups\",\"next\"]c"
+  },
+  {
+   "expression": "$replace(\"abc\", function($s) { {\"match\": \"b\", \"start\": 1, \"groups\": [], \"next\": function() { undefined }} }, function($m) { 5 })",
+   "result": {
+    "$error": "D3012"
+   }
+  },
+  {
+   "expression": "$replace(\"abc\", function($s) { {\"match\": \"b\", \"start\": 1, \"groups\": [], \"next\": function() { 5 }} }, \"x\")",
+   "result": {
+    "$error": "T1010"
+   }
+  },
+  {
+   "expression": "$replace(\"abc\", function($s) { 5 }, \"x\")",
+   "result": {
+    "$error": "T1010"
+   }
+  },
+  {
+   "expression": "$replace(\"abc\", function($s) { undefined }, \"x\")",
+   "result": "abc"
+  },
+  {
+   "expression": "$replace(\"é😀b\", function($s) { {\"match\": \"b\", \"start\": 3, \"groups\": [\"g\"], \"next\": function() { undefined }} }, \"<$0$1>\")",
+   "result": "é😀<bg>"
+  },
+  {
+   "expression": "$replace(\"abcabc\", function($s) { {\"match\": \"b\", \"start\": 1, \"groups\": [], \"next\": function() { {\"match\": \"c\", \"start\": 5, \"groups\": [], \"next\": function() { undefined }} }} }, \"X\")",
+   "result": "aXcabX"
+  },
+  {
+   "expression": "$replace(\"abcabc\", function($s) { {\"match\": \"b\", \"start\": 1, \"groups\": [], \"next\": function() { {\"match\": \"c\", \"start\": 5, \"groups\": [], \"next\": function() { undefined }} }} }, \"X\", 1)",
+   "result": "aXcabc"
+  },
+  {
    "expression": "$error(\"x\") ?? 1",
    "result": {
     "$error": "D3137"

@@ -2993,7 +2993,7 @@ const REPLACE_NEGATIVE_LIMIT: &str =
 /// jsonata-js. jsonata-js crashes reading a property of any other falsy
 /// result, calling a missing `next`, or calling a builtin `next` (which it
 /// can't apply); each of those ends the matches here instead.
-fn check_matcher_result(result: &JValue) -> Result<(), EvaluatorError> {
+fn check_matcher_result(result: &JValue, function: &str) -> Result<(), EvaluatorError> {
     let falsy = match result {
         JValue::Undefined | JValue::Null | JValue::Bool(false) => true,
         JValue::Number(n) => *n == 0.0 || n.is_nan(),
@@ -3007,10 +3007,25 @@ fn check_matcher_result(result: &JValue) -> Result<(), EvaluatorError> {
     if falsy || well_formed {
         Ok(())
     } else {
-        Err(EvaluatorError::TypeError(
-            "T1010: The matcher function argument passed to function match does not return the correct object structure".to_string(),
-        ))
+        Err(EvaluatorError::TypeError(format!(
+            "T1010: The matcher function argument passed to function \"{function}\" does not return the correct object structure"
+        )))
     }
+}
+
+/// JavaScript `String.prototype.substring` over UTF-16 code units: each
+/// bound is clamped to the string (NaN is 0, a missing end is the end), and
+/// the bounds are swapped if the end comes first.
+fn js_substring(units: &[u16], start: f64, end: Option<f64>) -> &[u16] {
+    let clamp = |bound: f64| {
+        if bound.is_nan() {
+            0
+        } else {
+            bound.clamp(0.0, units.len() as f64) as usize
+        }
+    };
+    let (start, end) = (clamp(start), end.map_or(units.len(), clamp));
+    &units[start.min(end)..start.max(end)]
 }
 
 /// True for a tuple-stream wrapper object (see `create_tuple_stream`). Every
@@ -6256,42 +6271,20 @@ impl Evaluator {
                     return Ok(JValue::Undefined);
                 }
 
-                // Check if replacement (3rd arg) is a function/lambda
-                let replacement_is_lambda = matches!(
-                    evaluated_args[2],
-                    JValue::Lambda { .. } | JValue::Builtin { .. }
-                );
-
-                if replacement_is_lambda {
-                    // Lambda replacement mode
-                    return self.replace_with_lambda(
-                        &evaluated_args[0],
-                        &evaluated_args[1],
-                        &evaluated_args[2],
-                        if evaluated_args.len() == 4 {
-                            Some(&evaluated_args[3])
-                        } else {
-                            None
-                        },
-                        data,
-                    );
-                }
-
-                // String replacement mode
-                match (&evaluated_args[0], &evaluated_args[2]) {
-                    (JValue::String(s), JValue::String(replacement)) => {
-                        let limit = match_limit(evaluated_args.get(3), REPLACE_NEGATIVE_LIMIT)?;
-                        Ok(functions::string::replace(
-                            s,
-                            &evaluated_args[1],
-                            replacement,
-                            limit,
-                        )?)
-                    }
-                    _ => Err(EvaluatorError::TypeError(
+                let JValue::String(s) = &evaluated_args[0] else {
+                    return Err(EvaluatorError::TypeError(
                         "replace() requires string arguments".to_string(),
-                    )),
+                    ));
+                };
+                // jsonata-js checks the pattern before the limit.
+                if matches!(&evaluated_args[1], JValue::String(p) if p.is_empty()) {
+                    return Err(crate::functions::FunctionError::RuntimeError(
+                        "D3010: Pattern cannot be empty".to_string(),
+                    )
+                    .into());
                 }
+                let limit = match_limit(evaluated_args.get(3), REPLACE_NEGATIVE_LIMIT)?;
+                self.replace_matches(s, &evaluated_args[1], &evaluated_args[2], limit, data)
             }
             "match" => {
                 // $match(str, pattern [, limit])
@@ -7787,7 +7780,7 @@ impl Evaluator {
         let str_val = JValue::string(str_value.to_string());
         let mut current = normalize_lazy(&self.call_function_value(matcher, &[str_val], data)?)?;
         loop {
-            check_matcher_result(&current)?;
+            check_matcher_result(&current, "match")?;
             let JValue::Object(match_obj) = &current else {
                 break;
             };
@@ -7806,112 +7799,154 @@ impl Evaluator {
             let next = Rc::clone(next);
             current = normalize_lazy(&self.invoke_stored_lambda(&next, &[], data)?)?;
             if limit.is_some_and(|limit| results.len() >= limit) {
-                check_matcher_result(&current)?;
+                check_matcher_result(&current, "match")?;
                 break;
             }
         }
         Ok(JValue::sequence(results))
     }
 
-    /// Replace with lambda/function callback
-    ///
-    /// Implements lambda replacement for $replace(str, pattern, function, limit?)
-    /// The function receives a match object with: match, start, end, groups
-    fn replace_with_lambda(
+    /// $replace(str, pattern, replacement, limit), following jsonata-js
+    /// `replace`. A substring pattern is replaced where it occurs; a regex or
+    /// a custom matcher function is driven as jsonata-js's `evaluateMatcher`
+    /// drives it, one match and then each `next()`. The replacement is either
+    /// a string, in which `$0` and `$1`... stand for the match and its groups,
+    /// or a function called with the match object, which must return a
+    /// string (D3012).
+    fn replace_matches(
         &mut self,
-        str_value: &JValue,
-        pattern_value: &JValue,
-        lambda_value: &JValue,
-        limit_value: Option<&JValue>,
+        s: &str,
+        pattern: &JValue,
+        replacement: &JValue,
+        limit: Option<usize>,
         data: &JValue,
     ) -> Result<JValue, EvaluatorError> {
-        // Extract string
-        let s = match str_value {
-            JValue::String(s) => &**s,
+        match pattern {
+            JValue::String(_) => match replacement {
+                JValue::String(text) => Ok(crate::functions::string::replace(s, pattern, text, limit)?),
+                // jsonata-js inserts the function's JavaScript source text
+                // here, which has no equivalent to reproduce.
+                _ => Err(EvaluatorError::TypeError(
+                    "replace() pattern must be a regex or a function when the replacement is a function"
+                        .to_string(),
+                )),
+            },
+            JValue::Lambda(_) | JValue::Builtin { .. } => {
+                self.replace_with_custom_matcher(s, pattern, replacement, limit, data)
+            }
             _ => {
-                return Err(EvaluatorError::TypeError(
-                    "replace() requires string arguments".to_string(),
-                ))
+                let (pat, flags) =
+                    crate::functions::string::extract_regex(pattern).ok_or_else(|| {
+                        EvaluatorError::TypeError(
+                            "replace() pattern must be a string, a regex or a function".to_string(),
+                        )
+                    })?;
+                let re = crate::functions::string::build_regex(&pat, &flags)?;
+                let result = crate::functions::string::replace_regex(s, &re, limit, |found| {
+                    self.replacement_for(
+                        replacement,
+                        found.text,
+                        &found.groups,
+                        || found.to_object(),
+                        data,
+                    )
+                })?;
+                Ok(JValue::string(result))
             }
-        };
-
-        // Extract regex pattern
-        let (pattern, flags) =
-            crate::functions::string::extract_regex(pattern_value).ok_or_else(|| {
-                EvaluatorError::TypeError(
-                    "replace() pattern must be a regex when using lambda replacement".to_string(),
-                )
-            })?;
-
-        // Build regex
-        let re = crate::functions::string::build_regex(&pattern, &flags)?;
-
-        // Parse limit
-        let limit = match_limit(limit_value, REPLACE_NEGATIVE_LIMIT)?;
-
-        // Iterate through matches and replace using lambda
-        let mut result = String::new();
-        let mut last_end = 0;
-        let mut count = 0;
-
-        for cap in re.captures_iter(s) {
-            // Check limit
-            if let Some(lim) = limit {
-                if count >= lim {
-                    break;
-                }
-            }
-
-            let m = cap.get(0).unwrap();
-            let match_start = m.start();
-            let match_end = m.end();
-            let match_str = m.as_str();
-
-            // Add text before match
-            result.push_str(&s[last_end..match_start]);
-
-            // Build match object
-            let groups: Vec<JValue> = (1..cap.len())
-                .map(|i| {
-                    cap.get(i)
-                        .map(|m| JValue::string(m.as_str().to_string()))
-                        .unwrap_or(JValue::Null)
-                })
-                .collect();
-
-            let mut match_map = IndexMap::new();
-            match_map.insert("match".to_string(), JValue::string(match_str));
-            match_map.insert("start".to_string(), JValue::Number(match_start as f64));
-            match_map.insert("end".to_string(), JValue::Number(match_end as f64));
-            match_map.insert("groups".to_string(), JValue::array(groups));
-            let match_obj = JValue::object(match_map);
-
-            // Invoke lambda with match object
-            let stored_lambda = self.lookup_lambda_from_value(lambda_value).ok_or_else(|| {
-                EvaluatorError::TypeError("Replacement must be a lambda function".to_string())
-            })?;
-            let lambda_result = self.invoke_stored_lambda(&stored_lambda, &[match_obj], data)?;
-            let replacement_str = match lambda_result {
-                JValue::String(s) => s,
-                _ => {
-                    return Err(EvaluatorError::TypeError(format!(
-                        "D3012: Replacement function must return a string, got {:?}",
-                        lambda_result
-                    )))
-                }
-            };
-
-            // Add replacement
-            result.push_str(&replacement_str);
-
-            last_end = match_end;
-            count += 1;
         }
+    }
 
-        // Add remaining text after last match
-        result.push_str(&s[last_end..]);
+    /// jsonata-js `replace`'s replacer applied to one match: a replacement
+    /// string with `$0`/`$n` substituted, or a replacement function's result
+    /// for `match_object`.
+    fn replacement_for(
+        &mut self,
+        replacement: &JValue,
+        text: &str,
+        groups: &[Option<&str>],
+        match_object: impl FnOnce() -> JValue,
+        data: &JValue,
+    ) -> Result<String, EvaluatorError> {
+        if let JValue::String(template) = replacement {
+            return Ok(crate::functions::string::substitute_capture_groups(
+                template, text, groups,
+            ));
+        }
+        match self.call_function_value(replacement, &[match_object()], data)? {
+            JValue::String(replaced) => Ok(replaced.to_string()),
+            _ => Err(EvaluatorError::TypeError(
+                "D3012: Attempted to replace a matched string with a non-string value".to_string(),
+            )),
+        }
+    }
 
-        Ok(JValue::string(result))
+    /// $replace(str, matcher, replacement, limit) with a custom matcher
+    /// function, following jsonata-js `replace`. The matcher returns
+    /// `{match, start, groups, next}` objects (checked as `evaluateMatcher`
+    /// checks them), and a replacement function receives each one as it is.
+    /// `start` counts UTF-16 code units, so the string is cut in those. A
+    /// result without a `next` function ends the matches, as do a result's
+    /// missing `match` (taken as empty) and other cases where jsonata-js
+    /// would crash.
+    fn replace_with_custom_matcher(
+        &mut self,
+        s: &str,
+        matcher: &JValue,
+        replacement: &JValue,
+        limit: Option<usize>,
+        data: &JValue,
+    ) -> Result<JValue, EvaluatorError> {
+        if limit == Some(0) {
+            return Ok(JValue::string(s));
+        }
+        let units: Vec<u16> = s.encode_utf16().collect();
+        let str_val = JValue::string(s);
+        let mut current = normalize_lazy(&self.call_function_value(matcher, &[str_val], data)?)?;
+        check_matcher_result(&current, "replace")?;
+        let mut result: Vec<u16> = Vec::with_capacity(units.len());
+        let mut position = 0.0;
+        let mut count = 0;
+        while let JValue::Object(found) = current.clone() {
+            if limit.is_some_and(|limit| count >= limit) {
+                break;
+            }
+            let start = match found.get("start") {
+                Some(JValue::Number(n)) => Some(*n),
+                _ => None,
+            };
+            result.extend_from_slice(js_substring(&units, position, start));
+            let text = match found.get("match") {
+                Some(JValue::String(text)) => text.clone(),
+                _ => Rc::from(""),
+            };
+            let groups: Vec<Option<&str>> = match found.get("groups") {
+                Some(JValue::Array(groups)) => groups
+                    .iter()
+                    .map(|group| match group {
+                        JValue::String(group) => Some(&**group),
+                        _ => None,
+                    })
+                    .collect(),
+                _ => Vec::new(),
+            };
+            let replaced =
+                self.replacement_for(replacement, &text, &groups, || current.clone(), data)?;
+            result.extend(replaced.encode_utf16());
+            position = start.unwrap_or(f64::NAN) + text.encode_utf16().count() as f64;
+            count += 1;
+
+            // Only a lambda `next` is called (see `check_matcher_result`).
+            current = match found.get("next") {
+                Some(JValue::Lambda(next)) => {
+                    let next = Rc::clone(next);
+                    normalize_lazy(&self.invoke_stored_lambda(&next, &[], data)?)?
+                }
+                _ => JValue::Undefined,
+            };
+            check_matcher_result(&current, "replace")?;
+        }
+        result.extend_from_slice(js_substring(&units, position, None));
+        Ok(JValue::string(String::from_utf16_lossy(&result)))
     }
 
     /// Capture only the variables referenced by a lambda body (selective capture).
