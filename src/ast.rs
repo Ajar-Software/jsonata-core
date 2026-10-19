@@ -58,6 +58,46 @@ pub struct PathStep {
     /// its bindings, rather than its values.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub inner_tuple: bool,
+    /// This step's identity, which the evaluator keys its cache of compiled
+    /// step bodies by (#197). Each new step gets an id no other step has had
+    /// in this process; a clone keeps it, being the same step. Not part of
+    /// the step's meaning: ignored by equality, and serialization skips it
+    /// (a deserialized step gets a new one). Code that changes the `node` of
+    /// a step must give it a new id (`StepId::default()`) if a clone of the
+    /// old step may be evaluated by the same evaluator.
+    #[serde(skip)]
+    pub id: StepId,
+}
+
+/// The identity of a path step; see `PathStep::id`. `StepId::default()` is
+/// a new id, never handed out before in this process. It compares equal to
+/// any other id, so that `PathStep`s are compared by content.
+#[derive(Clone, Copy)]
+pub struct StepId(u64);
+
+impl StepId {
+    pub(crate) fn get(self) -> u64 {
+        self.0
+    }
+}
+
+impl Default for StepId {
+    fn default() -> Self {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        StepId(NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
+    }
+}
+
+impl PartialEq for StepId {
+    fn eq(&self, _other: &Self) -> bool {
+        true
+    }
+}
+
+impl std::fmt::Debug for StepId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "StepId({})", self.0)
+    }
 }
 
 /// AST Node types
@@ -293,6 +333,7 @@ impl PathStep {
             ancestor_label: None,
             is_tuple: false,
             inner_tuple: false,
+            id: StepId::default(),
         }
     }
 
@@ -306,6 +347,7 @@ impl PathStep {
             ancestor_label: None,
             is_tuple: false,
             inner_tuple: false,
+            id: StepId::default(),
         }
     }
 }

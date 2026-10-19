@@ -449,10 +449,12 @@ fn compiled_builtin_names(expr: &CompiledExpr, out: &mut Vec<&'static str>) {
     }
 }
 
-/// A function body compiled when the function is defined, with the builtin
-/// names it calls directly. Whether those names still mean the builtins is
-/// only known when it is called, so the body is reached only through
-/// `Evaluator::usable_compiled_body`.
+/// A function body compiled when the function is defined, or a path step's
+/// body compiled the first time an evaluator runs the step (kept under
+/// `PathStep::id`), with the builtin names it calls directly. Whether those names still mean the
+/// builtins is only known where it runs, so a function body is reached only
+/// through `Evaluator::usable_compiled_body` and a step body only through
+/// `Evaluator::cached_step_body`.
 #[derive(Clone, Debug)]
 pub(crate) struct CompiledBody {
     expr: CompiledExpr,
@@ -473,13 +475,33 @@ impl CompiledBody {
         }
         let var_refs: Vec<&str> = params.iter().map(|s| s.as_str()).collect();
         let expr = try_compile_expr_with_allowed_vars(body, &var_refs)?;
+        Some(CompiledBody::new(expr))
+    }
+
+    /// Compile a path step's body (an object constructor or the expression
+    /// of a `.(expr)` step) to run on each of the step's items, with no
+    /// variables of its own.
+    fn compile_step(body: &AstNode) -> Option<CompiledBody> {
+        #[cfg(test)]
+        STEP_COMPILES.with(|n| n.set(n.get() + 1));
+        try_compile_expr(body).map(CompiledBody::new)
+    }
+
+    fn new(expr: CompiledExpr) -> CompiledBody {
         let mut builtins = Vec::new();
         compiled_builtin_names(&expr, &mut builtins);
-        Some(CompiledBody {
+        CompiledBody {
             expr,
             builtins: builtins.into_boxed_slice(),
-        })
+        }
     }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// How many times a path step's body has been compiled on this thread,
+    /// for tests that check the step cache (#197).
+    static STEP_COMPILES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 /// Reject (fall back to the tree-walker) a fully-built `CompiledExpr` tree
@@ -4307,6 +4329,73 @@ pub struct Evaluator {
     /// position (`$name(...)`). Empty for the overwhelming majority of
     /// evaluators, which pay nothing. See `register_fn`/`register_fn_override`.
     host_fns: HashMap<String, Rc<dyn HostFn>>,
+    /// Compiled bodies of the object-constructor and `.(expr)` steps this
+    /// evaluator has run, by `PathStep::id` (`None`: does not compile), so a
+    /// step compiles once per evaluator rather than each time it runs (#197).
+    step_bodies: StepBodies,
+}
+
+/// The compiled-step cache: the step looked up last, which is the one asked
+/// for again in the common case of one such step run over and over, and a
+/// map of the others, allocated only once a second step is cached. Step ids
+/// are unique integers, so the map uses them as their own hash.
+#[derive(Default)]
+struct StepBodies {
+    last: Option<(u64, Option<Rc<CompiledBody>>)>,
+    others: HashMap<u64, Option<Rc<CompiledBody>>, std::hash::BuildHasherDefault<StepIdHasher>>,
+}
+
+/// The cached entries are dropped all at once when there are this many,
+/// which only an evaluator running `$eval` on new expressions again and
+/// again reaches (each parse makes new steps).
+const MAX_STEP_BODIES: usize = 4096;
+
+impl StepBodies {
+    /// The entry for step `id`, made by `compile` if there is none.
+    fn get_or_compile(
+        &mut self,
+        id: u64,
+        compile: impl FnOnce() -> Option<CompiledBody>,
+    ) -> Option<Rc<CompiledBody>> {
+        if let Some((last_id, compiled)) = &self.last {
+            if *last_id == id {
+                return compiled.clone();
+            }
+        }
+        let compiled = match self.others.remove(&id) {
+            Some(compiled) => compiled,
+            None => compile().map(Rc::new),
+        };
+        if let Some((last_id, last)) = self.last.replace((id, compiled.clone())) {
+            if self.others.len() >= MAX_STEP_BODIES {
+                self.others.clear();
+            }
+            self.others.insert(last_id, last);
+        }
+        compiled
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.others.len() + usize::from(self.last.is_some())
+    }
+}
+
+#[derive(Default)]
+struct StepIdHasher(u64);
+
+impl std::hash::Hasher for StepIdHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+    fn write(&mut self, bytes: &[u8]) {
+        for &b in bytes {
+            self.0 = (self.0 << 8) | u64::from(b);
+        }
+    }
+    fn write_u64(&mut self, n: u64) {
+        self.0 = n;
+    }
 }
 
 impl Evaluator {
@@ -4319,6 +4408,7 @@ impl Evaluator {
             options: EvaluatorOptions::default(),
             start_time: None,
             host_fns: HashMap::new(),
+            step_bodies: StepBodies::default(),
         }
     }
 
@@ -4331,6 +4421,7 @@ impl Evaluator {
             options: EvaluatorOptions::default(),
             start_time: None,
             host_fns: HashMap::new(),
+            step_bodies: StepBodies::default(),
         }
     }
 
@@ -4345,6 +4436,7 @@ impl Evaluator {
             options,
             start_time: None,
             host_fns: HashMap::new(),
+            step_bodies: StepBodies::default(),
         }
     }
 
@@ -6164,7 +6256,7 @@ impl Evaluator {
             AstNode::Name(field) => field_values(field, items, &self.options)?,
             // `$` is each item itself.
             AstNode::Variable(name) if name.is_empty() => items.to_vec(),
-            node => self.evaluate_step_node_per_item(node, items)?,
+            _ => self.evaluate_step_node_per_item(step, items)?,
         };
         let mut results = Vec::with_capacity(values.len());
         for value in values {
@@ -6182,24 +6274,23 @@ impl Evaluator {
     /// compiled path, which gives the same values with less per-item work.
     fn evaluate_step_node_per_item(
         &mut self,
-        node: &AstNode,
+        step: &PathStep,
         items: &[JValue],
     ) -> Result<Vec<JValue>, EvaluatorError> {
-        // Compiling costs about one tree evaluation and isn't cached, so it
-        // only pays off over several items. A node calling a builtin that a
-        // binding here shadows stays on the tree-walker (`compile_in_scope`).
-        let body = match node {
-            _ if items.len() < 2 => None,
-            AstNode::Object(_) => Some(node),
-            AstNode::FunctionApplication(expr) => Some(&**expr),
-            _ => None,
+        let node = &step.node;
+        // Compiling costs about one tree evaluation. It is done once per step
+        // and kept by the evaluator (#197), but a step only ever seen with one
+        // item would pay it for nothing, so it waits for one with several.
+        let compiled = if items.len() < 2 {
+            None
+        } else {
+            self.cached_step_body(step)
         };
-        let compiled = body.and_then(|body| self.compile_in_scope(body, None));
         let mut values = Vec::with_capacity(items.len());
         if let Some(compiled) = compiled {
             for item in items {
                 values.push(eval_compiled(
-                    &compiled,
+                    &compiled.expr,
                     item,
                     None,
                     &self.options,
@@ -9715,10 +9806,19 @@ impl Evaluator {
         }
     }
 
+    /// Whether each of `names` still means the builtin right here, in the
+    /// current scope.
+    fn builtins_unshadowed_here(&self, names: &[&str]) -> bool {
+        names
+            .iter()
+            .all(|name| self.builtin_unshadowed(name, self.context.lookup(name)))
+    }
+
     /// Compile `node` to run right here, in the current scope: `None` if it
     /// does not compile or calls a builtin a binding here shadows. Every
     /// evaluator site that compiles part of an expression goes through this
-    /// (or `CompiledBody` for function bodies), so none can skip the rule.
+    /// (or `CompiledBody` for function bodies, or `cached_step_body` for path
+    /// steps), so none can skip the rule.
     fn compile_in_scope(
         &self,
         node: &AstNode,
@@ -9730,9 +9830,27 @@ impl Evaluator {
         };
         let mut names = Vec::new();
         compiled_builtin_names(&compiled, &mut names);
-        names
-            .iter()
-            .all(|name| self.builtin_unshadowed(name, self.context.lookup(name)))
+        self.builtins_unshadowed_here(&names).then_some(compiled)
+    }
+
+    /// The compiled body of an object constructor or `.(expr)` step, if it
+    /// may run right here: compiled the first time this evaluator runs the
+    /// step and kept by its id (#197), which is safe because compiling reads
+    /// nothing but the node. A function's body is a clone of the steps in the
+    /// expression, with the same ids, so all its calls share the entry.
+    /// Whether the builtins it calls are shadowed depends on where the step
+    /// runs (one call of a function may bind `$string`, the next not), so
+    /// that is checked on every use, as `compile_in_scope` does.
+    fn cached_step_body(&mut self, step: &PathStep) -> Option<Rc<CompiledBody>> {
+        let body = match &step.node {
+            AstNode::Object(_) => &step.node,
+            AstNode::FunctionApplication(expr) => &**expr,
+            _ => return None,
+        };
+        let compiled = self
+            .step_bodies
+            .get_or_compile(step.id.get(), || CompiledBody::compile_step(body))?;
+        self.builtins_unshadowed_here(&compiled.builtins)
             .then_some(compiled)
     }
 
@@ -12012,5 +12130,193 @@ mod tests {
             .join()
             .unwrap();
         assert!(elapsed.as_secs() < 5, "took {elapsed:?}");
+    }
+
+    // --- #197: a step's compiled body is cached on the step -----------------
+
+    mod step_cache {
+        use super::*;
+
+        fn step_compiles() -> usize {
+            STEP_COMPILES.with(|n| n.get())
+        }
+
+        fn jv(s: &str) -> JValue {
+            JValue::from_json_str(s).unwrap()
+        }
+
+        fn big(n: usize) -> JValue {
+            let items: Vec<String> = (0..n)
+                .map(|i| {
+                    format!(
+                        r#"{{"items": [{{"x": {i}, "y": "a"}}, {{"x": {}, "y": "b"}}, {{"x": 0, "y": "c"}}]}}"#,
+                        i + 1
+                    )
+                })
+                .collect();
+            jv(&format!(r#"{{"big": [{}]}}"#, items.join(",")))
+        }
+
+        fn assert_map_rows(result: &JValue) {
+            let JValue::Array(rows) = result else {
+                panic!("expected an array, got {result:?}")
+            };
+            assert_eq!(rows.len(), 200);
+            assert_eq!(
+                rows[1],
+                jv(r#"[{"a": 1, "b": "a"}, {"a": 2, "b": "b"}, {"a": 0, "b": "c"}]"#)
+            );
+        }
+
+        #[test]
+        fn constructor_in_a_function_body_compiles_once_per_evaluator() {
+            // Before #197 the step compiled once per call: 200 times per
+            // evaluation. Now once per evaluator, for an inline function and
+            // for a stored one, whose body is a clone with the same step ids.
+            let data = big(200);
+            for src in [
+                r#"$map(big, function($v){ $v.items.{"a": x, "b": y} })"#,
+                r#"( $f := function($v){ $v.items.{"a": x, "b": y} }; $map(big, $f) )"#,
+                r#"( $f := function($v){ $v.items.{"a": x, "b": y} }; $map(big, function($v){ $f($v) }) )"#,
+            ] {
+                let ast = parser::parse(src).unwrap();
+                for _ in 0..2 {
+                    let before = step_compiles();
+                    assert_map_rows(&Evaluator::new().evaluate(&ast, &data).unwrap());
+                    assert_eq!(step_compiles() - before, 1, "{src}");
+                }
+                // One evaluator over several evaluations keeps its cache.
+                let mut evaluator = Evaluator::new();
+                let before = step_compiles();
+                for _ in 0..3 {
+                    assert_map_rows(&evaluator.evaluate(&ast, &data).unwrap());
+                }
+                assert_eq!(step_compiles() - before, 1, "{src}");
+            }
+        }
+
+        #[test]
+        fn alternating_steps_each_compile_once() {
+            // Two cached steps run in turn, 200 times each: the second one
+            // moves the first out of the last-used slot into the map.
+            let data = big(200);
+            let ast = parser::parse(
+                r#"$map(big, function($v){ [$v.items.{"a": x}, $v.items.("b" & y)] })"#,
+            )
+            .unwrap();
+            let before = step_compiles();
+            let result = Evaluator::new().evaluate(&ast, &data).unwrap();
+            assert_eq!(step_compiles() - before, 2);
+            let JValue::Array(rows) = &result else {
+                panic!("expected an array, got {result:?}")
+            };
+            assert_eq!(
+                rows[1],
+                jv(r#"[{"a": 1}, {"a": 2}, {"a": 0}, "ba", "bb", "bc"]"#)
+            );
+        }
+
+        #[test]
+        fn cache_is_bounded() {
+            // `$eval` parses new steps each time; the cache drops its
+            // entries rather than growing without limit.
+            let data = jv(r#"{"p": [{"a": 1}, {"a": 2}]}"#);
+            let mut evaluator = Evaluator::new();
+            let ast = parser::parse(r#"[1..5000].$eval('p.{"a": a}', $$)"#).unwrap();
+            let before = step_compiles();
+            let result = evaluator.evaluate(&ast, &data).unwrap();
+            // Each parsed `p.{...}` once, and the outer `.$eval(...)` step.
+            assert_eq!(step_compiles() - before, 5001);
+            let JValue::Array(rows) = &result else {
+                panic!("expected an array, got {result:?}")
+            };
+            assert_eq!(rows.len(), 10000);
+            let cached = evaluator.step_bodies.len();
+            assert!(cached > 0 && cached <= MAX_STEP_BODIES + 1, "{cached}");
+        }
+
+        #[test]
+        fn each_parsed_step_has_its_own_id() {
+            // Two steps sharing an id would share a cache entry.
+            let ast = parser::parse("a.b.c").unwrap();
+            let AstNode::Path { steps } = &ast else {
+                panic!("expected a path, got {ast:?}")
+            };
+            let ids: std::collections::HashSet<u64> =
+                steps.iter().map(|step| step.id.get()).collect();
+            assert_eq!(ids.len(), steps.len());
+        }
+
+        #[test]
+        fn top_level_step_compiles_once_per_evaluator() {
+            let data =
+                jv(r#"{"products": [{"name": "a", "price": 1}, {"name": "b", "price": 2}]}"#);
+            let ast = parser::parse(r#"products.{"n": name, "p": price}"#).unwrap();
+            let mut evaluator = Evaluator::new();
+            let before = step_compiles();
+            for _ in 0..3 {
+                assert_eq!(
+                    evaluator.evaluate(&ast, &data).unwrap(),
+                    jv(r#"[{"n": "a", "p": 1}, {"n": "b", "p": 2}]"#)
+                );
+            }
+            assert_eq!(step_compiles() - before, 1);
+        }
+
+        #[test]
+        fn step_that_does_not_compile_is_tried_once() {
+            // `$f` is neither a parameter nor compilable, so the step runs on
+            // the tree-walker; the failed compile is remembered too.
+            let data = big(50);
+            let ast = parser::parse(
+                r#"( $f := function($x){ $x & "!" }; $map(big, function($v){ $v.items.{"a": $f(y)} }) )"#,
+            )
+            .unwrap();
+            let before = step_compiles();
+            let result = Evaluator::new().evaluate(&ast, &data).unwrap();
+            assert_eq!(step_compiles() - before, 1);
+            let JValue::Array(rows) = &result else {
+                panic!("expected an array, got {result:?}")
+            };
+            assert_eq!(rows[0], jv(r#"[{"a": "a!"}, {"a": "b!"}, {"a": "c!"}]"#));
+        }
+
+        #[test]
+        fn shadowing_is_checked_on_every_use_of_the_cached_step() {
+            // The same cached step runs with `$string` the builtin, then bound
+            // to a function in the call's own block, then the builtin again
+            // (values from jsonata-js 2.x). Compiled once all the same.
+            let data = jv(r#"{"d": {"items": [{"x": 1}, {"x": 2}, {"x": 3}]}}"#);
+            for (body, constructs) in [
+                (r#"$v.items.{"s": $string(x)}"#, true),
+                (r#"$v.items.($string(x))"#, false),
+            ] {
+                for order in [[false, true, false], [true, false, true]] {
+                    let calls: Vec<String> = order.iter().map(|s| format!("$f(d, {s})")).collect();
+                    let src = format!(
+                        r#"( $f := function($v, $s){{ ( $s ? $string := function($x){{ "z" }} : 0; {body} ) }}; [{}] )"#,
+                        calls.join(", ")
+                    );
+                    let ast = parser::parse(&src).unwrap();
+                    let before = step_compiles();
+                    let result = Evaluator::new().evaluate(&ast, &data).unwrap();
+                    assert_eq!(step_compiles() - before, 1, "{src}");
+                    let expected: Vec<JValue> = order
+                        .iter()
+                        .flat_map(|&shadowed| {
+                            ["1", "2", "3"].map(|x| if shadowed { "z" } else { x })
+                        })
+                        .map(|s| {
+                            if constructs {
+                                jv(&format!(r#"{{"s": "{s}"}}"#))
+                            } else {
+                                JValue::from(s)
+                            }
+                        })
+                        .collect();
+                    assert_eq!(result, JValue::array(expected), "{src}");
+                }
+            }
+        }
     }
 }

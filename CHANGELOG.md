@@ -11,6 +11,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **An object constructor or `.(expr)` path step is compiled once per evaluation, not each
+  time it runs** ([#197](https://github.com/txjmb/jsonata-core/issues/197)). The evaluator
+  keeps each step's compiled form, so a step inside a function body, such as `$map(big,
+  function($v){ $v.items.{"a": x, "b": y} })`, compiles once instead of once per call (about
+  10% fewer instructions for 200 calls), and a step that does not compile is not retried.
+  Whether a builtin the step calls is shadowed is still checked every time it runs. Rust API:
+  `PathStep` has a new `id: StepId` field, the key for that cache (`StepId::default()` in a
+  struct literal, which gives a new id; `PathStep::new` and `with_stages` set it). It is
+  ignored by equality and serde, and code that rewrites a step's `node` should give it a new
+  id. `AstNode` stays `Send + Sync`.
 - **A `$` step over an array known to hold no arrays skips the nested-array scan**
   ([#196](https://github.com/txjmb/jsonata-core/issues/196)). `JArray` gains a private `flat`
   flag, read with `is_flat()` and set with `JArray::new_flat` or `JValue::sequence_flat`, for
