@@ -4189,7 +4189,9 @@ impl Evaluator {
     }
 
     /// Run one level of evaluation under the recursion-depth, timeout and
-    /// native-stack checks every node evaluation makes.
+    /// native-stack checks every node evaluation makes. Inlined so the hot
+    /// node-evaluation path pays no extra call frame for it.
+    #[inline(always)]
     fn with_checkpoint<T>(
         &mut self,
         f: impl FnOnce(&mut Self) -> Result<T, EvaluatorError>,
@@ -5040,31 +5042,13 @@ impl Evaluator {
                 // evaluatePath's `ii === 0 && step.consarray`). The stream
                 // starts from its items, or with a focus, which keeps the
                 // step's input as the next one's, from the path's input.
-                if index == 0 && matches!(step.node, AstNode::Array(_)) {
-                    self.tuple_stream_created = true;
-                    let value = self.evaluate_internal(&step.node, data)?;
-                    let value = self.apply_filter_stages(value, &step.stages)?;
-                    let items = match (step.focus.is_some(), value) {
-                        // The top-level array's wrapper holds the bare array.
-                        (true, _) => match data {
-                            JValue::Array(arr) if arr.outer_wrapper => vec![data.bare()],
-                            JValue::Array(arr) => arr.iter().cloned().collect(),
-                            JValue::Undefined => Vec::new(),
-                            other => vec![other.clone()],
-                        },
-                        (false, JValue::Undefined) => Vec::new(),
-                        (false, JValue::Array(arr)) => arr.iter().cloned().collect(),
-                        (false, other) => vec![other],
-                    };
-                    let stream = items
-                        .into_iter()
-                        .map(|item| {
-                            let mut wrapper = IndexMap::new();
-                            wrapper.insert("@".to_string(), item);
-                            wrapper.insert("__tuple__".to_string(), JValue::Bool(true));
-                            JValue::object(wrapper)
-                        })
-                        .collect();
+                // The parser flags it only on a dotted path: alone
+                // (`[3,1]#$k`), it maps over the input like any first step.
+                if index == 0
+                    && (dotted || steps.len() > 1)
+                    && matches!(step.node, AstNode::Array(_))
+                {
+                    let stream = self.consarray_tuple_start(step, data)?;
                     tuples = Some(stream);
                     sorted_tuples = false;
                     continue;
@@ -5103,73 +5087,12 @@ impl Evaluator {
             result = if index == 0
                 && (matches!(step.node, AstNode::Array(_)) || Self::is_cons_block(&step.node))
             {
-                // A leading array constructor builds one array from the whole
-                // input rather than one per item (jsonata-js `consarray`), as
-                // does a block holding a path that starts with one.
-                let mut value = self.evaluate_internal(&step.node, data)?;
-                if let JValue::Array(arr) = &mut value {
-                    arr.cons = true;
-                }
-                let mut value = self.apply_filter_stages(value, &step.stages)?;
-                // A predicate on the block leaves one value bare, as the
-                // generic unwrap of jsonata-js's predicate result does.
-                if !step.stages.is_empty()
-                    && !Self::path_keeps_singleton_array(std::slice::from_ref(step))
-                    && Self::is_cons_block(&step.node)
-                {
-                    if let JValue::Array(arr) = &value {
-                        if arr.sequence && !arr.keep_singleton && arr.len() == 1 {
-                            value = arr[0].clone();
-                        }
-                    }
-                }
-                // jsonata-js takes the value as the next step's input sequence
-                // as is, so a block's single value gives that step no items,
-                // and the path no result; a sort still orders it.
-                let next_reads_items = steps
-                    .get(index + 1)
-                    .is_some_and(|next| !matches!(next.node, AstNode::Sort { .. }));
-                if next_reads_items
-                    && !matches!(value, JValue::Array(_))
-                    && Self::is_cons_block(&step.node)
-                {
-                    JValue::Undefined
-                } else {
-                    value
-                }
+                self.evaluate_cons_first_step(step, steps, data)?
             } else if let (0, AstNode::Sort { input, terms }) = (index, &step.node) {
-                // A path's first-step sort evaluates once against the whole
-                // input (`takes_whole_input`), with `$` the input, and gives
-                // its tuples, which the rest of the path reads. Its input
-                // starts a dotted path when more steps follow.
-                let saved = self.keep_tuple_stream;
-                self.keep_tuple_stream = true;
-                let sorted = self.with_dollar_bound(data, |ev| {
-                    ev.with_checkpoint(|ev| {
-                        ev.evaluate_sort_node(input, terms, data, dotted || steps.len() > 1)
-                    })
-                });
-                self.keep_tuple_stream = saved;
-                let (value, cons_single) = sorted?;
-                let value = self.apply_filter_stages(value, &step.stages)?;
-                // A sort of a consarray first step's single value gives it
-                // back as is, which the next step reads as no items, as for
-                // the consarray step itself above. A predicate on the sort
-                // collects its result into a sequence again.
-                let next_reads_items = steps
-                    .get(index + 1)
-                    .is_some_and(|next| !matches!(next.node, AstNode::Sort { .. }));
-                // `[]` is only a mark there, not a predicate.
-                let filters = step
-                    .stages
-                    .iter()
-                    .any(|stage| matches!(stage, Stage::Filter(_)));
-                cons_single_out = cons_single && !filters;
-                if cons_single && !filters && next_reads_items {
-                    JValue::Undefined
-                } else {
-                    collect_single_step_result(value, steps.len() == 1)
-                }
+                let (value, cons_single) =
+                    self.evaluate_first_step_sort(step, steps, input, terms, data, dotted)?;
+                cons_single_out = cons_single;
+                value
             } else {
                 // A sort step gives its tuples, which the rest of the path reads.
                 let saved = self.keep_tuple_stream;
@@ -5224,6 +5147,135 @@ impl Evaluator {
             check_sequence_length(arr.len(), &self.options)?;
         }
         Ok((result, cons_single_out))
+    }
+
+    /// The tuples a leading `consarray` step starts a tuple stream with: its
+    /// items, or with a focus, the path's input (see `evaluate_path_steps`).
+    /// Kept out of line, off the hot path.
+    #[inline(never)]
+    fn consarray_tuple_start(
+        &mut self,
+        step: &PathStep,
+        data: &JValue,
+    ) -> Result<Vec<JValue>, EvaluatorError> {
+        self.tuple_stream_created = true;
+        let value = self.evaluate_internal(&step.node, data)?;
+        let value = self.apply_filter_stages(value, &step.stages)?;
+        let items = match (step.focus.is_some(), value) {
+            // The top-level array's wrapper holds the bare array.
+            (true, _) => match data {
+                JValue::Array(arr) if arr.outer_wrapper => vec![data.bare()],
+                JValue::Array(arr) => arr.iter().cloned().collect(),
+                JValue::Undefined => Vec::new(),
+                other => vec![other.clone()],
+            },
+            (false, JValue::Undefined) => Vec::new(),
+            (false, JValue::Array(arr)) => arr.iter().cloned().collect(),
+            (false, other) => vec![other],
+        };
+        Ok(items
+            .into_iter()
+            .map(|item| {
+                let mut wrapper = IndexMap::new();
+                wrapper.insert("@".to_string(), item);
+                wrapper.insert("__tuple__".to_string(), JValue::Bool(true));
+                JValue::object(wrapper)
+            })
+            .collect())
+    }
+
+    /// A path's leading array constructor or consarray block, evaluated once
+    /// against the whole input. Kept out of line, off the hot path.
+    #[inline(never)]
+    fn evaluate_cons_first_step(
+        &mut self,
+        step: &PathStep,
+        steps: &[PathStep],
+        data: &JValue,
+    ) -> Result<JValue, EvaluatorError> {
+        // A leading array constructor builds one array from the whole
+        // input rather than one per item (jsonata-js `consarray`), as
+        // does a block holding a path that starts with one.
+        let mut value = self.evaluate_internal(&step.node, data)?;
+        if let JValue::Array(arr) = &mut value {
+            arr.cons = true;
+        }
+        let mut value = self.apply_filter_stages(value, &step.stages)?;
+        // A predicate on the block leaves one value bare, as the
+        // generic unwrap of jsonata-js's predicate result does.
+        if !step.stages.is_empty()
+            && !Self::path_keeps_singleton_array(std::slice::from_ref(step))
+            && Self::is_cons_block(&step.node)
+        {
+            if let JValue::Array(arr) = &value {
+                if arr.sequence && !arr.keep_singleton && arr.len() == 1 {
+                    value = arr[0].clone();
+                }
+            }
+        }
+        // jsonata-js takes the value as the next step's input sequence
+        // as is, so a block's single value gives that step no items,
+        // and the path no result; a sort still orders it.
+        let next_reads_items = steps
+            .get(1)
+            .is_some_and(|next| !matches!(next.node, AstNode::Sort { .. }));
+        Ok(
+            if next_reads_items
+                && !matches!(value, JValue::Array(_))
+                && Self::is_cons_block(&step.node)
+            {
+                JValue::Undefined
+            } else {
+                value
+            },
+        )
+    }
+
+    /// A path's first-step sort, and whether it gave a consarray step's
+    /// single value back. Kept out of line, off the hot path.
+    #[inline(never)]
+    fn evaluate_first_step_sort(
+        &mut self,
+        step: &PathStep,
+        steps: &[PathStep],
+        input: &AstNode,
+        terms: &[(AstNode, bool)],
+        data: &JValue,
+        dotted: bool,
+    ) -> Result<(JValue, bool), EvaluatorError> {
+        // A path's first-step sort evaluates once against the whole
+        // input (`takes_whole_input`), with `$` the input, and gives
+        // its tuples, which the rest of the path reads. Its input
+        // starts a dotted path when more steps follow.
+        let saved = self.keep_tuple_stream;
+        self.keep_tuple_stream = true;
+        let sorted = self.with_dollar_bound(data, |ev| {
+            ev.with_checkpoint(|ev| {
+                ev.evaluate_sort_node(input, terms, data, dotted || steps.len() > 1)
+            })
+        });
+        self.keep_tuple_stream = saved;
+        let (value, cons_single) = sorted?;
+        let value = self.apply_filter_stages(value, &step.stages)?;
+        // A sort of a consarray first step's single value gives it
+        // back as is, which the next step reads as no items, as for
+        // the consarray step itself above. A predicate on the sort
+        // collects its result into a sequence again.
+        let next_reads_items = steps
+            .get(1)
+            .is_some_and(|next| !matches!(next.node, AstNode::Sort { .. }));
+        // `[]` is only a mark there, not a predicate.
+        let filters = step
+            .stages
+            .iter()
+            .any(|stage| matches!(stage, Stage::Filter(_)));
+        let cons_single = cons_single && !filters;
+        let value = if cons_single && next_reads_items {
+            JValue::Undefined
+        } else {
+            collect_single_step_result(value, steps.len() == 1)
+        };
+        Ok((value, cons_single))
     }
 
     /// One plain (non-tuple) path step over its input sequence, following
@@ -9327,16 +9379,59 @@ impl Evaluator {
             indexed_array.push((idx, sort_keys));
         }
 
-        // Order the keyed items with jsonata-js's merge sort and comparator,
-        // so the type checks (T2008, T2007) apply only to the pairs it
-        // compares, after its check for undefined terms.
-        let mut order: Vec<usize> = (0..indexed_array.len()).collect();
-        let mut buffer = Vec::with_capacity(order.len());
-        Self::merge_sort_keyed(&mut order, &mut buffer, &indexed_array, terms)?;
-
-        let sorted: Vec<JValue> = order.iter().map(|&idx| array[idx].clone()).collect();
+        // When each term's defined values are all numbers or all strings, no
+        // comparison can fail and any stable sort gives jsonata-js's order.
+        // Otherwise the keyed items go through jsonata-js's merge sort and
+        // comparator, so the type checks (T2008, T2007) apply only to the
+        // pairs it compares, after its check for undefined terms.
+        let homogeneous = (0..terms.len()).all(|term| {
+            let mut kind = None;
+            indexed_array.iter().all(|(_, keys)| {
+                let this = match &keys[term] {
+                    JValue::Undefined => return true,
+                    JValue::Number(_) => 0,
+                    JValue::String(_) => 1,
+                    _ => return false,
+                };
+                *kind.get_or_insert(this) == this
+            })
+        });
+        let sorted: Vec<JValue> = if homogeneous {
+            indexed_array.sort_by(|(_, a), (_, b)| Self::compare_sort_keys(a, b, terms));
+            indexed_array
+                .iter()
+                .map(|(idx, _)| array[*idx].clone())
+                .collect()
+        } else {
+            let mut order: Vec<usize> = (0..indexed_array.len()).collect();
+            let mut buffer = Vec::with_capacity(order.len());
+            Self::merge_sort_keyed(&mut order, &mut buffer, &indexed_array, terms)?;
+            order.iter().map(|&idx| array[idx].clone()).collect()
+        };
 
         Ok(JValue::array(sorted))
+    }
+
+    /// jsonata-js's order-by comparison of two items' keys whose terms are
+    /// known to compare without error: an undefined term sorts last in
+    /// either direction.
+    fn compare_sort_keys(a: &[JValue], b: &[JValue], terms: &[(AstNode, bool)]) -> Ordering {
+        for (index, (_, ascending)) in terms.iter().enumerate() {
+            let comp = match (&a[index], &b[index]) {
+                (JValue::Undefined, JValue::Undefined) => continue,
+                (JValue::Undefined, _) => return Ordering::Greater,
+                (_, JValue::Undefined) => return Ordering::Less,
+                (JValue::Number(x), JValue::Number(y)) => {
+                    x.partial_cmp(y).unwrap_or(Ordering::Equal)
+                }
+                (JValue::String(x), JValue::String(y)) => x.cmp(y),
+                _ => Ordering::Equal,
+            };
+            if comp != Ordering::Equal {
+                return if *ascending { comp } else { comp.reverse() };
+            }
+        }
+        Ordering::Equal
     }
 
     /// jsonata-js `fn.sort`'s merge sort over item indices: split at the

@@ -84,7 +84,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   last in either direction (`[{"p":1},{"q":1}]^(>p)` keeps its order; it put `{"q":1}` first),
   and is checked before the types, so `[{"p":null},{"q":1}]^(p)` keeps its order instead of
   raising T2008. A leading array constructor with a focus or index binding is evaluated once,
-  the binding ignored, so `[$]@$w.($)` over `[1,2,3]` is `[1,2,3]`.
+  the binding ignored, when a `.` follows it (jsonata-js `consarray`), so `[$]@$w.($)` over
+  `[1,2,3]` is `[1,2,3]` and `[a]@$w.{"v": $}` over `[{"a":1},{"a":2}]` is
+  `{"v": [{"a":1},{"a":2}]}`.
 - **A higher-order function evaluates its callback once, to a function value**
   ([#204](https://github.com/txjmb/jsonata-core/issues/204)). `$map`, `$filter`, `$reduce`,
   `$single`, `$sift`, `$each` and `$sort` evaluate a callback that is not an inline lambda or a
