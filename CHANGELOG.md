@@ -65,6 +65,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A function body resolves names where the function is defined, not where it is called**
+  ([#191](https://github.com/txjmb/jsonata-core/issues/191)). A binding in the caller's scope
+  leaked into the body: `($f := function($x){ $string($x) }; ($string := function($x){"z"};
+  $f(1)))` is `"1"` as in jsonata-js (it was `"z"`), and `($g := function(){ $v }; $f :=
+  function($v){ $g() }; $f(1))` is undefined (it was `1`). The same holds for transforms,
+  partial applications, tail calls, and internal temporaries such as `$__temp_arg_0`. A binding
+  in the defining scope is still seen, even one made after the function. Every compiled fast
+  path now checks builtin shadowing through one rule, so `$map`/`$filter`/`$reduce` callbacks,
+  object constructors, predicates and fused aggregates call a builtin only where the
+  tree-walker would; a parameter named like a builtin (`function($string){ $string(1) }`) now
+  shadows it there too. Calling a name bound to something that is not a function, such as
+  `$string := 5; $string(1)`, is T1006 (T1008 when partially applied) instead of calling the
+  builtin. Deep recursion no longer slows down with depth when its body calls a builtin, since a
+  lookup skips the caller frames.
 - **`@` on a block, `*` or `$` outside a path binds nothing**
   ([#213](https://github.com/txjmb/jsonata-core/issues/213)). jsonata-js only applies a
   binding to a path step, so `(acct.Order.P)@$v` is the three products (it was the input,

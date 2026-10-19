@@ -550,6 +550,71 @@ mod divergent_from_reference {
     }
 }
 
+// ── Lexical scope (#191) ─────────────────────────────────────────────────────
+//
+// A function body resolves the names it neither binds nor captured in the
+// scope it was defined in, never in its caller's. Values verified against
+// jsonata-js 2.2.2; more cases in the path-semantics corpus.
+
+#[test]
+fn caller_binding_does_not_shadow_builtin_in_body() {
+    assert_eval(
+        "( $f := function($x){ $string($x) }; ( $string := function($x){ \"z\" }; $f(1) ) )",
+        "\"1\"",
+    );
+    // Through the compiled fast paths: stored $map callback and a recursive
+    // tail call.
+    assert_eval(
+        "( $f := function($x){ $string($x) }; ( $string := function($x){ \"z\" }; $map([1,2], $f) ) )",
+        "[\"1\",\"2\"]",
+    );
+    assert_eval(
+        "( $f := function($n){ $n = 0 ? $string($n) : $f($n - 1) }; \
+           ( $string := function($x){ \"z\" }; $f(3) ) )",
+        "\"0\"",
+    );
+}
+
+#[test]
+fn late_binding_in_defining_scope_shadows_builtin_in_body() {
+    // Same frame, bound after the function: visible, as in jsonata-js (and
+    // so the compiled fast path must not call the builtin).
+    assert_eval(
+        "( $f := function($x){ $string($x) }; $string := function($x){ \"z\" }; $map([1,2], $f) )",
+        "[\"z\",\"z\"]",
+    );
+}
+
+#[test]
+fn caller_variable_not_visible_in_body() {
+    assert_eval(
+        "( $g := function(){ $exists($v) }; $f := function($v){ $g() }; $f(1) )",
+        "false",
+    );
+    // A tail call reuses the trampoline frame; the caller's parameter must
+    // not survive into the callee.
+    assert_eval(
+        "( $g := function($x){ $exists($y) }; $f := function($y){ $g(1) }; $f(\"q\") )",
+        "false",
+    );
+}
+
+#[test]
+fn escaped_closure_resolves_builtin_not_caller_binding() {
+    assert_eval(
+        "( $h := ( $k := 1; function($x){ $string($x + $k) } ); \
+           ( $string := function($x){ \"z\" }; $h(1) ) )",
+        "\"2\"",
+    );
+}
+
+#[test]
+fn non_function_binding_hides_builtin() {
+    assert_error_contains("( $string := 5; $string(1) )", "T1006");
+    assert_error_contains("( $string := 5; $string(?) )", "T1008");
+    assert_error_contains("$map([1], function($string){ $string(1) })", "T1006");
+}
+
 // ── Memory: no closure leaks ─────────────────────────────────────────────────
 
 #[test]

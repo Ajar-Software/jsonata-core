@@ -37,16 +37,6 @@ const KNOWN_DIVERGENCES: &[(&str, &str)] = &[
     // undefined here.
     ("compiled", "nope ~> /n/"),
     ("tree", "nope ~> /n/"),
-    // A function body sees a variable bound where it is called, not only
-    // where it is defined (#191).
-    (
-        "compiled",
-        "($t := |$|{\"w\": $v}|; $f := function($v) { $t(x) }; $f(1))",
-    ),
-    (
-        "tree",
-        "($t := |$|{\"w\": $v}|; $f := function($v) { $t(x) }; $f(1))",
-    ),
 ];
 
 /// Mirror of `encode` in scripts/gen_path_semantics_corpus.js.
