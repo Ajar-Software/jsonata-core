@@ -271,6 +271,17 @@ const EXTRA = [
   '$replace("é😀b", function($s) { {"match": "b", "start": 3, "groups": ["g"], "next": function() { undefined }} }, "<$0$1>")',
   '$replace("abcabc", function($s) { {"match": "b", "start": 1, "groups": [], "next": function() { {"match": "c", "start": 5, "groups": [], "next": function() { undefined }} }} }, "X")',
   '$replace("abcabc", function($s) { {"match": "b", "start": 1, "groups": [], "next": function() { {"match": "c", "start": 5, "groups": [], "next": function() { undefined }} }} }, "X", 1)',
+  // A custom matcher's groups and start are converted as JavaScript does.
+  ...['1', 'null', 'true', '1.5', '1e21', '1e-7', '-0', '[1, 2]', '[]', '[null, "x", [3]]', '{"a": 1}',
+    '$sum', 'nope'].map((g) =>
+    `$replace("abc", function($s) { {"match": "b", "start": 1, "groups": [${g}], "next": function() { undefined }} }, "[$1]")`),
+  ...['"1"', '" 2 "', '"z"', 'true', 'null', '"0x2"', '""', '[2]', '"1e0"', 'nope'].map((st) =>
+    `$replace("abc", function($s) { {"match": "b", "start": ${st}, "groups": [], "next": function() { undefined }} }, "x")`),
+  // A replacement string's `$n` is read with parseInt, up to the digits the group count has.
+  ...['[$01]', '[$-1]', '[$ 1]', '[$$1]', '[$]', '[$a]', '[$1$2]', '[$1é]', '$'].map((r) =>
+    `$replace("abc", /(b)/, ${JSON.stringify(r)})`),
+  ...['$10', '$11', '$1x', '$010', '$100'].map((r) =>
+    `$replace("abcdefghijk", /(a)(b)(c)(d)(e)(f)(g)(h)(i)(j)/, ${JSON.stringify(r)})`),
   // `a ?? b` is `$exists(a) ? a : b` (#195): errors on the left propagate.
   '$error("x") ?? 1', '(($x := 5; $error("e")) ?? $x)', 'nope.(1/0) ?? 2', '$string(nope) ?? 1',
   '(nope) ?? 2', '$lookup({}, "a") ?? 3', 'null ?? 4', '[nope][0] ?? 5', 'false ?? 6', '0 ?? 7',

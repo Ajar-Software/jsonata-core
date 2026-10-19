@@ -3013,6 +3013,98 @@ fn check_matcher_result(result: &JValue, function: &str) -> Result<(), Evaluator
     }
 }
 
+/// JavaScript `ToString` of a value, as `+` with a string applies it: an
+/// array joins its items with `,` (null and undefined as nothing), and a
+/// function is `[object Object]`, as jsonata-js's function values are
+/// objects. A JSONata object has no `toString`, so jsonata-js fails on it;
+/// that failure is an error here too.
+fn js_to_string(value: &JValue) -> Result<String, EvaluatorError> {
+    Ok(match value {
+        JValue::Undefined => "undefined".to_string(),
+        JValue::Null => "null".to_string(),
+        JValue::Bool(b) => b.to_string(),
+        JValue::Number(n) => crate::value::js_number_to_string(*n),
+        JValue::String(s) => s.to_string(),
+        JValue::Array(items) => {
+            let mut joined = String::new();
+            for (i, item) in items.iter().enumerate() {
+                if i > 0 {
+                    joined.push(',');
+                }
+                if !matches!(item, JValue::Undefined | JValue::Null) {
+                    joined.push_str(&js_to_string(item)?);
+                }
+            }
+            joined
+        }
+        JValue::Lambda(_) | JValue::Builtin { .. } | JValue::Regex { .. } => {
+            "[object Object]".to_string()
+        }
+        _ => {
+            return Err(EvaluatorError::TypeError(
+                "Cannot convert object to primitive value".to_string(),
+            ))
+        }
+    })
+}
+
+/// JavaScript `ToNumber` of a value; a string or array goes through its
+/// string form, and anything else that isn't a number, null or a boolean
+/// is NaN.
+fn js_to_number(value: &JValue) -> f64 {
+    match value {
+        JValue::Number(n) => *n,
+        JValue::Null => 0.0,
+        JValue::Bool(b) => f64::from(u8::from(*b)),
+        JValue::String(s) => js_string_to_number(s),
+        JValue::Array(_) => js_to_string(value).map_or(f64::NAN, |s| js_string_to_number(&s)),
+        _ => f64::NAN,
+    }
+}
+
+/// JavaScript `ToNumber` of a string: surrounding whitespace is ignored,
+/// an empty string is 0, `0x`/`0o`/`0b` prefixes and `Infinity` are read,
+/// and anything else that isn't a decimal number is NaN.
+fn js_string_to_number(s: &str) -> f64 {
+    let s = s.trim_matches(|c: char| c.is_whitespace() || c == '\u{feff}');
+    if s.is_empty() {
+        return 0.0;
+    }
+    for (prefix, radix) in [
+        ("0x", 16),
+        ("0X", 16),
+        ("0o", 8),
+        ("0O", 8),
+        ("0b", 2),
+        ("0B", 2),
+    ] {
+        if let Some(digits) = s.strip_prefix(prefix) {
+            if digits.is_empty() {
+                return f64::NAN;
+            }
+            return digits
+                .chars()
+                .try_fold(0.0, |n, c| {
+                    c.to_digit(radix)
+                        .map(|d| n * f64::from(radix) + f64::from(d))
+                })
+                .unwrap_or(f64::NAN);
+        }
+    }
+    match s {
+        "Infinity" | "+Infinity" => return f64::INFINITY,
+        "-Infinity" => return f64::NEG_INFINITY,
+        _ => {}
+    }
+    if s.bytes()
+        .all(|b| b.is_ascii_digit() || matches!(b, b'.' | b'e' | b'E' | b'+' | b'-'))
+    {
+        s.parse().unwrap_or(f64::NAN)
+    } else {
+        f64::NAN
+    }
+}
+
 /// JavaScript `String.prototype.substring` over UTF-16 code units: each
 /// bound is clamped to the string (NaN is 0, a missing end is the end), and
 /// the bounds are swapped if the end comes first.
@@ -7835,6 +7927,7 @@ impl Evaluator {
                 self.replace_with_custom_matcher(s, pattern, replacement, limit, data)
             }
             _ => {
+                use crate::functions::string::{replace_regex, RegexMatches};
                 let (pat, flags) =
                     crate::functions::string::extract_regex(pattern).ok_or_else(|| {
                         EvaluatorError::TypeError(
@@ -7842,8 +7935,14 @@ impl Evaluator {
                         )
                     })?;
                 let re = crate::functions::string::build_regex(&pat, &flags)?;
-                let result = crate::functions::string::replace_regex(s, &re, limit, |found| {
-                    self.replacement_for(
+                let mut matches = RegexMatches::new(&re, s);
+                // Only a replacement function sees the UTF-16 offsets.
+                if !matches!(replacement, JValue::String(_)) {
+                    matches = matches.counting_utf16();
+                }
+                let result = replace_regex(matches, limit, |found, out| {
+                    self.replace_one(
+                        out,
                         replacement,
                         found.text,
                         &found.groups,
@@ -7856,24 +7955,27 @@ impl Evaluator {
         }
     }
 
-    /// jsonata-js `replace`'s replacer applied to one match: a replacement
-    /// string with `$0`/`$n` substituted, or a replacement function's result
-    /// for `match_object`.
-    fn replacement_for(
+    /// jsonata-js `replace`'s replacer applied to one match, appended to
+    /// `out`: a replacement string with `$0`/`$n` substituted, or a
+    /// replacement function's result for `match_object`.
+    fn replace_one(
         &mut self,
+        out: &mut String,
         replacement: &JValue,
         text: &str,
         groups: &[Option<&str>],
         match_object: impl FnOnce() -> JValue,
         data: &JValue,
-    ) -> Result<String, EvaluatorError> {
+    ) -> Result<(), EvaluatorError> {
         if let JValue::String(template) = replacement {
-            return Ok(crate::functions::string::substitute_capture_groups(
-                template, text, groups,
-            ));
+            crate::functions::string::substitute_capture_groups(out, template, text, groups);
+            return Ok(());
         }
         match self.call_function_value(replacement, &[match_object()], data)? {
-            JValue::String(replaced) => Ok(replaced.to_string()),
+            JValue::String(replaced) => {
+                out.push_str(&replaced);
+                Ok(())
+            }
             _ => Err(EvaluatorError::TypeError(
                 "D3012: Attempted to replace a matched string with a non-string value".to_string(),
             )),
@@ -7884,10 +7986,11 @@ impl Evaluator {
     /// function, following jsonata-js `replace`. The matcher returns
     /// `{match, start, groups, next}` objects (checked as `evaluateMatcher`
     /// checks them), and a replacement function receives each one as it is.
-    /// `start` counts UTF-16 code units, so the string is cut in those. A
-    /// result without a `next` function ends the matches, as do a result's
-    /// missing `match` (taken as empty) and other cases where jsonata-js
-    /// would crash.
+    /// `start` counts UTF-16 code units, so the string is cut in those, and
+    /// it and the groups a replacement string inserts are converted as
+    /// JavaScript converts them. A result without a `next` function ends the
+    /// matches, as does a missing `match` (taken as empty); jsonata-js
+    /// crashes on both.
     fn replace_with_custom_matcher(
         &mut self,
         s: &str,
@@ -7904,35 +8007,55 @@ impl Evaluator {
         let mut current = normalize_lazy(&self.call_function_value(matcher, &[str_val], data)?)?;
         check_matcher_result(&current, "replace")?;
         let mut result: Vec<u16> = Vec::with_capacity(units.len());
+        let mut replaced = String::new();
         let mut position = 0.0;
         let mut count = 0;
         while let JValue::Object(found) = current.clone() {
             if limit.is_some_and(|limit| count >= limit) {
                 break;
             }
-            let start = match found.get("start") {
-                Some(JValue::Number(n)) => Some(*n),
-                _ => None,
-            };
-            result.extend_from_slice(js_substring(&units, position, start));
+            let start = found.get("start").unwrap_or(&JValue::Undefined);
+            // `str.substring(position, matches.start)`: an undefined end is
+            // the end of the string.
+            let end = (!start.is_undefined()).then(|| js_to_number(start));
+            result.extend_from_slice(js_substring(&units, position, end));
             let text = match found.get("match") {
                 Some(JValue::String(text)) => text.clone(),
                 _ => Rc::from(""),
             };
-            let groups: Vec<Option<&str>> = match found.get("groups") {
-                Some(JValue::Array(groups)) => groups
+            // `substitute += submatch` converts each group to a string;
+            // only an undefined one is skipped.
+            let groups: Vec<Option<String>> = match (replacement, found.get("groups")) {
+                (JValue::String(_), Some(JValue::Array(groups))) => groups
                     .iter()
                     .map(|group| match group {
-                        JValue::String(group) => Some(&**group),
-                        _ => None,
+                        JValue::Undefined => Ok(None),
+                        group => js_to_string(group).map(Some),
                     })
-                    .collect(),
+                    .collect::<Result<_, _>>()?,
                 _ => Vec::new(),
             };
-            let replaced =
-                self.replacement_for(replacement, &text, &groups, || current.clone(), data)?;
+            let groups: Vec<Option<&str>> = groups.iter().map(Option::as_deref).collect();
+            replaced.clear();
+            self.replace_one(
+                &mut replaced,
+                replacement,
+                &text,
+                &groups,
+                || current.clone(),
+                data,
+            )?;
             result.extend(replaced.encode_utf16());
-            position = start.unwrap_or(f64::NAN) + text.encode_utf16().count() as f64;
+            // `matches.start + matches.match.length`, which concatenates
+            // when `start` converts to a string first.
+            let match_len = text.encode_utf16().count() as f64;
+            position = match start {
+                JValue::String(_) | JValue::Array(_) => {
+                    let primitive = js_to_string(start)?;
+                    js_string_to_number(&format!("{primitive}{match_len}"))
+                }
+                start => js_to_number(start) + match_len,
+            };
             count += 1;
 
             // Only a lambda `next` is called (see `check_matcher_result`).

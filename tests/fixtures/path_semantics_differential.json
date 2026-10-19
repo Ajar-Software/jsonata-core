@@ -8962,6 +8962,156 @@
    "result": "aXcabc"
   },
   {
+   "expression": "$replace(\"abc\", function($s) { {\"match\": \"b\", \"start\": 1, \"groups\": [1], \"next\": function() { undefined }} }, \"[$1]\")",
+   "result": "a[1]c"
+  },
+  {
+   "expression": "$replace(\"abc\", function($s) { {\"match\": \"b\", \"start\": 1, \"groups\": [null], \"next\": function() { undefined }} }, \"[$1]\")",
+   "result": "a[null]c"
+  },
+  {
+   "expression": "$replace(\"abc\", function($s) { {\"match\": \"b\", \"start\": 1, \"groups\": [true], \"next\": function() { undefined }} }, \"[$1]\")",
+   "result": "a[true]c"
+  },
+  {
+   "expression": "$replace(\"abc\", function($s) { {\"match\": \"b\", \"start\": 1, \"groups\": [1.5], \"next\": function() { undefined }} }, \"[$1]\")",
+   "result": "a[1.5]c"
+  },
+  {
+   "expression": "$replace(\"abc\", function($s) { {\"match\": \"b\", \"start\": 1, \"groups\": [1e21], \"next\": function() { undefined }} }, \"[$1]\")",
+   "result": "a[1e+21]c"
+  },
+  {
+   "expression": "$replace(\"abc\", function($s) { {\"match\": \"b\", \"start\": 1, \"groups\": [1e-7], \"next\": function() { undefined }} }, \"[$1]\")",
+   "result": "a[1e-7]c"
+  },
+  {
+   "expression": "$replace(\"abc\", function($s) { {\"match\": \"b\", \"start\": 1, \"groups\": [-0], \"next\": function() { undefined }} }, \"[$1]\")",
+   "result": "a[0]c"
+  },
+  {
+   "expression": "$replace(\"abc\", function($s) { {\"match\": \"b\", \"start\": 1, \"groups\": [[1, 2]], \"next\": function() { undefined }} }, \"[$1]\")",
+   "result": "a[1,2]c"
+  },
+  {
+   "expression": "$replace(\"abc\", function($s) { {\"match\": \"b\", \"start\": 1, \"groups\": [[]], \"next\": function() { undefined }} }, \"[$1]\")",
+   "result": "a[]c"
+  },
+  {
+   "expression": "$replace(\"abc\", function($s) { {\"match\": \"b\", \"start\": 1, \"groups\": [[null, \"x\", [3]]], \"next\": function() { undefined }} }, \"[$1]\")",
+   "result": "a[,x,3]c"
+  },
+  {
+   "expression": "$replace(\"abc\", function($s) { {\"match\": \"b\", \"start\": 1, \"groups\": [{\"a\": 1}], \"next\": function() { undefined }} }, \"[$1]\")",
+   "result": {
+    "$error": "Cannot convert object to primitive value"
+   }
+  },
+  {
+   "expression": "$replace(\"abc\", function($s) { {\"match\": \"b\", \"start\": 1, \"groups\": [$sum], \"next\": function() { undefined }} }, \"[$1]\")",
+   "result": "a[[object Object]]c"
+  },
+  {
+   "expression": "$replace(\"abc\", function($s) { {\"match\": \"b\", \"start\": 1, \"groups\": [nope], \"next\": function() { undefined }} }, \"[$1]\")",
+   "result": "a[]c"
+  },
+  {
+   "expression": "$replace(\"abc\", function($s) { {\"match\": \"b\", \"start\": \"1\", \"groups\": [], \"next\": function() { undefined }} }, \"x\")",
+   "result": "ax"
+  },
+  {
+   "expression": "$replace(\"abc\", function($s) { {\"match\": \"b\", \"start\": \" 2 \", \"groups\": [], \"next\": function() { undefined }} }, \"x\")",
+   "result": "abxabc"
+  },
+  {
+   "expression": "$replace(\"abc\", function($s) { {\"match\": \"b\", \"start\": \"z\", \"groups\": [], \"next\": function() { undefined }} }, \"x\")",
+   "result": "xabc"
+  },
+  {
+   "expression": "$replace(\"abc\", function($s) { {\"match\": \"b\", \"start\": true, \"groups\": [], \"next\": function() { undefined }} }, \"x\")",
+   "result": "axc"
+  },
+  {
+   "expression": "$replace(\"abc\", function($s) { {\"match\": \"b\", \"start\": null, \"groups\": [], \"next\": function() { undefined }} }, \"x\")",
+   "result": "xbc"
+  },
+  {
+   "expression": "$replace(\"abc\", function($s) { {\"match\": \"b\", \"start\": \"0x2\", \"groups\": [], \"next\": function() { undefined }} }, \"x\")",
+   "result": "abx"
+  },
+  {
+   "expression": "$replace(\"abc\", function($s) { {\"match\": \"b\", \"start\": \"\", \"groups\": [], \"next\": function() { undefined }} }, \"x\")",
+   "result": "xbc"
+  },
+  {
+   "expression": "$replace(\"abc\", function($s) { {\"match\": \"b\", \"start\": [2], \"groups\": [], \"next\": function() { undefined }} }, \"x\")",
+   "result": "abx"
+  },
+  {
+   "expression": "$replace(\"abc\", function($s) { {\"match\": \"b\", \"start\": \"1e0\", \"groups\": [], \"next\": function() { undefined }} }, \"x\")",
+   "result": "ax"
+  },
+  {
+   "expression": "$replace(\"abc\", function($s) { {\"match\": \"b\", \"start\": nope, \"groups\": [], \"next\": function() { undefined }} }, \"x\")",
+   "result": "abcxabc"
+  },
+  {
+   "expression": "$replace(\"abc\", /(b)/, \"[$01]\")",
+   "result": "a[b1]c"
+  },
+  {
+   "expression": "$replace(\"abc\", /(b)/, \"[$-1]\")",
+   "result": "a[$-1]c"
+  },
+  {
+   "expression": "$replace(\"abc\", /(b)/, \"[$ 1]\")",
+   "result": "a[$ 1]c"
+  },
+  {
+   "expression": "$replace(\"abc\", /(b)/, \"[$$1]\")",
+   "result": "a[$1]c"
+  },
+  {
+   "expression": "$replace(\"abc\", /(b)/, \"[$]\")",
+   "result": "a[$]c"
+  },
+  {
+   "expression": "$replace(\"abc\", /(b)/, \"[$a]\")",
+   "result": "a[$a]c"
+  },
+  {
+   "expression": "$replace(\"abc\", /(b)/, \"[$1$2]\")",
+   "result": "a[b]c"
+  },
+  {
+   "expression": "$replace(\"abc\", /(b)/, \"[$1é]\")",
+   "result": "a[bé]c"
+  },
+  {
+   "expression": "$replace(\"abc\", /(b)/, \"$\")",
+   "result": "a$c"
+  },
+  {
+   "expression": "$replace(\"abcdefghijk\", /(a)(b)(c)(d)(e)(f)(g)(h)(i)(j)/, \"$10\")",
+   "result": "jk"
+  },
+  {
+   "expression": "$replace(\"abcdefghijk\", /(a)(b)(c)(d)(e)(f)(g)(h)(i)(j)/, \"$11\")",
+   "result": "a1k"
+  },
+  {
+   "expression": "$replace(\"abcdefghijk\", /(a)(b)(c)(d)(e)(f)(g)(h)(i)(j)/, \"$1x\")",
+   "result": "axk"
+  },
+  {
+   "expression": "$replace(\"abcdefghijk\", /(a)(b)(c)(d)(e)(f)(g)(h)(i)(j)/, \"$010\")",
+   "result": "abcdefghij10k"
+  },
+  {
+   "expression": "$replace(\"abcdefghijk\", /(a)(b)(c)(d)(e)(f)(g)(h)(i)(j)/, \"$100\")",
+   "result": "j0k"
+  },
+  {
    "expression": "$error(\"x\") ?? 1",
    "result": {
     "$error": "D3137"
