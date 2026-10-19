@@ -276,6 +276,25 @@ const EXTRA = [
   'nn^($)#$k.$', '[[3]]^($)#$k', '$map([1], function($v){nn^($)#$k})', '$map([1], function($v){nn^($)[0]^($)})',
   '$map([1], function($v){[[3]]^($)#$k})', '[[[1]]]^($)[0]^($)', '[[[1]]]^($)#$k', 'nn^($)^($)', '[[3]]^($)^($)',
   'nn^($)[0][]^($)', 'n^($[0])[0]^($)', '[[3]]^($)[0]^($).$', 'n^(p)[-1]^($)[0]', 'one.z^($)#$k',
+  // An object constructor or group-by reads `$` as its own context, also
+  // inside a block, and groups a sort's result before the unwrap.
+  '[1].([[3]]^($)#$k.{"v":$})', '[1].($$.m.k.b^($)#$k.{"v":$})', '[1].([[3]]^($)#$k.{"v":$type($)})',
+  '[1].($a:=[[3]];$a^($)#$k.{"v":$})', '[1].([[3]]#$k.{"v":$})', '[1].([[5]].{"v":$})',
+  'm.k.b^($){$string($):$}', 'm.k.b^($){"k":$}', '[[5,6]]^($){$string($):$}', '[[5]]^($){$string($):$}',
+  'm.k.b^($)^($){"k":$}', '([m.k.b]^(>$){"v":$})', 'm.k.b^($).{"k":$}',
+  // A `[]` on a variable before a sort marks the path a `.` makes of it.
+  '($x:=[3]; $x[]^($).$)', '($x:=[3]; $x[]^($).[$])', '($x:=[3]; $x[]^($).{"a":$})', '($x:=[3]; $x[]^($)#$i.$)',
+  '($x:=[3]; $x[]^($))', '[[3]].($[]^($).$)', '[[3]].($[]^($))', '($x:=[[3]]; $x[]^($).$)',
+  // A `[]` on a sort marks its path node, which keeps a sequence but not a
+  // constructed array.
+  'nn^(>$)[].[$]', 'nn[].[$]', 'nn^(>$)^($)[].[$]', 'arr^(>$)[0][].$type($)', '[3]^(0)[]^($)[0].$',
+  // A sort of a sort, chained with predicates, in a block or over `%`.
+  'nn^(>%.id)^($string($))[].{"v":$}', 'nn^(>%.id)^($string($)).$type($)', '[1].($$.m.k.b^(0)[true]^(0).{"v":$})',
+  '[1].([[5]]^(0)[true]^(0).{"v":$})', 'acct.Order.([[[1]]]^(N)[true]^(0)[$count($)>0][0].{"v":$})',
+  'n.([[3]]^($)[0]^($).$)', 'n.([3,1]^($)^($)#$k.$)', 'n.([[5,6]]^($)#$k.{"v":$})',
+  'n.([3]^(0)[true]^(0)[true]#$k.{"v":$})',
+  // A field term on an array item is its items' fields.
+  '[[{"p":2},{"p":1}],[{"p":3}]]^(p)[[0]]^(>$)', '[[{"p":2},{"p":1}],[{"p":3}]]^(p)',
   // After a sort, a tuple's `#$i` or `@$v` binding reads as a field named `i` or `v`.
   'acct.Order.P#$i^(>$i){"k": $keys($)}', 'acct.Order.P#$i^(>$i)[i = 1]', 'acct.Order.P#$i^(>$i)[$.i = 0]',
   'acct.Order.P#$i^(>$i){"x": $sum(i)}', 'acct.Order.P#$i^(>$i)^(i).N', 'acct.Order.P@$p^(>$p.N){"k": $keys($)}',

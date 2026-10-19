@@ -4229,7 +4229,9 @@ impl Evaluator {
                 let saved_keep = self.keep_tuple_stream;
                 self.keep_tuple_stream =
                     Self::is_tuple_path_node(input) || Self::sorts_tuples(input);
-                let input_value = self.evaluate_internal(input, data);
+                // jsonata-js groups the input's result before the generic
+                // unwrap, so a one-item sequence holding an array is one item.
+                let input_value = self.evaluate_unwrapped_later(input, data);
                 self.keep_tuple_stream = saved_keep;
                 let input_value = input_value?;
 
@@ -4757,22 +4759,28 @@ impl Evaluator {
         // A request to keep tuple streams is for this path only, not for the
         // expressions its steps evaluate.
         let keep_tuple_stream = std::mem::replace(&mut self.keep_tuple_stream, false);
-        let result = self.evaluate_path_steps(steps, data, keep_tuple_stream);
+        let result = self.evaluate_path_steps(steps, data, keep_tuple_stream, false);
         self.keep_tuple_stream = keep_tuple_stream;
-        result
+        result.map(|(value, _)| value)
     }
 
     /// `evaluate_path`, with `keep_tuple_stream` saying whether a tuple
     /// stream result is returned as its tuples rather than their values.
+    /// `dotted` is set for a one-step sort path that is itself the input of
+    /// a sort starting a longer path: its first step then starts that path.
+    /// The flag returned is set when a first-step sort of a consarray step
+    /// gave a single value, for an enclosing sort to pass on.
     fn evaluate_path_steps(
         &mut self,
         steps: &[PathStep],
         data: &JValue,
         keep_tuple_stream: bool,
-    ) -> Result<JValue, EvaluatorError> {
+        dotted: bool,
+    ) -> Result<(JValue, bool), EvaluatorError> {
         let Some(first) = steps.first() else {
-            return Ok(data.clone());
+            return Ok((data.clone(), false));
         };
+        let mut cons_single_out = false;
 
         // A lone field step on an object is that field's value, whatever it
         // holds: the general loop would reach the same answer through the
@@ -4781,10 +4789,10 @@ impl Evaluator {
             if let AstNode::Name(field) = &first.node {
                 match data {
                     JValue::Object(obj) if !is_tuple_object(obj) => {
-                        return Ok(obj.get(field).cloned().unwrap_or(JValue::Undefined));
+                        return Ok((obj.get(field).cloned().unwrap_or(JValue::Undefined), false));
                     }
                     #[cfg(feature = "python")]
-                    JValue::LazyPyDict(lazy) => return Ok(lazy.get_field(field)?),
+                    JValue::LazyPyDict(lazy) => return Ok((lazy.get_field(field)?, false)),
                     _ => {}
                 }
             }
@@ -4806,7 +4814,7 @@ impl Evaluator {
                     if let Some(JValue::Object(obj)) = self.context.lookup(name) {
                         if !is_tuple_object(obj) {
                             let value = obj.get(field).cloned().unwrap_or(JValue::Undefined);
-                            return Ok(collect_single_step_result(value, true));
+                            return Ok((collect_single_step_result(value, true), false));
                         }
                     }
                 }
@@ -4823,7 +4831,7 @@ impl Evaluator {
             if Self::path_keeps_singleton_array(steps) {
                 keep_if_sequence(&mut value);
             }
-            return Ok(value);
+            return Ok((value, false));
         }
 
         // jsonata-js maps the first step over an array input item by item,
@@ -4882,7 +4890,9 @@ impl Evaluator {
                     None if index == 0 => data.clone(),
                     None => result.clone(),
                 };
-                let (stream, sorted) = self.create_tuple_stream(step, &source, index == 0)?;
+                let starts_dotted = index == 0 && (dotted || steps.len() > 1);
+                let (stream, sorted) =
+                    self.create_tuple_stream(step, &source, index == 0, starts_dotted)?;
                 tuples = Some(stream);
                 sorted_tuples = sorted;
                 continue;
@@ -4952,7 +4962,7 @@ impl Evaluator {
                 self.keep_tuple_stream = true;
                 let sorted = self.with_dollar_bound(data, |ev| {
                     ev.with_checkpoint(|ev| {
-                        ev.evaluate_sort_node(input, terms, data, steps.len() > 1)
+                        ev.evaluate_sort_node(input, terms, data, dotted || steps.len() > 1)
                     })
                 });
                 self.keep_tuple_stream = saved;
@@ -4970,6 +4980,7 @@ impl Evaluator {
                     .stages
                     .iter()
                     .any(|stage| matches!(stage, Stage::Filter(_)));
+                cons_single_out = cons_single && !filters;
                 if cons_single && !filters && next_reads_items {
                     JValue::Undefined
                 } else {
@@ -5014,14 +5025,21 @@ impl Evaluator {
             };
         }
 
+        // A `[]` on a step marks the path in jsonata-js. One on a sort marks
+        // the sort's path node instead, which keeps a sequence from being
+        // unwrapped but leaves a constructed array as it is: `nn^($)[].[$]`
+        // is the array `[$]` builds.
         if Self::path_keeps_singleton_array(steps) {
-            result = keep_singleton(result);
+            let node_only = steps.len() > 1 && !Self::steps_keep_singleton(steps);
+            if !(node_only && matches!(&result, JValue::Array(arr) if arr.cons && !arr.sequence)) {
+                result = keep_singleton(result);
+            }
         }
 
         if let JValue::Array(arr) = &result {
             check_sequence_length(arr.len(), &self.options)?;
         }
-        Ok(result)
+        Ok((result, cons_single_out))
     }
 
     /// One plain (non-tuple) path step over its input sequence, following
@@ -5154,7 +5172,10 @@ impl Evaluator {
                 let AstNode::String(key) = key else {
                     unreachable!("all keys are literals")
                 };
-                let value = self.evaluate_internal(value, &context)?;
+                // `$` is the group's context, also under an outer `$`
+                // binding (a step inside a block).
+                let value =
+                    self.with_dollar_bound(&context, |ev| ev.evaluate_internal(value, &context))?;
                 if !value.is_undefined() {
                     result.insert(key.to_string(), value);
                 }
@@ -5167,11 +5188,12 @@ impl Evaluator {
         let mut groups: IndexMap<String, (usize, Vec<JValue>)> = IndexMap::new();
         for item in items.iter() {
             for (pair_index, (key, _)) in pairs.iter().enumerate() {
-                let key = match self.evaluate_internal(key, item)? {
-                    JValue::String(key) => key,
-                    JValue::Undefined => continue,
-                    other => return Err(key_type_error(&other)),
-                };
+                let key =
+                    match self.with_dollar_bound(item, |ev| ev.evaluate_internal(key, item))? {
+                        JValue::String(key) => key,
+                        JValue::Undefined => continue,
+                        other => return Err(key_type_error(&other)),
+                    };
                 match groups.get_mut(&*key) {
                     Some((index, _)) if *index != pair_index => {
                         return Err(duplicate_key_error(&key));
@@ -5185,7 +5207,10 @@ impl Evaluator {
         }
         let mut result = IndexMap::with_capacity(groups.len());
         for (key, (pair_index, group)) in groups {
-            let value = self.evaluate_internal(&pairs[pair_index].1, &group_context(&group))?;
+            let context = group_context(&group);
+            let value = self.with_dollar_bound(&context, |ev| {
+                ev.evaluate_internal(&pairs[pair_index].1, &context)
+            })?;
             if !value.is_undefined() {
                 result.insert(key, value);
             }
@@ -5424,9 +5449,51 @@ impl Evaluator {
                 return true;
             }
             if let AstNode::Sort { input, .. } = &step.node {
-                return Self::sort_input_keeps_singleton(input);
+                // A `.` after the sort makes one path of all the steps before
+                // it, which jsonata-js marks for any `[]` among them.
+                return if steps.len() > 1 {
+                    let (on_step, on_node) = Self::sort_chain_keeps(input);
+                    on_step || on_node
+                } else {
+                    Self::sort_input_keeps_singleton(input)
+                };
             }
             false
+        })
+    }
+
+    /// The `[]`s in a sort's input chain, as the steps jsonata-js makes of
+    /// it: whether one is on a step other than a sort, which marks a path a
+    /// later `.` makes of them, and whether one is on a sort, which marks
+    /// the sort's path node.
+    fn sort_chain_keeps(node: &AstNode) -> (bool, bool) {
+        match node {
+            AstNode::Sort { input, .. } => Self::sort_chain_keeps(input),
+            AstNode::Path { steps } => {
+                let (mut on_step, mut on_node) = (false, false);
+                for step in steps {
+                    let keeps = step.stages.iter().any(|s| matches!(s, Stage::KeepArray));
+                    if matches!(&step.node, AstNode::Sort { .. }) {
+                        let (inner_step, inner_node) = Self::sort_chain_keeps(&step.node);
+                        on_step |= inner_step;
+                        on_node |= inner_node || keeps;
+                    } else {
+                        on_step |= keeps;
+                    }
+                }
+                (on_step, on_node)
+            }
+            _ => (false, false),
+        }
+    }
+
+    /// True when a dotted path has a `[]` jsonata-js puts on a step, which
+    /// marks the whole path: one on any step but a sort, or in the chain a
+    /// first-step sort sorts (see `sort_chain_keeps`).
+    fn steps_keep_singleton(steps: &[PathStep]) -> bool {
+        steps.iter().any(|step| match &step.node {
+            AstNode::Sort { input, .. } => Self::sort_chain_keeps(input).0,
+            _ => step.stages.iter().any(|s| matches!(s, Stage::KeepArray)),
         })
     }
 
@@ -5476,7 +5543,8 @@ impl Evaluator {
         let tuple_input = Self::is_tuple_path_node(input) || Self::sorts_tuples(input);
         self.keep_tuple_stream = tuple_input;
         let value = if tuple_input {
-            self.evaluate_internal(input, data)
+            // A stream of one tuple stays a stream, not the bare tuple.
+            self.evaluate_unwrapped_later(input, data)
                 .map(|value| (value, false))
         } else {
             // jsonata-js sorts as a step after the input's last step,
@@ -5565,6 +5633,9 @@ impl Evaluator {
         // A sort of a sort is one path: the inner sort's input is its first
         // step too.
         let pass_dotted = dotted && matches!(input, AstNode::Sort { .. });
+        let pass_dotted_path = dotted
+            && matches!(input, AstNode::Path { steps } if steps.len() == 1
+                && !steps[0].is_tuple && !Self::step_creates_tuple(&steps[0]));
         let uncons = |value: JValue| match value {
             JValue::Array(mut arr) if first.is_some() && arr.cons => {
                 arr.cons = false;
@@ -5590,6 +5661,21 @@ impl Evaluator {
                     } => {
                         let (value, inner_single) = self.with_checkpoint(|ev| {
                             ev.evaluate_sort_node(inner, terms, &item, pass_dotted)
+                        })?;
+                        cons_single = inner_single;
+                        value
+                    }
+                    // A one-step path holding a sort (with its predicates)
+                    // is that sort's step: under `dotted` it starts the
+                    // path too.
+                    AstNode::Path { steps }
+                        if pass_dotted_path && matches!(steps[0].node, AstNode::Sort { .. }) =>
+                    {
+                        let (value, inner_single) = self.with_checkpoint(|ev| {
+                            let keep = std::mem::replace(&mut ev.keep_tuple_stream, false);
+                            let result = ev.evaluate_path_steps(steps, &item, keep, true);
+                            ev.keep_tuple_stream = keep;
+                            result
                         })?;
                         cons_single = inner_single;
                         value
@@ -5735,6 +5821,7 @@ impl Evaluator {
         step: &PathStep,
         input: &JValue,
         is_first_path_step: bool,
+        dotted: bool,
     ) -> Result<(Vec<JValue>, bool), EvaluatorError> {
         use std::rc::Rc;
 
@@ -5825,9 +5912,16 @@ impl Evaluator {
                 // whose bindings carry into the new stream.
                 // Its sequence of one item is not unwrapped: the item is the
                 // one value sorted, even when it is an array.
+                // A sort starting a longer path is its input's first step
+                // there (`dotted`).
                 let saved = self.keep_tuple_stream;
                 self.keep_tuple_stream = true;
-                let value = self.evaluate_unwrapped_later(&step.node, input);
+                let value = if dotted {
+                    self.with_checkpoint(|ev| ev.evaluate_sort_node(sort_input, terms, input, true))
+                        .map(|(value, _)| value)
+                } else {
+                    self.evaluate_unwrapped_later(&step.node, input)
+                };
                 self.keep_tuple_stream = saved;
                 value?
             };
@@ -8841,6 +8935,9 @@ impl Evaluator {
                         JValue::LazyPyDict(lazy) => {
                             return Ok(lazy.get_field(field_name)?);
                         }
+                        // A field of an array is its items' fields, which the
+                        // general evaluation below gathers.
+                        JValue::Array(_) => {}
                         _ => return Ok(JValue::Undefined),
                     }
                 }

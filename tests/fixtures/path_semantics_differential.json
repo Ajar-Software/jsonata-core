@@ -8881,6 +8881,274 @@
    "result": 7
   },
   {
+   "expression": "[1].([[3]]^($)#$k.{\"v\":$})",
+   "result": {
+    "v": 3
+   }
+  },
+  {
+   "expression": "[1].($$.m.k.b^($)#$k.{\"v\":$})",
+   "result": {
+    "v": 1
+   }
+  },
+  {
+   "expression": "[1].([[3]]^($)#$k.{\"v\":$type($)})",
+   "result": {
+    "v": "number"
+   }
+  },
+  {
+   "expression": "[1].($a:=[[3]];$a^($)#$k.{\"v\":$})",
+   "result": {
+    "v": 3
+   }
+  },
+  {
+   "expression": "[1].([[3]]#$k.{\"v\":$})",
+   "result": {
+    "v": 3
+   }
+  },
+  {
+   "expression": "[1].([[5]].{\"v\":$})",
+   "result": {
+    "v": 5
+   }
+  },
+  {
+   "expression": "m.k.b^($){$string($):$}",
+   "result": {
+    "[1]": [
+     1
+    ]
+   }
+  },
+  {
+   "expression": "m.k.b^($){\"k\":$}",
+   "result": {
+    "k": [
+     1
+    ]
+   }
+  },
+  {
+   "expression": "[[5,6]]^($){$string($):$}",
+   "result": {
+    "[5,6]": [
+     5,
+     6
+    ]
+   }
+  },
+  {
+   "expression": "[[5]]^($){$string($):$}",
+   "result": {
+    "[5]": [
+     5
+    ]
+   }
+  },
+  {
+   "expression": "m.k.b^($)^($){\"k\":$}",
+   "result": {
+    "k": [
+     1
+    ]
+   }
+  },
+  {
+   "expression": "([m.k.b]^(>$){\"v\":$})",
+   "result": {
+    "v": [
+     1
+    ]
+   }
+  },
+  {
+   "expression": "m.k.b^($).{\"k\":$}",
+   "result": {
+    "k": 1
+   }
+  },
+  {
+   "expression": "($x:=[3]; $x[]^($).$)",
+   "result": [
+    3
+   ]
+  },
+  {
+   "expression": "($x:=[3]; $x[]^($).[$])",
+   "result": [
+    [
+     3
+    ]
+   ]
+  },
+  {
+   "expression": "($x:=[3]; $x[]^($).{\"a\":$})",
+   "result": [
+    {
+     "a": 3
+    }
+   ]
+  },
+  {
+   "expression": "($x:=[3]; $x[]^($)#$i.$)",
+   "result": [
+    3
+   ]
+  },
+  {
+   "expression": "($x:=[3]; $x[]^($))",
+   "result": 3
+  },
+  {
+   "expression": "[[3]].($[]^($).$)",
+   "result": 3
+  },
+  {
+   "expression": "[[3]].($[]^($))",
+   "result": 3
+  },
+  {
+   "expression": "($x:=[[3]]; $x[]^($).$)",
+   "result": [
+    3
+   ]
+  },
+  {
+   "expression": "nn^(>$)[].[$]",
+   "result": [
+    [
+     1
+    ]
+   ]
+  },
+  {
+   "expression": "nn[].[$]",
+   "result": [
+    [
+     [
+      1
+     ]
+    ]
+   ]
+  },
+  {
+   "expression": "nn^(>$)^($)[].[$]",
+   "result": [
+    [
+     1
+    ]
+   ]
+  },
+  {
+   "expression": "arr^(>$)[0][].$type($)",
+   "result": [
+    "number"
+   ]
+  },
+  {
+   "expression": "[3]^(0)[]^($)[0].$",
+   "result": [
+    3
+   ]
+  },
+  {
+   "expression": "nn^(>%.id)^($string($))[].{\"v\":$}",
+   "result": [
+    {
+     "v": [
+      1
+     ]
+    }
+   ]
+  },
+  {
+   "expression": "nn^(>%.id)^($string($)).$type($)",
+   "result": "array"
+  },
+  {
+   "expression": "[1].($$.m.k.b^(0)[true]^(0).{\"v\":$})",
+   "result": {
+    "v": 1
+   }
+  },
+  {
+   "expression": "[1].([[5]]^(0)[true]^(0).{\"v\":$})",
+   "result": {
+    "v": 5
+   }
+  },
+  {
+   "expression": "acct.Order.([[[1]]]^(N)[true]^(0)[$count($)>0][0].{\"v\":$})",
+   "result": [
+    {
+     "v": 1
+    },
+    {
+     "v": 1
+    }
+   ]
+  },
+  {
+   "expression": "n.([[3]]^($)[0]^($).$)",
+   "result": [
+    3,
+    3
+   ]
+  },
+  {
+   "expression": "n.([3,1]^($)^($)#$k.$)",
+   "result": [
+    1,
+    3,
+    1,
+    3
+   ]
+  },
+  {
+   "expression": "n.([[5,6]]^($)#$k.{\"v\":$})",
+   "result": [
+    {
+     "v": [
+      5,
+      6
+     ]
+    },
+    {
+     "v": [
+      5,
+      6
+     ]
+    }
+   ]
+  },
+  {
+   "expression": "n.([3]^(0)[true]^(0)[true]#$k.{\"v\":$})",
+   "result": [
+    {
+     "v": 3
+    },
+    {
+     "v": 3
+    }
+   ]
+  },
+  {
+   "expression": "[[{\"p\":2},{\"p\":1}],[{\"p\":3}]]^(p)[[0]]^(>$)",
+   "result": {
+    "$error": "T2008"
+   }
+  },
+  {
+   "expression": "[[{\"p\":2},{\"p\":1}],[{\"p\":3}]]^(p)",
+   "result": {
+    "$error": "T2008"
+   }
+  },
+  {
    "expression": "acct.Order.P#$i^(>$i){\"k\": $keys($)}",
    "result": {
     "k": [

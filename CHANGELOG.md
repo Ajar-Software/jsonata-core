@@ -76,7 +76,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   per item of an array input, as a path's first step: over `[{"a":[2,1]},{"a":[3]}]`,
   `(a[0])^($)` is `[2,3]` (it was `2`) and `$count(a[0])^($)` is `2` (it was `1`). A sort of
   objects that only look like internal tuples (`{"@": 2, "__tuple__": true}`) now orders them as data instead of leaving
-  them unsorted.
+  them unsorted. A group-by after a sort groups a single array as one item (`z^($){"k": $}` is
+  `{"k": [5]}` for `z: [[5]]`), an object constructor inside a `.( … )` block reads `$` as its
+  own context (`[1].([[5]].{"v": $})` is `{"v": 5}`), and a field sort term over an array item
+  reads its items' fields, so `[[{"p":2},{"p":1}],[{"p":3}]]^(p)` raises T2008 as in jsonata-js.
 - **`$replace` drives a regex or a matcher function as jsonata-js does**
   ([#198](https://github.com/txjmb/jsonata-core/issues/198)). A replacement function's
   `$m.start` and `$m.end` count UTF-16 code units, so `$replace("éab", /a/, function($m)
