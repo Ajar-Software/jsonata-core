@@ -70,6 +70,15 @@ def test_non_tail_recursion_evaluates(engine, n):
     assert _evaluate_on_small_stack(engine, RECURSION % n) == {"ok": str(n)}
 
 
+def test_recursion_through_expression_calls(engine):
+    expr = "($f := function($n){ $n <= 0 ? 0 : 1 + ($f)($n - 1) }; ($f)(%d))"
+    assert _evaluate_on_small_stack(engine, expr % 9000) == {"ok": "9000"}
+    out = _evaluate_on_small_stack(
+        engine, "($inf := function($n){ $n + ($inf)($n - 1) }; ($inf)(5))"
+    )
+    assert out["error"].startswith("U1001")
+
+
 def test_recursion_without_base_case_raises_u1001(engine):
     out = _evaluate_on_small_stack(engine, NO_BASE_CASE)
     assert out["error"].startswith("U1001")

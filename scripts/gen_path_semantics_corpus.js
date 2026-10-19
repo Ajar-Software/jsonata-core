@@ -246,6 +246,50 @@ const EXTRA = [
   '$match("abc", function($s) { {"match": "x", "start": 0, "groups": [], "next": function() { undefined }} })',
   '$match("abc", function($s) { {"match": "x", "start": 0, "groups": [], "next": function() { "str" }} }, 1)',
   '($o := {"f": function($s) { {"match": "b", "start": 1, "groups": [], "next": function() { undefined }} }}; $match("abc", $o.f))',
+  // $replace drives a regex or a custom matcher as $match does (#198):
+  // `start` counts UTF-16 code units, a later zero-length match is D1004
+  // (even past the limit), and a replacement function gets the match object.
+  '$replace("éab", /a/, function($m) { $string($m.start) })',
+  '$replace("éaéaéa", /a/, function($m) { $string($m.start) })',
+  '$replace("éaéaéa", /a/, function($m) { $string($m.start) }, 2)',
+  '$replace("😀a😀a", /a/, function($m) { $string($m.start) & "/" & $string($m.end) })',
+  '$replace("éa1éb2", /([a-z])(\\d)/, function($m) { $string($m.start) & $m.groups[1] & $m.groups[0] })',
+  '$replace("abc", /(b)(x)?/, function($m) { $string($count($m.groups)) })',
+  '$replace("abc", /(b)(x)?/, function($m) { $string($m.groups) })',
+  '$replace("abc", /b/, function($m) { $m.match & "!" }, 5)', '$replace("abc", /b/, function($m) { "x" }, 0)',
+  '$replace("abc", /b/, function($m) { 5 })', '$replace("a1b2", /(\\d)/, "<$1>")',
+  '$replace("abc", /x*/, function($m) { "-" })', '$replace("abc", /x*/, "-")', '$replace("abc", /x*/, "-", 0)',
+  '$replace("abc", /a|x*/, "-", 1)', '$replace("abc", /a|x*/, function($m) { "-" }, 1)',
+  '$replace("abc", /x*$/, "-")', '$replace("abc", /x*$/, function($m) { "-" })', '$replace("", /x*/, "-")',
+  '$replace("aba", /a|x*$/, "-")', '$replace("aba", /a|x*$/, function($m) { "-" }, 1)',
+  '$replace("abc", function($s) { {"match": "b", "start": 1, "groups": [], "next": function() { undefined }} }, "x")',
+  '$replace("abc", function($s) { {"match": "b", "start": 1, "groups": [], "next": function() { undefined }} }, "x", 0)',
+  '$replace("abc", function($s) { {"match": "b", "start": 1, "groups": [], "next": function() { undefined }} }, function($m) { $string($keys($m)) })',
+  '$replace("abc", function($s) { {"match": "b", "start": 1, "groups": [], "next": function() { undefined }} }, function($m) { 5 })',
+  '$replace("abc", function($s) { {"match": "b", "start": 1, "groups": [], "next": function() { 5 }} }, "x")',
+  '$replace("abc", function($s) { 5 }, "x")', '$replace("abc", function($s) { undefined }, "x")',
+  '$replace("é😀b", function($s) { {"match": "b", "start": 3, "groups": ["g"], "next": function() { undefined }} }, "<$0$1>")',
+  '$replace("abcabc", function($s) { {"match": "b", "start": 1, "groups": [], "next": function() { {"match": "c", "start": 5, "groups": [], "next": function() { undefined }} }} }, "X")',
+  '$replace("abcabc", function($s) { {"match": "b", "start": 1, "groups": [], "next": function() { {"match": "c", "start": 5, "groups": [], "next": function() { undefined }} }} }, "X", 1)',
+  // A custom matcher's groups and start are converted as JavaScript does.
+  ...['1', 'null', 'true', '1.5', '1e21', '1e-7', '-0', '[1, 2]', '[]', '[null, "x", [3]]', '{"a": 1}',
+    '$sum', 'nope'].map((g) =>
+    `$replace("abc", function($s) { {"match": "b", "start": 1, "groups": [${g}], "next": function() { undefined }} }, "[$1]")`),
+  ...['"1"', '" 2 "', '"z"', 'true', 'null', '"0x2"', '""', '[2]', '"1e0"', 'nope'].map((st) =>
+    `$replace("abc", function($s) { {"match": "b", "start": ${st}, "groups": [], "next": function() { undefined }} }, "x")`),
+  // A replacement string's `$n` is read with parseInt, up to the digits the group count has.
+  ...['[$01]', '[$-1]', '[$ 1]', '[$$1]', '[$]', '[$a]', '[$1$2]', '[$1é]', '$'].map((r) =>
+    `$replace("abc", /(b)/, "${r}")`),
+  ...['$10', '$11', '$1x', '$010', '$100'].map((r) =>
+    `$replace("abcdefghijk", /(a)(b)(c)(d)(e)(f)(g)(h)(i)(j)/, "${r}")`),
+  // Only the groups `$n` refers to are converted to strings.
+  ...['plain', '[$0]', '[$2]', '[$1]'].map((r) =>
+    `$replace("abcd", function($s) { {"match": "b", "start": 1, "groups": [{"a": 1}, "x"], "next": function() { () }} }, "${r}")`),
+  // parseInt and Number skip JavaScript's whitespace, which has U+FEFF but not U+0085.
+  ...['\u000b', '﻿', ' ', ' ', '　', '\u0085', '\t'].map((ws) =>
+    `$replace("abcdefghijkl", /(a)(b)(c)(d)(e)(f)(g)(h)(i)(j)(k)/, "$${ws}1|")`),
+  ...['\u0085', '﻿', ' ', '\u000b', ' '].map((ws) =>
+    `$replace("abcd", function($s) { {"match": "b", "start": "${ws}1", "groups": [], "next": function() { () }} }, "-")`),
   // `a ?? b` is `$exists(a) ? a : b` (#195): errors on the left propagate.
   '$error("x") ?? 1', '(($x := 5; $error("e")) ?? $x)', 'nope.(1/0) ?? 2', '$string(nope) ?? 1',
   '(nope) ?? 2', '$lookup({}, "a") ?? 3', 'null ?? 4', '[nope][0] ?? 5', 'false ?? 6', '0 ?? 7',
@@ -295,6 +339,35 @@ const EXTRA = [
   '(function($sort) { $exists($sort) })()', '($f := function($v) { $type($v) }; $f())',
   '($f := function($v, $w) { [$v, $w] }; $f(1))',
   '($f := function($n, $acc) { $n = 0 ? $type($acc) : $f($n - 1) }; $f(3))',
+  // `$$` is the variable named `$`, so `$$arr` is the (unbound) variable
+  // `$arr`, not a field of the input (#201).
+  '$$arr', '$string($$arr)', '$string($$missing)', '$exists($$arr)', '{"x": $$arr}',
+  '$$arr[0]', '$$v.w', 'arr.$$v', '$$$', '($arr := 5; $$arr)', '($b := $$v; $b)',
+  '($$x := 2; $$x * 3)', '$$', '$$.arr', '$$.x.y',
+  // A lambda called as a path step gets exactly the arguments written; the
+  // context item is not passed as an implicit first argument (#202).
+  'arr.function($v) { $v * 2 }()', 'arr.function($v) { $v * 2 }(3)',
+  'arr.function($v) { $v * 2 }($)', 'arr.function() { $ * 2 }()',
+  'arr.function($v, $w) { $v + $w }(1)', 'arr.function($v) { $v * 2 }(2, 3)',
+  'arr.(function($v) { $v * 2 })($)', 'arr.(function($v) { $v * 2 })()',
+  'arr.(function($v) { $v * 2 }($))', '($f := function() { function($x) { $x + 1 } }; arr.$f()(10))',
+  // A called expression applies whatever function it gives, as jsonata-js
+  // `evaluateFunction` does: a lambda, a builtin, a partial application or a
+  // composition. A `?` argument partially applies it; a non-function is T1006.
+  '$type(arr.function($v, $w) { $v + $w }(?, 1))', 'arr.function($v, $w) { $v + $w }(?, 1)(5)',
+  '(function($v, $w) { $v + $w })(?, 1)(5)', '$type((function($v, $w) { $v + $w })(?, 1))',
+  'arr.function($v) { $v }($)()', 'arr.function($v) { $v }($)(1)', '(1)(2)', '(nope)(2)',
+  '("x")(?)', '["x", "y"].($uppercase)($)', 'arr.($string)()', 'objs.($sum)(p)',
+  '($u := $uppercase; ["x", "y"].($u)($))', '($uppercase)("x")', '($substring)(?, 1)("abc")',
+  '["abc", "de"].($substring)($, ?)(1)', '($f := $uppercase ~> $trim; [" x"].($f)($))',
+  '($u := $string; arr.$u())', '($f := function($x) { $x * 10 }; ($f)(?)(2))',
+  // A `?` call in a lambda's tail position is a partial application too.
+  '(function() { (function($a) { $string($a) })(?) })()("x")',
+  '($g := function($a) { $uppercase($a) }; $f := function() { $g(?) }; $f()("x"))',
+  '($g := function($a, $b) { $a & $b }; $f := function($x) { $g($x, ?) }; $f("a")("b"))',
+  '($f := function() { (function($a, $b) { $a + $b })(1, ?) }; $f()(2))',
+  // `$` is not an operator, so it can sit inside a name.
+  '$a$b', '($a$b := 3; $a$b)', '($$a$b := 4; $$a$b)', '($a$b := 3; $$a$b)',
 ];
 
 // The same questions with a top-level array as input. jsonata-js wraps that

@@ -643,6 +643,31 @@ fn test_unbounded_recursion_raises_u1001() {
     );
 }
 
+/// The same through calls of an expression (`($f)(x)`, `($g := $f; $g)(x)`),
+/// which go through `apply_call_value` rather than a named call: deep
+/// recursion evaluates, and with no base case it is U1001, not a crash.
+#[test]
+fn test_recursion_through_expression_calls() {
+    let outcome = on_small_stack(|| {
+        let mut out = String::new();
+        for expr in [
+            "($f := function($n){ $n <= 0 ? 0 : 1 + ($f)($n - 1) }; ($f)(5000))",
+            "($f := function($n){ $n <= 0 ? 0 : 1 + ($g := $f; $g)($n - 1) }; $f(3000))",
+            "($inf := function($n){ $n + ($inf)($n - 1) }; ($inf)(5))",
+        ] {
+            let (tree_walker, default) = eval_both_engines(expr, EvaluatorOptions::default());
+            out.push_str(&format!("{tree_walker} | {default}\n"));
+        }
+        out
+    });
+    let u1001 =
+        "Err(Evaluation error: U1001: Stack overflow - maximum recursion depth (30000) exceeded)";
+    assert_eq!(
+        outcome,
+        format!("Ok(5000) | Ok(5000)\nOk(3000) | Ok(3000)\n{u1001} | {u1001}\n")
+    );
+}
+
 /// A user-configured `max_stack_depth` raises D1011, jsonata-js's error for
 /// its `stack` option, on both engines; recursion that fits under it runs.
 #[test]
