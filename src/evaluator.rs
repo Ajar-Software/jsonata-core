@@ -2879,8 +2879,8 @@ struct Scope {
 enum Owned<'a> {
     Lambda(&'a Rc<StoredLambda>),
     Partial(&'a Rc<PartialApplication>),
-    Items(&'a Rc<Vec<JValue>>),
-    Map(&'a Rc<IndexMap<String, JValue>>),
+    Items(&'a Rc<crate::value::JItems>),
+    Map(&'a Rc<crate::value::JMap>),
     Token(&'a Rc<FrameToken>),
 }
 
@@ -7057,7 +7057,7 @@ impl Evaluator {
             input,
             JValue::Array(arr) if starts_with_tuple(arr)
         );
-        let incoming: Vec<Rc<IndexMap<String, JValue>>> = if is_tuple_input {
+        let incoming: Vec<Rc<crate::value::JMap>> = if is_tuple_input {
             match input {
                 JValue::Array(arr) => arr
                     .iter()
@@ -7112,7 +7112,7 @@ impl Evaluator {
                     let mut wrapper = IndexMap::new();
                     wrapper.insert("@".to_string(), item);
                     wrapper.insert("__tuple__".to_string(), JValue::Bool(true));
-                    Rc::new(wrapper)
+                    Rc::new(crate::value::JMap::from(wrapper))
                 })
                 .collect()
         };
@@ -7174,7 +7174,7 @@ impl Evaluator {
             let mut result = Vec::new();
             for (ss, elem) in sorted_arr.into_iter().enumerate() {
                 let mut new_tuple = match elem {
-                    JValue::Object(o) if keeps_tuples && is_tuple_object(&o) => (*o).clone(),
+                    JValue::Object(o) if keeps_tuples && is_tuple_object(&o) => (**o).clone(),
                     other => {
                         let value = match &other {
                             JValue::Object(o) if is_tuple_object(o) => tuple_focus_value(&other),

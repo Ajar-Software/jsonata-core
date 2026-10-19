@@ -264,3 +264,54 @@ def test_deep_host_call_with_unlimited_stack_limit():
     )
     assert proc.returncode == 0, proc.stderr[-2000:]
     assert proc.stdout.strip() == "4501500"
+
+
+_DROP_RUNNER = textwrap.dedent("""
+    import gc, json, sys, threading
+    import jsonatapy
+
+    jsonatapy._set_force_tree_walker(sys.argv[1] == "tree-walker")
+    expr = sys.argv[2]
+    out = {}
+
+    def run():
+        result = jsonatapy.evaluate(expr, None)
+        # Walk the value instead of json.dumps, which would recurse.
+        depth, node = 0, result
+        while isinstance(node, (list, dict)) and node:
+            node = node[-1] if isinstance(node, list) else node["a"]
+            depth += 1
+        out["depth"] = depth
+        del result, node
+        gc.collect()
+        # A deep value the evaluation frees before it returns.
+        out["count"] = jsonatapy.evaluate("$count([" + expr + "])", None)
+
+    threading.stack_size(1024 * 1024)
+    t = threading.Thread(target=run)
+    t.start()
+    t.join()
+    print(json.dumps(out))
+    """)
+
+DEEP_VALUES = [
+    "$reduce([1..100000], function($acc, $i){ [[$acc]] }, [])",
+    "$reduce([1..100000], function($acc, $i){ {'i': $i, 'a': $acc} }, {})",
+    "$reduce([1..100000], function($acc, $i){ $i % 2 ? [{'a': $acc}] : {'a': [$acc]} }, {})",
+]
+
+
+@pytest.mark.parametrize("expr", DEEP_VALUES)
+def test_deep_value_returned_to_python_and_dropped(engine, expr):
+    # A value 100,000 levels deep used to overflow the native stack when it
+    # was freed (#233), killing the process.
+    proc = subprocess.run(
+        [sys.executable, "-c", _DROP_RUNNER, engine, expr],
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+    assert proc.returncode == 0, f"process crashed ({proc.returncode}): {proc.stderr[-2000:]}"
+    out = json.loads(proc.stdout)
+    assert out["count"] == 1
+    assert out["depth"] >= 100000

@@ -2,7 +2,7 @@
 // Replaces serde_json::Value for internal use
 
 use std::fmt;
-use std::ops::Deref;
+use std::ops::{Deref, DerefMut};
 use std::rc::Rc;
 
 use indexmap::IndexMap;
@@ -22,7 +22,7 @@ pub enum JValue {
     Number(f64),
     String(Rc<str>),
     Array(JArray),
-    Object(Rc<IndexMap<String, JValue>>),
+    Object(Rc<JMap>),
 
     // Internal types (previously tagged objects)
     Undefined,
@@ -84,7 +84,7 @@ pub enum JValue {
 /// host values ignore them. `JArray` dereferences to `Vec<JValue>`.
 #[derive(Clone, Default)]
 pub struct JArray {
-    items: Rc<Vec<JValue>>,
+    items: Rc<JItems>,
     pub sequence: bool,
     pub cons: bool,
     pub keep_singleton: bool,
@@ -100,7 +100,7 @@ impl JArray {
     #[inline]
     pub fn new(items: Vec<JValue>) -> Self {
         JArray {
-            items: Rc::new(items),
+            items: Rc::new(JItems(items)),
             sequence: false,
             cons: false,
             keep_singleton: false,
@@ -136,7 +136,7 @@ impl JArray {
 
     /// The shared items themselves, for code that follows reference counts.
     #[inline]
-    pub(crate) fn items_rc(&self) -> &Rc<Vec<JValue>> {
+    pub(crate) fn items_rc(&self) -> &Rc<JItems> {
         &self.items
     }
 
@@ -146,14 +146,18 @@ impl JArray {
     #[inline]
     pub fn make_mut(&mut self) -> &mut Vec<JValue> {
         self.flat = false;
-        Rc::make_mut(&mut self.items)
+        &mut Rc::make_mut(&mut self.items).0
     }
 
     /// Consume the array and return its items, dropping the flags. Clones the
     /// items only if they are shared.
     #[inline]
     pub fn into_vec(self) -> Vec<JValue> {
-        Rc::try_unwrap(self.items).unwrap_or_else(|rc| (*rc).clone())
+        match Rc::try_unwrap(self.items) {
+            // Leaves `JItems` empty, so its drop has nothing to walk.
+            Ok(mut items) => std::mem::take(&mut items.0),
+            Err(rc) => rc.0.clone(),
+        }
     }
 
     /// A new array holding `items`, carrying this array's flags other than
@@ -163,7 +167,7 @@ impl JArray {
     #[inline]
     pub fn with_items(&self, items: Vec<JValue>) -> JArray {
         JArray {
-            items: Rc::new(items),
+            items: Rc::new(JItems(items)),
             outer_wrapper: false,
             // The new items are not known to be flat.
             flat: false,
@@ -208,7 +212,7 @@ impl Deref for JArray {
 
     #[inline]
     fn deref(&self) -> &Vec<JValue> {
-        &self.items
+        &self.items.0
     }
 }
 
@@ -216,7 +220,7 @@ impl Deref for JArray {
 /// formatting a value with `{:?}` don't change with the flags.
 impl fmt::Debug for JArray {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Debug::fmt(&*self.items, f)
+        fmt::Debug::fmt(&self.items.0, f)
     }
 }
 
@@ -247,7 +251,7 @@ impl<'a> IntoIterator for &'a JArray {
 
     #[inline]
     fn into_iter(self) -> Self::IntoIter {
-        self.items.iter()
+        self.items.0.iter()
     }
 }
 
@@ -258,6 +262,218 @@ impl IntoIterator for JArray {
     #[inline]
     fn into_iter(self) -> Self::IntoIter {
         self.into_vec().into_iter()
+    }
+}
+
+// ── Container payloads ───────────────────────────────────────────────────────
+
+/// The items of a [`JArray`], behind its `Rc`: a `Vec<JValue>` whose drop
+/// does not recurse (#233). Dereferences to the `Vec`.
+#[derive(Clone, Default, PartialEq)]
+pub struct JItems(Vec<JValue>);
+
+impl Deref for JItems {
+    type Target = Vec<JValue>;
+
+    #[inline]
+    fn deref(&self) -> &Vec<JValue> {
+        &self.0
+    }
+}
+
+impl Drop for JItems {
+    #[inline]
+    fn drop(&mut self) {
+        let items = &self.0;
+        if !frees_only_scalars(items.len(), || items.iter().any(frees_container)) {
+            self.drop_items();
+        }
+    }
+}
+
+impl JItems {
+    /// The rest of `drop`, kept out of line so the common case above stays
+    /// small enough to inline.
+    #[inline(never)]
+    fn drop_items(&mut self) {
+        if must_drop_flat(|| self.0.iter().any(frees_nested)) {
+            drop_deep(self.0.drain(..));
+        }
+    }
+}
+
+/// The payload of `JValue::Object`, behind its `Rc`: an
+/// `IndexMap<String, JValue>` whose drop does not recurse (#233).
+/// Dereferences to the map, so it reads and updates like one; build it with
+/// [`JValue::object`] or `JMap::from(map)`.
+#[derive(Clone, Default, PartialEq)]
+pub struct JMap(IndexMap<String, JValue>);
+
+impl JMap {
+    /// The map itself. Never clones.
+    #[inline]
+    pub fn into_inner(mut self) -> IndexMap<String, JValue> {
+        // Leaves an empty map behind, so this `JMap`'s drop has nothing to
+        // walk; reusing the hasher avoids seeding a new one.
+        let empty = IndexMap::with_hasher(self.0.hasher().clone());
+        std::mem::replace(&mut self.0, empty)
+    }
+}
+
+impl Deref for JMap {
+    type Target = IndexMap<String, JValue>;
+
+    #[inline]
+    fn deref(&self) -> &IndexMap<String, JValue> {
+        &self.0
+    }
+}
+
+impl DerefMut for JMap {
+    #[inline]
+    fn deref_mut(&mut self) -> &mut IndexMap<String, JValue> {
+        &mut self.0
+    }
+}
+
+impl From<IndexMap<String, JValue>> for JMap {
+    #[inline]
+    fn from(map: IndexMap<String, JValue>) -> Self {
+        JMap(map)
+    }
+}
+
+impl From<JMap> for IndexMap<String, JValue> {
+    #[inline]
+    fn from(map: JMap) -> Self {
+        map.into_inner()
+    }
+}
+
+/// Prints the map only, as `Rc<IndexMap>` did.
+impl fmt::Debug for JMap {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Debug::fmt(&self.0, f)
+    }
+}
+
+impl Drop for JMap {
+    #[inline]
+    fn drop(&mut self) {
+        let map = &self.0;
+        if !frees_only_scalars(map.len(), || map.values().any(frees_container)) {
+            self.drop_items();
+        }
+    }
+}
+
+impl JMap {
+    /// The rest of `drop`, kept out of line so the common case above stays
+    /// small enough to inline.
+    #[inline(never)]
+    fn drop_items(&mut self) {
+        if must_drop_flat(|| self.0.values().any(frees_nested)) {
+            drop_deep(self.0.drain(..).map(|(_, value)| value));
+        }
+    }
+}
+
+// ── Dropping deep values (#233) ──────────────────────────────────────────────
+//
+// Left to the compiler, dropping a value drops its items, which drop theirs,
+// one stack frame per level: a value nested ~10,000 deep (easy to build with
+// `$reduce`) overflows a 1MB stack while being freed. Instead, the drop of a
+// container's payload (`JItems`, `JMap`) first checks the stack. With room to
+// spare it lets the ordinary recursive drop run, which costs one
+// stack-pointer compare per payload and nothing per item. Once the stack runs
+// low, it moves its items onto a heap work-list and takes each one apart in a
+// loop, so the stack stays flat however deep the rest of the value goes.
+// Reading the stack limit is a thread-local access, which in a shared library
+// costs a call, so a small payload first looks at its items and skips the
+// check when it frees no container (the common leaf object).
+//
+// Where the stack limit is unknown, the payload instead scans its items and
+// uses the work-list when freeing them would recurse more than two levels.
+//
+// Only payloads this drop actually frees are taken apart: a container whose
+// `Rc` is shared elsewhere is just released (its count drops by one).
+
+/// Stack headroom below which a payload's drop switches to the work-list.
+/// Covers the frames of a few levels of drop glue and the allocator's `free`.
+const DROP_RED_ZONE: usize = 32 * 1024;
+
+/// Payloads with at most this many items look at them before checking the
+/// stack; see [`frees_only_scalars`].
+const SMALL_PAYLOAD: usize = 8;
+
+/// Whether a payload of `len` items can be freed without looking at the
+/// stack: it is empty, or small and frees no container (`frees_container`
+/// says whether any item would). Larger payloads skip the scan, as one stack
+/// check costs less than a look at each item.
+#[inline]
+fn frees_only_scalars(len: usize, frees_container: impl FnOnce() -> bool) -> bool {
+    len == 0 || (len <= SMALL_PAYLOAD && !frees_container())
+}
+
+/// Whether a payload must free its items with [`drop_deep`]: when the stack
+/// is running low, or, where its limit is unknown, when `nested` (freeing the
+/// items would recurse more than two levels) says so.
+#[inline]
+fn must_drop_flat(nested: impl FnOnce() -> bool) -> bool {
+    match stacker::remaining_stack() {
+        Some(left) => left < DROP_RED_ZONE,
+        None => nested(),
+    }
+}
+
+/// True when dropping `value` frees a non-empty array or object payload.
+#[inline]
+fn frees_container(value: &JValue) -> bool {
+    match value {
+        JValue::Array(arr) => Rc::strong_count(&arr.items) == 1 && !arr.items.0.is_empty(),
+        JValue::Object(map) => Rc::strong_count(map) == 1 && !map.0.is_empty(),
+        _ => false,
+    }
+}
+
+/// True when dropping `value` frees a payload that itself holds a payload to
+/// free: dropping it would recurse at least two levels.
+#[inline]
+fn frees_nested(value: &JValue) -> bool {
+    match value {
+        JValue::Array(arr) => {
+            Rc::strong_count(&arr.items) == 1 && arr.items.0.iter().any(frees_container)
+        }
+        JValue::Object(map) => Rc::strong_count(map) == 1 && map.0.values().any(frees_container),
+        _ => false,
+    }
+}
+
+/// Drop `values` without recursing deeper than two levels at a time: each
+/// value whose drop would go deeper is taken apart on a heap work-list. The
+/// values left to drop inline free at most scalars and shared containers
+/// below their own payload, so whatever their payloads' drops decide, the
+/// recursion ends there.
+#[cold]
+#[inline(never)]
+fn drop_deep(values: impl Iterator<Item = JValue>) {
+    let mut pending: Vec<JValue> = values.filter(frees_nested).collect();
+    while let Some(mut value) = pending.pop() {
+        match &mut value {
+            JValue::Array(arr) => {
+                if let Some(items) = Rc::get_mut(&mut arr.items) {
+                    pending.extend(items.0.drain(..).filter(frees_nested));
+                }
+            }
+            JValue::Object(map) => {
+                if let Some(map) = Rc::get_mut(map) {
+                    pending.extend(map.0.drain(..).map(|(_, value)| value).filter(frees_nested));
+                }
+            }
+            _ => {}
+        }
+        // `value`'s payload is empty now (or, held by a `Weak`, not freed
+        // here), so dropping it does not recurse.
     }
 }
 
@@ -488,7 +704,7 @@ impl JValue {
     #[inline]
     pub fn as_object_mut(&mut self) -> Option<&mut IndexMap<String, JValue>> {
         match self {
-            JValue::Object(map) => Some(Rc::make_mut(map)),
+            JValue::Object(map) => Some(&mut Rc::make_mut(map).0),
             _ => None,
         }
     }
@@ -573,8 +789,8 @@ impl JValue {
     }
 
     #[inline]
-    pub fn object(m: IndexMap<String, JValue>) -> Self {
-        JValue::Object(Rc::new(m))
+    pub fn object(m: impl Into<JMap>) -> Self {
+        JValue::Object(Rc::new(m.into()))
     }
 
     #[inline]
@@ -666,7 +882,7 @@ impl From<Vec<JValue>> for JValue {
 impl From<IndexMap<String, JValue>> for JValue {
     #[inline]
     fn from(m: IndexMap<String, JValue>) -> Self {
-        JValue::Object(Rc::new(m))
+        JValue::object(m)
     }
 }
 
@@ -740,11 +956,11 @@ impl PartialEq for JValue {
             }
             #[cfg(feature = "python")]
             (JValue::LazyPyDict(a), JValue::Object(b)) => {
-                a.to_object_ref().is_some_and(|x| x == &**b)
+                a.to_object_ref().is_some_and(|x| x == &***b)
             }
             #[cfg(feature = "python")]
             (JValue::Object(a), JValue::LazyPyDict(b)) => {
-                b.to_object_ref().is_some_and(|x| &**a == x)
+                b.to_object_ref().is_some_and(|x| &***a == x)
             }
             _ => false,
         }
@@ -1050,7 +1266,7 @@ impl From<serde_json::Value> for JValue {
             serde_json::Value::Object(map) => {
                 let m: IndexMap<String, JValue> =
                     map.into_iter().map(|(k, v)| (k, JValue::from(v))).collect();
-                JValue::Object(Rc::new(m))
+                JValue::object(m)
             }
         }
     }
@@ -1142,7 +1358,7 @@ macro_rules! jvalue {
             $(
                 map.insert(($key).to_string(), jvalue!($val));
             )*
-            $crate::value::JValue::Object(std::rc::Rc::new(map))
+            $crate::value::JValue::object(map)
         }
     };
 
@@ -1456,5 +1672,64 @@ mod tests {
     #[should_panic(expected = "array marked flat holds an array")]
     fn test_flat_checked_in_debug_builds() {
         JArray::new_flat(vec![JValue::array(vec![])], true);
+    }
+    // --- #233: dropping deep values -----------------------------------------
+
+    fn nest(depth: usize) -> JValue {
+        let mut value = JValue::Null;
+        for i in 0..depth {
+            value = if i % 2 == 0 {
+                JValue::array(vec![JValue::from(1i64), value])
+            } else {
+                let mut map = IndexMap::new();
+                map.insert("a".to_string(), value);
+                JValue::object(map)
+            };
+        }
+        value
+    }
+
+    #[test]
+    fn test_frees_nested_counts_only_payloads_this_drop_frees() {
+        assert!(!frees_nested(&nest(1)));
+        assert!(frees_nested(&nest(2)));
+        assert!(frees_nested(&nest(3)));
+        // The inner container is shared, so dropping the outer one only
+        // releases it.
+        let inner = nest(1);
+        let outer = JValue::array(vec![inner.clone()]);
+        assert!(!frees_nested(&outer));
+        drop(inner);
+        assert!(frees_nested(&outer));
+        assert!(!frees_nested(&JValue::array(vec![JValue::array(vec![])])));
+    }
+
+    #[test]
+    fn test_drop_deep_frees_any_depth_on_a_small_stack() {
+        // The work-list alone, as used where the stack limit is unknown.
+        std::thread::Builder::new()
+            .stack_size(256 * 1024)
+            .spawn(|| {
+                drop_deep(std::iter::once(nest(100_000)));
+                let value = nest(100_000);
+                let keep = value.clone();
+                drop_deep(std::iter::once(value));
+                // Shared, so only released: still whole.
+                let mut depth = 0;
+                let mut node = &keep;
+                loop {
+                    node = match node {
+                        JValue::Array(arr) => &arr[1],
+                        JValue::Object(map) => &map["a"],
+                        _ => break,
+                    };
+                    depth += 1;
+                }
+                assert_eq!(depth, 100_000);
+                drop(keep);
+            })
+            .unwrap()
+            .join()
+            .unwrap();
     }
 }

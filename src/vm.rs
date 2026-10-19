@@ -536,7 +536,7 @@ fn run_inner(
                         }
                     }
                 }
-                stack.push(JValue::Object(std::rc::Rc::new(obj)));
+                stack.push(JValue::object(obj));
                 ip += 1;
             }
             Instr::ConstructObject(idx) => {

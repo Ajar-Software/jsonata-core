@@ -83,6 +83,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Freeing a very deeply nested value no longer overflows the stack**
+  ([#233](https://github.com/txjmb/jsonata-core/issues/233)). A value was dropped by plain
+  recursion, one stack frame per level, so an array or object nested more than about 10,000
+  deep (easy to build with `$reduce`, e.g. `$reduce([1..100000], function($a, $i){ {'a': $a}
+  }, {})`) crashed the process when it was freed. The payloads behind an array's and an
+  object's `Rc` now check the stack before freeing items that hold containers, and once it
+  runs low they take the rest of the value apart on a heap work-list instead of recursing. A
+  small payload that frees no container (the common leaf object) skips the check after a
+  look at its items; callgrind shows at most 0.9% more instructions on the A/B benchmark
+  expressions, most of them 0.2% or less. Only payloads this drop frees are taken apart; a
+  shared one is just released. Rust API:
+  `JValue::Object` holds `Rc<JMap>` instead of `Rc<IndexMap<String, JValue>>`; `JMap`
+  dereferences to the `IndexMap` (`JMap::from(map)`, `into_inner()`), `JValue::object` takes
+  either, and `JArray`'s items sit in a `JItems` that dereferences to `Vec<JValue>`. Closures
+  are not covered: a chain of tens of thousands of closures each capturing the previous one is
+  still freed by recursion.
 - **A function body resolves names where the function is defined, not where it is called**
   ([#191](https://github.com/txjmb/jsonata-core/issues/191)). A binding in the caller's scope
   leaked into the body: `($f := function($x){ $string($x) }; ($string := function($x){"z"};

@@ -30,7 +30,7 @@ pub struct LazyPyDict {
     /// deliberately not cached — see `get_field`.
     field_cache: RefCell<HashMap<String, JValue>>,
     /// Memoized full materialization (for consumers that need a real object).
-    materialized: OnceCell<Rc<IndexMap<String, JValue>>>,
+    materialized: OnceCell<Rc<crate::value::JMap>>,
 }
 
 impl std::fmt::Debug for LazyPyDict {
@@ -128,7 +128,7 @@ impl LazyPyDict {
     /// Iteration is over the dict's actual keys, so absent keys never
     /// appear here regardless of caching — `field_cache` only ever holds
     /// present-key values (scalars aren't cached at all; see `get_field`).
-    pub fn to_object(&self) -> Result<Rc<IndexMap<String, JValue>>, LazyConvertError> {
+    pub fn to_object(&self) -> Result<Rc<crate::value::JMap>, LazyConvertError> {
         if let Some(m) = self.materialized.get() {
             return Ok(m.clone());
         }
@@ -148,7 +148,7 @@ impl LazyPyDict {
             }
             Ok(map)
         })?;
-        let rc = Rc::new(map);
+        let rc = Rc::new(crate::value::JMap::from(map));
         let _ = self.materialized.set(rc.clone());
         Ok(rc)
     }
@@ -164,7 +164,7 @@ impl LazyPyDict {
         if self.materialized.get().is_none() {
             let _ = self.to_object();
         }
-        self.materialized.get().map(|rc| &**rc)
+        self.materialized.get().map(|rc| &***rc)
     }
 }
 
