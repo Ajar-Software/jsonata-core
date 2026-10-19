@@ -7120,6 +7120,78 @@
    }
   },
   {
+   "expression": "acct.Order.P#$i^(>$i){\"k\": $keys($)}",
+   "result": {
+    "k": [
+     "@",
+     "i"
+    ]
+   }
+  },
+  {
+   "expression": "acct.Order.P#$i^(>$i)[i = 1]",
+   "result": {
+    "N": "B"
+   }
+  },
+  {
+   "expression": "acct.Order.P#$i^(>$i)[$.i = 0]",
+   "result": [
+    {
+     "N": "A"
+    },
+    {
+     "N": "C"
+    }
+   ]
+  },
+  {
+   "expression": "acct.Order.P#$i^(>$i){\"x\": $sum(i)}",
+   "result": {
+    "x": 1
+   }
+  },
+  {
+   "expression": "acct.Order.P#$i^(>$i)^(i).N",
+   "result": [
+    "A",
+    "C",
+    "B"
+   ]
+  },
+  {
+   "expression": "acct.Order.P@$p^(>$p.N){\"k\": $keys($)}",
+   "result": {
+    "k": [
+     "@",
+     "p"
+    ]
+   }
+  },
+  {
+   "expression": "acct.Order.P@$p^(>$p.N){p.N: N}",
+   "result": {}
+  },
+  {
+   "expression": "acct.Order.P@$p^(>$p.N)[p.N = \"B\"].N",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "acct.Order.P#$i^(>$i)[$i = 1].N",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "acct.Order.P#$i^(>$i)#$j[i = 0].{\"j\": $j}",
+   "result": [
+    {},
+    {}
+   ]
+  },
+  {
    "expression": "($x := acct.Order.P^(>%.id); $x[N = \"C\"])",
    "result": {
     "N": "C"

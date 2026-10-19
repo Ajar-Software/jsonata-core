@@ -199,6 +199,11 @@ const EXTRA = [
   'acct.Order[1].P^(%.id)[0]{N: N}', 'acct.Order#$i.P[N = "C"]^($i)[0]{N: N}',
   'acct.Order.P^(>%.id)#$k{N: N}', 'acct.Order.P^(>%.id)#$k^(N)', 'acct.Order.P^(>%.id)#$k^(N).N',
   'acct.Order.P^(>%.id)#$k[$k > 0].N',
+  // After a sort, a tuple's `#$i` or `@$v` binding reads as a field named `i` or `v`.
+  'acct.Order.P#$i^(>$i){"k": $keys($)}', 'acct.Order.P#$i^(>$i)[i = 1]', 'acct.Order.P#$i^(>$i)[$.i = 0]',
+  'acct.Order.P#$i^(>$i){"x": $sum(i)}', 'acct.Order.P#$i^(>$i)^(i).N', 'acct.Order.P@$p^(>$p.N){"k": $keys($)}',
+  'acct.Order.P@$p^(>$p.N){p.N: N}', 'acct.Order.P@$p^(>$p.N)[p.N = "B"].N', 'acct.Order.P#$i^(>$i)[$i = 1].N',
+  'acct.Order.P#$i^(>$i)#$j[i = 0].{"j": $j}',
   // Outside a path, as a value, a sort of a tuple stream gives values.
   '($x := acct.Order.P^(>%.id); $x[N = "C"])', '(acct.Order.P^(>%.id))[N = "C"]',
   '(true ? acct.Order.P^(>%.id) : 0)[N = "C"]', '{"a": acct.Order.P^(>%.id)}.a[N = "C"]',

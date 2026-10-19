@@ -2789,7 +2789,10 @@ fn unwrap_tuple_output(value: JValue) -> JValue {
             JValue::object(new_map)
         }
         JValue::Array(arr) => {
-            JValue::Array(arr.with_items(arr.iter().cloned().map(unwrap_tuple_output).collect()))
+            let mut values = arr.with_items(arr.iter().cloned().map(unwrap_tuple_output).collect());
+            // The items are values now, not sorted tuples.
+            values.sorted_tuples = false;
+            JValue::Array(values)
         }
         other => other,
     }
@@ -3019,15 +3022,30 @@ fn is_tuple_object(obj: &IndexMap<String, JValue>) -> bool {
         && obj.get("__tuple__") == Some(&JValue::Bool(true))
 }
 
+/// True when an array's first item is a tuple wrapper, which is how a tuple
+/// stream is recognised: every item of one is a wrapper.
+#[inline]
+fn starts_with_tuple(arr: &JArray) -> bool {
+    matches!(arr.first(), Some(JValue::Object(obj)) if is_tuple_object(obj))
+}
+
 /// The items of an array of tuples a sort of a tuple stream returned, as
 /// jsonata-js's filters, sorts and group-bys see them: each tuple is a plain
-/// object, not its `@` value (see `JArray::sorted_tuples`).
+/// object, not its `@` value (see `JArray::sorted_tuples`). jsonata-js keys a
+/// `#$i` or `@$v` binding by its bare name (`i`, `v`), while the wrappers here
+/// key it as `$i`, so the leading `$` is dropped.
 fn sorted_tuple_items(arr: &JArray) -> Vec<JValue> {
     arr.iter()
         .map(|item| match item {
             JValue::Object(obj) if is_tuple_object(obj) => {
-                let mut plain = (**obj).clone();
-                plain.shift_remove("__tuple__");
+                let plain: IndexMap<String, JValue> = obj
+                    .iter()
+                    .filter(|(key, _)| key.as_str() != "__tuple__")
+                    .map(|(key, value)| {
+                        let key = key.strip_prefix('$').unwrap_or(key);
+                        (key.to_string(), value.clone())
+                    })
+                    .collect();
                 JValue::object(plain)
             }
             other => other.clone(),
@@ -4446,10 +4464,7 @@ impl Evaluator {
                 self.keep_tuple_stream = saved;
                 let mut sorted = sorted?;
                 if let JValue::Array(arr) = &mut sorted {
-                    if arr
-                        .first()
-                        .is_some_and(|f| matches!(f, JValue::Object(o) if is_tuple_object(o)))
-                    {
+                    if starts_with_tuple(arr) {
                         if saved {
                             // Sorting tuples gives a plain array of them in
                             // jsonata-js, which is no longer marked as a tuple
@@ -4868,10 +4883,7 @@ impl Evaluator {
             // tuple streams) puts the rest of the path in tuple mode.
             let may_return_tuples = keep_tuple_stream || matches!(step.node, AstNode::Sort { .. });
             if let (JValue::Array(arr), true) = (&result, may_return_tuples) {
-                if arr
-                    .first()
-                    .is_some_and(|f| matches!(f, JValue::Object(o) if is_tuple_object(o)))
-                {
+                if starts_with_tuple(arr) {
                     tuples = Some(arr.to_vec());
                     sorted_tuples = arr.sorted_tuples;
                     continue;
@@ -5376,9 +5388,7 @@ impl Evaluator {
         // Gather the incoming tuple bindings.
         let is_tuple_input = matches!(
             input,
-            JValue::Array(arr) if arr.first().is_some_and(|f| {
-                matches!(f, JValue::Object(o) if is_tuple_object(o))
-            })
+            JValue::Array(arr) if starts_with_tuple(arr)
         );
         let incoming: Vec<Rc<IndexMap<String, JValue>>> = if is_tuple_input {
             match input {
