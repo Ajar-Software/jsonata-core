@@ -279,17 +279,17 @@ const EXTRA = [
     `$replace("abc", function($s) { {"match": "b", "start": ${st}, "groups": [], "next": function() { undefined }} }, "x")`),
   // A replacement string's `$n` is read with parseInt, up to the digits the group count has.
   ...['[$01]', '[$-1]', '[$ 1]', '[$$1]', '[$]', '[$a]', '[$1$2]', '[$1é]', '$'].map((r) =>
-    `$replace("abc", /(b)/, ${JSON.stringify(r)})`),
+    `$replace("abc", /(b)/, "${r}")`),
   ...['$10', '$11', '$1x', '$010', '$100'].map((r) =>
-    `$replace("abcdefghijk", /(a)(b)(c)(d)(e)(f)(g)(h)(i)(j)/, ${JSON.stringify(r)})`),
+    `$replace("abcdefghijk", /(a)(b)(c)(d)(e)(f)(g)(h)(i)(j)/, "${r}")`),
   // Only the groups `$n` refers to are converted to strings.
   ...['plain', '[$0]', '[$2]', '[$1]'].map((r) =>
-    `$replace("abcd", function($s) { {"match": "b", "start": 1, "groups": [{"a": 1}, "x"], "next": function() { () }} }, ${JSON.stringify(r)})`),
+    `$replace("abcd", function($s) { {"match": "b", "start": 1, "groups": [{"a": 1}, "x"], "next": function() { () }} }, "${r}")`),
   // parseInt and Number skip JavaScript's whitespace, which has U+FEFF but not U+0085.
   ...['\u000b', '﻿', ' ', ' ', '　', '\u0085', '\t'].map((ws) =>
-    `$replace("abcdefghijkl", /(a)(b)(c)(d)(e)(f)(g)(h)(i)(j)(k)/, ${JSON.stringify('$' + ws + '1|')})`),
+    `$replace("abcdefghijkl", /(a)(b)(c)(d)(e)(f)(g)(h)(i)(j)(k)/, "$${ws}1|")`),
   ...['\u0085', '﻿', ' ', '\u000b', ' '].map((ws) =>
-    `$replace("abcd", function($s) { {"match": "b", "start": ${JSON.stringify(ws + '1')}, "groups": [], "next": function() { () }} }, "-")`),
+    `$replace("abcd", function($s) { {"match": "b", "start": "${ws}1", "groups": [], "next": function() { () }} }, "-")`),
   // `a ?? b` is `$exists(a) ? a : b` (#195): errors on the left propagate.
   '$error("x") ?? 1', '(($x := 5; $error("e")) ?? $x)', 'nope.(1/0) ?? 2', '$string(nope) ?? 1',
   '(nope) ?? 2', '$lookup({}, "a") ?? 3', 'null ?? 4', '[nope][0] ?? 5', 'false ?? 6', '0 ?? 7',

@@ -9130,7 +9130,7 @@
    }
   },
   {
-   "expression": "$replace(\"abcdefghijkl\", /(a)(b)(c)(d)(e)(f)(g)(h)(i)(j)(k)/, \"$\\u000b1|\")",
+   "expression": "$replace(\"abcdefghijkl\", /(a)(b)(c)(d)(e)(f)(g)(h)(i)(j)(k)/, \"$\u000b1|\")",
    "result": "a1|l"
   },
   {
@@ -9154,7 +9154,7 @@
    "result": "$1|l"
   },
   {
-   "expression": "$replace(\"abcdefghijkl\", /(a)(b)(c)(d)(e)(f)(g)(h)(i)(j)(k)/, \"$\\t1|\")",
+   "expression": "$replace(\"abcdefghijkl\", /(a)(b)(c)(d)(e)(f)(g)(h)(i)(j)(k)/, \"$\t1|\")",
    "result": "a1|l"
   },
   {
@@ -9170,7 +9170,7 @@
    "result": "a-"
   },
   {
-   "expression": "$replace(\"abcd\", function($s) { {\"match\": \"b\", \"start\": \"\\u000b1\", \"groups\": [], \"next\": function() { () }} }, \"-\")",
+   "expression": "$replace(\"abcd\", function($s) { {\"match\": \"b\", \"start\": \"\u000b1\", \"groups\": [], \"next\": function() { () }} }, \"-\")",
    "result": "a-"
   },
   {
