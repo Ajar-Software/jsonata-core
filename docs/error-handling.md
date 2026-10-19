@@ -95,9 +95,11 @@ except ValueError as e:
 All three default to unlimited (`None`) — these errors only occur if you've explicitly configured
 the corresponding limit.
 
-**Note:** `U1001` and `U1002` are separate, always-on native-stack safety nets (not configurable)
-that guard against a whole-process crash on pathologically deep recursion or expression nesting —
-they exist independently of any guardrail you configure and cannot be disabled.
+**Note:** `U1001` and `U1002` are separate, always-on safety nets (not configurable) with no
+jsonata-js equivalent. `U1001` is raised when evaluation nests deeper than 30,000 levels (about
+10,000 non-tail recursive calls; tail calls do not count), and `U1002` when an expression is
+nested too deeply to parse. They exist independently of any guardrail you configure and cannot be
+disabled.
 
 ### Type Errors
 

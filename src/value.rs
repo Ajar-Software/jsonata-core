@@ -606,6 +606,28 @@ impl From<IndexMap<String, JValue>> for JValue {
     }
 }
 
+// ── Deep-value recursion ─────────────────────────────────────────────────────
+
+/// Stack headroom below which [`with_stack`] moves to a new segment. Covers
+/// the frames of one level of a recursive value walker plus the leaf work
+/// below it (a serde writer, a Python object allocation).
+const VALUE_RED_ZONE: usize = 64 * 1024;
+
+/// Size of each heap-allocated stack segment [`with_stack`] switches to.
+const VALUE_STACK_SEGMENT: usize = 1024 * 1024;
+
+/// Run one level of a recursive walk over a value tree (conversion,
+/// serialization, equality, ...), moving to a heap-allocated stack segment
+/// when the current stack is nearly used up. A value's nesting depth has no
+/// fixed bound (`$reduce` or a recursive function can nest objects thousands
+/// deep), so without this a deep value would overflow a small thread stack
+/// (Windows' 1MB main thread) and crash the process. Call it at each
+/// container level only; on the shallow path it is one stack-pointer compare.
+#[inline]
+pub fn with_stack<R>(f: impl FnOnce() -> R) -> R {
+    stacker::maybe_grow(VALUE_RED_ZONE, VALUE_STACK_SEGMENT, f)
+}
+
 // ── PartialEq ────────────────────────────────────────────────────────────────
 
 impl PartialEq for JValue {
@@ -622,8 +644,8 @@ impl PartialEq for JValue {
                 a == b
             }
             (JValue::String(a), JValue::String(b)) => a == b,
-            (JValue::Array(a), JValue::Array(b)) => a == b,
-            (JValue::Object(a), JValue::Object(b)) => a == b,
+            (JValue::Array(a), JValue::Array(b)) => with_stack(|| a == b),
+            (JValue::Object(a), JValue::Object(b)) => with_stack(|| a == b),
             // Function identity, like JS: two lambda values are equal only if
             // they are the same closure instance.
             (JValue::Lambda(a), JValue::Lambda(b)) => Rc::ptr_eq(a, b),
@@ -784,20 +806,20 @@ impl Serialize for JValue {
                 }
             }
             JValue::String(s) => serializer.serialize_str(s),
-            JValue::Array(arr) => {
+            JValue::Array(arr) => with_stack(|| {
                 let mut seq = serializer.serialize_seq(Some(arr.len()))?;
                 for v in arr.iter() {
                     seq.serialize_element(v)?;
                 }
                 seq.end()
-            }
-            JValue::Object(map) => {
+            }),
+            JValue::Object(map) => with_stack(|| {
                 let mut m = serializer.serialize_map(Some(map.len()))?;
                 for (k, v) in map.iter() {
                     m.serialize_entry(k, v)?;
                 }
                 m.end()
-            }
+            }),
             JValue::Lambda { .. } => serializer.serialize_str(""),
             JValue::Builtin { .. } => serializer.serialize_str(""),
             JValue::Regex { pattern, flags } => {
