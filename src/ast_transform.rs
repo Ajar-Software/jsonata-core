@@ -39,6 +39,11 @@ pub enum AstTransformError {
     Coded { code: &'static str, message: String },
 }
 
+/// jsonata-js's message for S0217 (`errorCodes` in jsonata.js), used for
+/// every place an ancestor can't be derived.
+const S0217_MESSAGE: &str =
+    "The object representing the 'parent' cannot be derived from this expression";
+
 fn coded(code: &'static str, message: impl Into<String>) -> AstTransformError {
     AstTransformError::Coded {
         code,
@@ -455,10 +460,7 @@ pub fn resolve_ancestry(ast: AstNode) -> Result<AstNode, AstTransformError> {
     // reference that bubbled all the way to the top, means there was no
     // enclosing path to derive an ancestor from.
     if !transformed.pending.is_empty() || matches!(transformed.node, AstNode::Parent(_)) {
-        return Err(coded(
-            "S0217",
-            "The parent operator % cannot be used at this point in the expression",
-        ));
+        return Err(coded("S0217", S0217_MESSAGE));
     }
     // Depth 0 again: substitute_labels is a SEPARATE, independent counter --
     // cycle 1+3's frames are gone by now (transform_node above already
@@ -1042,13 +1044,15 @@ fn transform_children_impl(
         }
         AstNode::ObjectTransform { input, pattern } => {
             let input_t = transform_node(*input, state, depth)?;
-            let mut pending = input_t.pending;
+            let pending = input_t.pending;
+            // A `%` in a group-by's key or value never resolves: jsonata-js's
+            // `{` case processes the pairs without `pushAncestry`, so their
+            // slots are neither resolved nor raised as S0217. The label is
+            // never bound, and `%` evaluates to undefined there (#192).
             let mut transformed_pattern = Vec::with_capacity(pattern.len());
             for (k, v) in pattern {
                 let k_t = transform_node(k, state, depth)?;
-                pending.extend(k_t.pending);
                 let v_t = transform_node(v, state, depth)?;
-                pending.extend(v_t.pending);
                 transformed_pattern.push((k_t.node, v_t.node));
             }
             Ok(Transformed {
@@ -1516,10 +1520,7 @@ fn seek_parent_step_impl(
             // resolve `%` against `Order` rather than raising S0217.
             None => Ok(level),
         },
-        _ => Err(coded(
-            "S0217",
-            "The parent operator % cannot derive an ancestor from this kind of path step",
-        )),
+        _ => Err(coded("S0217", S0217_MESSAGE)),
     }
 }
 
@@ -1566,10 +1567,7 @@ fn seek_parent_wrapped_impl(
             Some(last) => seek_parent_wrapped(last, label, level, state, depth),
             None => Ok(level),
         },
-        _ => Err(coded(
-            "S0217",
-            "The parent operator % cannot derive an ancestor from this kind of expression",
-        )),
+        _ => Err(coded("S0217", S0217_MESSAGE)),
     }
 }
 
@@ -2484,6 +2482,37 @@ mod tests {
             .unwrap();
         let err = resolve_ancestry(ast).unwrap_err();
         assert!(err.to_string().starts_with("S0217"));
+    }
+
+    #[test]
+    fn test_real_parser_percent_in_group_by_is_left_unresolved() {
+        // jsonata-js never resolves a `%` in a group-by's key or value
+        // (#192): the input steps get no ancestor tag and nothing is raised.
+        for expr in ["a.b{%.id: c}", "a.b{c: %.id}", "a.b{c: %.%.x}"] {
+            let ast = crate::parser::Parser::new(expr.to_string())
+                .unwrap()
+                .parse()
+                .unwrap();
+            match resolve_ancestry(ast).unwrap() {
+                AstNode::ObjectTransform { input, .. } => match *input {
+                    AstNode::Path { steps } => {
+                        assert!(steps.iter().all(|s| s.ancestor_label.is_none()), "{expr}");
+                    }
+                    other => panic!("expected Path, got {:?}", other),
+                },
+                other => panic!("expected ObjectTransform, got {:?}", other),
+            }
+        }
+    }
+
+    #[test]
+    fn test_s0217_uses_jsonata_js_wording() {
+        let ast = crate::parser::Parser::new("%".to_string())
+            .unwrap()
+            .parse()
+            .unwrap();
+        let err = resolve_ancestry(ast).unwrap_err();
+        assert!(err.to_string().ends_with(S0217_MESSAGE), "{err}");
     }
 
     #[test]

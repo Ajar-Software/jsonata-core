@@ -21,9 +21,6 @@ use common::norm;
 /// `(engine, expression)`. The list must stay exact: a case that starts
 /// matching has to be removed from it.
 const KNOWN_DIVERGENCES: &[(&str, &str)] = &[
-    // A `%` in a group-by's key raises S0217 here; jsonata-js resolves it
-    // and gives `{}`. Tracked separately from #184.
-    ("compile", "acct.Order.P{%.id: N}"),
     // Deliberate: jsonata-js calls the function on the right of `~>` without
     // applying the call's own filter, so `[0]` is silently dropped and the
     // whole array comes back. We apply the filter, as for any other call.
