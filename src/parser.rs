@@ -675,27 +675,27 @@ impl Lexer {
                 Some('.') if self.peek(1) == Some('.') => {
                     self.advance();
                     self.advance();
-                    return Ok(Token::DotDot);
+                    return self.emit_token(Token::DotDot);
                 }
                 Some(':') if self.peek(1) == Some('=') => {
                     self.advance();
                     self.advance();
-                    return Ok(Token::ColonEqual);
+                    return self.emit_token(Token::ColonEqual);
                 }
                 Some('!') if self.peek(1) == Some('=') => {
                     self.advance();
                     self.advance();
-                    return Ok(Token::NotEqual);
+                    return self.emit_token(Token::NotEqual);
                 }
                 Some('>') if self.peek(1) == Some('=') => {
                     self.advance();
                     self.advance();
-                    return Ok(Token::GreaterThanOrEqual);
+                    return self.emit_token(Token::GreaterThanOrEqual);
                 }
                 Some('<') if self.peek(1) == Some('=') => {
                     self.advance();
                     self.advance();
-                    return Ok(Token::LessThanOrEqual);
+                    return self.emit_token(Token::LessThanOrEqual);
                 }
                 Some('~') if self.peek(1) == Some('>') => {
                     self.advance();
@@ -706,7 +706,7 @@ impl Lexer {
                 // Single-character operators and delimiters
                 Some('(') => {
                     self.advance();
-                    return Ok(Token::LeftParen);
+                    return self.emit_token(Token::LeftParen);
                 }
                 Some(')') => {
                     self.advance();
@@ -714,7 +714,7 @@ impl Lexer {
                 }
                 Some('[') => {
                     self.advance();
-                    return Ok(Token::LeftBracket);
+                    return self.emit_token(Token::LeftBracket);
                 }
                 Some(']') => {
                     self.advance();
@@ -722,7 +722,7 @@ impl Lexer {
                 }
                 Some('{') => {
                     self.advance();
-                    return Ok(Token::LeftBrace);
+                    return self.emit_token(Token::LeftBrace);
                 }
                 Some('}') => {
                     self.advance();
@@ -738,21 +738,21 @@ impl Lexer {
                 }
                 Some(':') => {
                     self.advance();
-                    return Ok(Token::Colon);
+                    return self.emit_token(Token::Colon);
                 }
                 Some('?') if self.peek(1) == Some('?') => {
                     self.advance();
                     self.advance();
-                    return Ok(Token::QuestionQuestion);
+                    return self.emit_token(Token::QuestionQuestion);
                 }
                 Some('?') if self.peek(1) == Some(':') => {
                     self.advance();
                     self.advance();
-                    return Ok(Token::QuestionColon);
+                    return self.emit_token(Token::QuestionColon);
                 }
                 Some('?') => {
                     self.advance();
-                    return Ok(Token::Question);
+                    return self.emit_token(Token::Question);
                 }
                 Some('λ') => {
                     // Lambda symbol (alternative to "function" keyword).
@@ -764,31 +764,35 @@ impl Lexer {
                 }
                 Some('.') => {
                     self.advance();
-                    return Ok(Token::Dot);
+                    return self.emit_token(Token::Dot);
                 }
                 Some('+') => {
                     self.advance();
-                    return Ok(Token::Plus);
+                    return self.emit_token(Token::Plus);
                 }
                 Some('-') => {
                     self.advance();
-                    return Ok(Token::Minus);
+                    return self.emit_token(Token::Minus);
                 }
                 Some('*') if self.peek(1) == Some('*') => {
                     self.advance();
                     self.advance();
-                    return Ok(Token::StarStar);
+                    return self.emit_token(Token::StarStar);
                 }
                 Some('*') => {
                     self.advance();
-                    return Ok(Token::Star);
+                    return self.emit_token(Token::Star);
                 }
                 Some('/') => {
                     // Determine if this is a regex literal or division operator
                     // Regex literals can appear after:
                     // - Start of expression (last_token is None)
-                    // - Operators: (, [, {, ,, ;, :, =, !=, <, >, <=, >=, +, -, *, %, &, |, ~, !, ?
-                    // - Keywords: and, or, in, function
+                    // - Operators: (, [, {, ,, ;, :, =, !=, <, >, <=, >=, +, -, &, ?, ~>,
+                    //   :=, ??, ?:
+                    // - Keywords: and, or, in
+                    // Every token goes through `emit_token`, so `last_token`
+                    // is the one just before this `/` (#205: `$f := /a/` and
+                    // `$string(/a/)` were read as division).
                     // Division operator appears after:
                     // - Values: ), ], }, identifiers, variables, numbers, strings, etc.
 
@@ -801,8 +805,9 @@ impl Lexer {
                         Some(Token::Equal) | Some(Token::NotEqual) => true,
                         Some(Token::LessThan) | Some(Token::LessThanOrEqual) => true,
                         Some(Token::GreaterThan) | Some(Token::GreaterThanOrEqual) => true,
-                        Some(Token::Plus) | Some(Token::Minus) | Some(Token::Star)
-                        | Some(Token::Percent) => true,
+                        // Not `*` or `%`: on their own they are the wildcard
+                        // and the parent operator, values a `/` divides.
+                        Some(Token::Plus) | Some(Token::Minus) => true,
                         Some(Token::Ampersand)
                         | Some(Token::Question)
                         | Some(Token::TildeArrow) => true,
@@ -828,39 +833,39 @@ impl Lexer {
                 }
                 Some('%') => {
                     self.advance();
-                    return Ok(Token::Percent);
+                    return self.emit_token(Token::Percent);
                 }
                 Some('^') => {
                     self.advance();
-                    return Ok(Token::Caret);
+                    return self.emit_token(Token::Caret);
                 }
                 Some('#') => {
                     self.advance();
-                    return Ok(Token::Hash);
+                    return self.emit_token(Token::Hash);
                 }
                 Some('@') => {
                     self.advance();
-                    return Ok(Token::At);
+                    return self.emit_token(Token::At);
                 }
                 Some('=') => {
                     self.advance();
-                    return Ok(Token::Equal);
+                    return self.emit_token(Token::Equal);
                 }
                 Some('<') => {
                     self.advance();
-                    return Ok(Token::LessThan);
+                    return self.emit_token(Token::LessThan);
                 }
                 Some('>') => {
                     self.advance();
-                    return Ok(Token::GreaterThan);
+                    return self.emit_token(Token::GreaterThan);
                 }
                 Some('&') => {
                     self.advance();
-                    return Ok(Token::Ampersand);
+                    return self.emit_token(Token::Ampersand);
                 }
                 Some('|') => {
                     self.advance();
-                    return Ok(Token::Pipe);
+                    return self.emit_token(Token::Pipe);
                 }
 
                 // Identifiers and keywords
@@ -997,7 +1002,9 @@ impl Parser {
             Token::QuestionColon => Some((15, 16)),    // Default operator
             Token::DotDot => Some((20, 21)),
             Token::ColonEqual => Some((10, 9)), // Right associative
-            Token::TildeArrow => Some((70, 71)), // Chain/pipe operator
+            // Chain/pipe operator: 40 as in jsonata-js, so `"a" & "b" ~> $f` applies
+            // $f to "ab".
+            Token::TildeArrow => Some((40, 41)),
             _ => None,
         }
     }
@@ -1708,7 +1715,8 @@ impl Parser {
                         AstNode::Lambda { .. }
                         | AstNode::Block(_)
                         | AstNode::Call { .. }
-                        | AstNode::Function { .. } => {
+                        | AstNode::Function { .. }
+                        | AstNode::Regex { .. } => {
                             self.bump_parse_depth()?;
                             lhs = AstNode::Call {
                                 procedure: Box::new(lhs),
@@ -1757,6 +1765,34 @@ impl Parser {
                                             AstNode::FunctionApplication(Box::new(func_call)),
                                         ));
 
+                                        self.bump_parse_depth()?;
+                                        lhs = AstNode::Path {
+                                            steps: context_steps,
+                                        };
+                                    }
+                                    // A name as the last step: `m.next()` calls the
+                                    // function in each context item's `next`
+                                    // field, as `next()` does on its own.
+                                    else if let AstNode::Name(func_name) = last_step {
+                                        let last = &steps[steps.len() - 1];
+                                        if !last.stages.is_empty()
+                                            || last.focus.is_some()
+                                            || last.index_var.is_some()
+                                        {
+                                            return Err(ParserError::InvalidSyntax(
+                                                invalid_call_message(&args),
+                                            ));
+                                        }
+                                        let func_call = AstNode::Function {
+                                            name: func_name.clone(),
+                                            args,
+                                            is_builtin: false,
+                                        };
+                                        let mut context_steps = steps.clone();
+                                        context_steps.pop();
+                                        context_steps.push(PathStep::new(
+                                            AstNode::FunctionApplication(Box::new(func_call)),
+                                        ));
                                         self.bump_parse_depth()?;
                                         lhs = AstNode::Path {
                                             steps: context_steps,

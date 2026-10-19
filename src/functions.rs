@@ -241,23 +241,10 @@ pub mod string {
             JValue::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
             JValue::Number(n) => out.push_str(&format_stringified_number(*n)),
             JValue::String(s) => write_json_escaped(s, out),
-            // The replacer maps functions to "" wherever they appear.
-            JValue::Lambda { .. } | JValue::Builtin { .. } => out.push_str("\"\""),
-            JValue::Regex { pattern, flags } => {
-                // Mirrors the serde Serialize impl: a regex value renders as
-                // {"pattern": ..., "flags": ...}.
-                out.push('{');
-                out.push_str(&open_sep);
-                write_json_escaped("pattern", out);
-                out.push_str(key_sep);
-                write_json_escaped(pattern, out);
-                out.push_str(item_sep);
-                out.push_str(&open_sep);
-                write_json_escaped("flags", out);
-                out.push_str(key_sep);
-                write_json_escaped(flags, out);
-                out.push_str(&close_sep);
-                out.push('}');
+            // The replacer maps functions, regexes included, to "" wherever
+            // they appear.
+            JValue::Lambda { .. } | JValue::Builtin { .. } | JValue::Regex { .. } => {
+                out.push_str("\"\"")
             }
             JValue::Array(arr) => {
                 if arr.is_empty() {
@@ -665,6 +652,35 @@ pub mod string {
         Ok(JValue::sequence(results))
     }
 
+    /// One call of the function a regex literal evaluates to, following
+    /// jsonata-js `evaluateRegex`'s closure: the first match of `re` in `s`
+    /// at or after `from` (counted in UTF-16 code units, as JavaScript's
+    /// `lastIndex` is), with the match's `start` and `end` in UTF-16 units.
+    /// `None` when there is no match, including when `from` is past the end.
+    pub fn regex_exec<'s>(
+        re: &Regex,
+        s: &'s str,
+        from: usize,
+    ) -> Option<(regex::Captures<'s>, usize, usize)> {
+        let mut units = 0;
+        let mut byte_from = s.len();
+        for (i, c) in s.char_indices() {
+            if units >= from {
+                byte_from = i;
+                break;
+            }
+            units += c.len_utf16();
+        }
+        if byte_from == s.len() && units < from {
+            return None;
+        }
+        let caps = re.captures_at(s, byte_from)?;
+        let found = caps.get(0).expect("group 0 is the whole match");
+        let start = s[..found.start()].encode_utf16().count();
+        let end = start + found.as_str().encode_utf16().count();
+        Some((caps, start, end))
+    }
+
     /// $replace(str, pattern, replacement, limit) - Replace substring or regex matches
     pub fn replace(
         s: &str,
@@ -790,8 +806,8 @@ pub mod boolean {
                 }
             }
             JValue::Object(obj) => !obj.is_empty(),
-            JValue::Lambda { .. } | JValue::Builtin { .. } => false,
-            JValue::Regex { .. } => true,
+            // Functions are false, a regex being one (#205).
+            JValue::Lambda { .. } | JValue::Builtin { .. } | JValue::Regex { .. } => false,
             #[cfg(feature = "python")]
             JValue::LazyPyDict(lazy) => !lazy.is_empty(),
         }

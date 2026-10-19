@@ -44,6 +44,9 @@ const FUNCTIONS_JS_ARITY_NAMES = [
   'reverse', 'round', 'shuffle', 'split', 'spread', 'sqrt', 'string',
   'substring', 'substringAfter', 'substringBefore', 'sum', 'trim', 'type',
   'uppercase', 'zip',
+  // The higher-order functions are callbacks too: `$map([[3,1]], $sort)`
+  // hands $sort two arguments (#204).
+  'map', 'filter', 'single', 'sift', 'each', 'sort', 'match', 'replace',
 ];
 const DATETIME_JS_ARITY_NAMES = ['toMillis', 'fromMillis', 'formatInteger', 'parseInteger'];
 
@@ -57,6 +60,8 @@ function buildBuiltinArity() {
   // reachable by reference and so needs a callback arity like any other
   // (#140). jsonata.js:1811 -- async function functionEval(expr, focus).
   arity.eval = 2;
+  // `$reduce` is bound to `foldLeft`.
+  arity.reduce = jsFunctions.foldLeft.length;
   return arity;
 }
 

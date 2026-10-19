@@ -276,7 +276,12 @@ impl JValue {
 
     #[inline]
     pub fn is_function(&self) -> bool {
-        matches!(self, JValue::Lambda { .. } | JValue::Builtin { .. })
+        // A regex is a function too: called with a string, it gives the
+        // first match, as jsonata-js `evaluateRegex`'s closure does (#205).
+        matches!(
+            self,
+            JValue::Lambda { .. } | JValue::Builtin { .. } | JValue::Regex { .. }
+        )
     }
 
     #[inline]
@@ -792,13 +797,10 @@ impl Serialize for JValue {
                 }
                 m.end()
             }
-            JValue::Lambda { .. } => serializer.serialize_str(""),
-            JValue::Builtin { .. } => serializer.serialize_str(""),
-            JValue::Regex { pattern, flags } => {
-                let mut m = serializer.serialize_map(Some(2))?;
-                m.serialize_entry("pattern", &**pattern)?;
-                m.serialize_entry("flags", &**flags)?;
-                m.end()
+            // Functions, regexes included, serialize as "" (the JSON.stringify
+            // replacer jsonata-js's $string uses).
+            JValue::Lambda { .. } | JValue::Builtin { .. } | JValue::Regex { .. } => {
+                serializer.serialize_str("")
             }
             #[cfg(feature = "python")]
             JValue::LazyPyDict(lazy) => match lazy.to_object() {
@@ -980,18 +982,8 @@ impl From<&JValue> for serde_json::Value {
                     .collect();
                 serde_json::Value::Object(m)
             }
-            JValue::Lambda { .. } | JValue::Builtin { .. } => serde_json::Value::Null,
-            JValue::Regex { pattern, flags } => {
-                let mut m = serde_json::Map::new();
-                m.insert(
-                    "pattern".to_string(),
-                    serde_json::Value::String(pattern.to_string()),
-                );
-                m.insert(
-                    "flags".to_string(),
-                    serde_json::Value::String(flags.to_string()),
-                );
-                serde_json::Value::Object(m)
+            JValue::Lambda { .. } | JValue::Builtin { .. } | JValue::Regex { .. } => {
+                serde_json::Value::Null
             }
             #[cfg(feature = "python")]
             JValue::LazyPyDict(lazy) => match lazy.to_object() {
