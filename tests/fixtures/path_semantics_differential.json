@@ -6084,6 +6084,58 @@
    ]
   },
   {
+   "expression": "(acct.Order.P{N: N}).%",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "acct.Order.(P{N: N}).%.id",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "(acct.Order.P{N: N}).%.Order",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "(acct.Order{id: P}).%",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "acct.(Order{id: P}).%",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "(acct.Order.P{N: %.id}).%",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "acct.Order.P{N: (1).%}",
+   "result": {
+    "$error": "S0217"
+   }
+  },
+  {
+   "expression": "(acct.Order.P{N: N})^(%.id).A",
+   "result": "A"
+  },
+  {
+   "expression": "acct.(Order.P{N: N}).%.Order",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
    "expression": "$match(\"aba\", /a/)",
    "result": [
     {

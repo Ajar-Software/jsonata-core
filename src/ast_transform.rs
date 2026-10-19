@@ -893,8 +893,8 @@ fn transform_node_impl(
 /// aggregating pending ancestor references from every child -- mirrors
 /// jsonata-js's per-case `pushAncestry` calls in processAST.
 ///
-/// Two deliberate asymmetries with the generic "bubble everything" rule,
-/// both matching jsonata-js exactly:
+/// Three deliberate asymmetries with the generic "bubble everything" rule,
+/// all matching jsonata-js exactly:
 /// - `Call`'s `procedure` does NOT bubble (only `args` do) -- jsonata-js's
 ///   function/partial case never calls `pushAncestry` on `result.procedure`.
 /// - `Lambda`'s `body` does NOT bubble at all -- jsonata-js's lambda case
@@ -904,6 +904,9 @@ fn transform_node_impl(
 ///   simply remains an inert `AstNode::Parent(label)` in the body until the
 ///   lambda is invoked (matching jsonata-js: `function(){%}` parses fine,
 ///   with the raw `%` untouched inside the body).
+/// - An `ObjectTransform`'s (group-by's) `pattern` does NOT bubble -- the
+///   `{` group case processes its pairs without `pushAncestry`, so a `%`
+///   there stays unresolved and evaluates to undefined (#192).
 ///
 /// `depth` follows the same shared cycle-1+cycle-3 convention as
 /// `transform_node` (see its doc comment) -- `transform_children` is a full
@@ -1045,10 +1048,12 @@ fn transform_children_impl(
         AstNode::ObjectTransform { input, pattern } => {
             let input_t = transform_node(*input, state, depth)?;
             let pending = input_t.pending;
-            // A `%` in a group-by's key or value never resolves: jsonata-js's
-            // `{` case processes the pairs without `pushAncestry`, so their
-            // slots are neither resolved nor raised as S0217. The label is
-            // never bound, and `%` evaluates to undefined there (#192).
+            // A `%` slot still pending when it leaves a group-by's key or
+            // value is dropped: jsonata-js's `{` case processes the pairs
+            // without `pushAncestry`, so the slot is neither resolved nor
+            // raised as S0217. Its label is never bound, and `%` evaluates
+            // to undefined there (#192). A seek that fails inside a pair,
+            // as in `{"k": (1).%}`, still raises S0217.
             let mut transformed_pattern = Vec::with_capacity(pattern.len());
             for (k, v) in pattern {
                 let k_t = transform_node(k, state, depth)?;
@@ -1520,6 +1525,14 @@ fn seek_parent_step_impl(
             // resolve `%` against `Order` rather than raising S0217.
             None => Ok(level),
         },
+        // A group-by reached as a step (`(a.b{...}).%`). jsonata-js keeps the
+        // group on the path node, so seekParent walks the path's steps; here
+        // that path is the group-by's input.
+        AstNode::ObjectTransform { input, .. } => {
+            step.is_tuple = true;
+            step.inner_tuple = true;
+            seek_parent_wrapped(input.as_mut(), label, level, state, depth)
+        }
         _ => Err(coded("S0217", S0217_MESSAGE)),
     }
 }
@@ -1567,6 +1580,10 @@ fn seek_parent_wrapped_impl(
             Some(last) => seek_parent_wrapped(last, label, level, state, depth),
             None => Ok(level),
         },
+        // A group-by: seek through its input path, as above.
+        AstNode::ObjectTransform { input, .. } => {
+            seek_parent_wrapped(input.as_mut(), label, level, state, depth)
+        }
         _ => Err(coded("S0217", S0217_MESSAGE)),
     }
 }
@@ -2507,12 +2524,28 @@ mod tests {
 
     #[test]
     fn test_s0217_uses_jsonata_js_wording() {
-        let ast = crate::parser::Parser::new("%".to_string())
+        // The top-level check, a seek that reaches a non-path step, and a
+        // seek into a non-path expression.
+        for expr in ["%", "[1].%", "a.b{c: (1).%}"] {
+            let ast = crate::parser::Parser::new(expr.to_string())
+                .unwrap()
+                .parse()
+                .unwrap();
+            let err = resolve_ancestry(ast).unwrap_err();
+            assert_eq!(err.to_string(), format!("S0217: {S0217_MESSAGE}"), "{expr}");
+        }
+    }
+
+    #[test]
+    fn test_real_parser_percent_seeks_through_group_by_input() {
+        // `(a.b{...}).%`: jsonata-js's seekParent walks the grouped path's
+        // steps, so `b` is tagged rather than raising S0217.
+        let ast = crate::parser::Parser::new("(a.b{c: d}).%".to_string())
             .unwrap()
             .parse()
             .unwrap();
-        let err = resolve_ancestry(ast).unwrap_err();
-        assert!(err.to_string().ends_with(S0217_MESSAGE), "{err}");
+        let resolved = format!("{:?}", resolve_ancestry(ast).unwrap());
+        assert!(resolved.contains("ancestor_label: Some("), "{resolved}");
     }
 
     #[test]

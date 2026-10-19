@@ -142,6 +142,10 @@ const EXTRA = [
   'acct.Order.P[%.id = "o1"]{N: %.id}', 'acct.Order@$o.P{N: %.id}', 'acct.Order.P#$i{N: %}',
   'acct.Order.P^(N){N: %.id}', 'acct.Order{id: P{N: %}}', 'acct.Order.(P{N: %.id})',
   'acct.Order.P.%{id: %}', 'acct.Order.P{N: $.%}', '%', 'acct.Order.P.{N: %.id}',
+  // A `%` after a group-by seeks through the grouped path.
+  '(acct.Order.P{N: N}).%', 'acct.Order.(P{N: N}).%.id', '(acct.Order.P{N: N}).%.Order',
+  '(acct.Order{id: P}).%', 'acct.(Order{id: P}).%', '(acct.Order.P{N: %.id}).%',
+  'acct.Order.P{N: (1).%}', '(acct.Order.P{N: N})^(%.id).A', 'acct.(Order.P{N: N}).%.Order',
   // `$match` returns every match as a sequence (#194).
   '$match("aba", /a/)', '$match("aba", /a/, 1)', '$match("aba", /a/, 0)', '$match("aba", /z/)',
   '$match("xay", /a/)', '$match("ab", /(a)(c)?/)', '$match("abc", /x*/)', '$match("abc", /x*/, 1)',
