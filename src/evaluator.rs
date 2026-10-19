@@ -4091,17 +4091,9 @@ impl Evaluator {
                     });
                 }
 
-                // For $$name, we need to evaluate name against parent context
-                // This is similar to $.name but using parent data
-                let parent_data = self.context.get_parent().ok_or_else(|| {
-                    EvaluatorError::ReferenceError("Parent context not available".to_string())
-                })?;
-
-                // Access field on parent context
-                match parent_data {
-                    JValue::Object(obj) => Ok(obj.get(name).cloned().unwrap_or(JValue::Null)),
-                    _ => Ok(JValue::Null),
-                }
+                // `$$name` is the variable named `$name` in jsonata-js; the lexer
+                // emits it as `Variable("$name")`, so only bare `$$` reaches here.
+                self.evaluate_internal(&AstNode::Variable(format!("${}", name)), data)
             }
 
             AstNode::Path { steps } => self.evaluate_path(steps, data),
@@ -4331,23 +4323,12 @@ impl Evaluator {
             // Call: invoke an arbitrary expression as a function
             // Used for IIFE patterns like (function($x){...})(5) or chained calls
             AstNode::Call { procedure, args } => {
-                // Evaluate the procedure to get the callable value
+                // As jsonata-js `evaluateFunction`: evaluate the procedure, then
+                // apply whatever function value it gives -- a lambda, a builtin,
+                // a partial application or a composition. A `?` argument makes a
+                // partial application; anything that is not a function is T1006.
                 let callable = self.evaluate_internal(procedure, data)?;
-
-                // Check if it's a lambda value
-                if let Some(stored_lambda) = self.lookup_lambda_from_value(&callable) {
-                    let mut evaluated_args = Vec::with_capacity(args.len());
-                    for arg in args.iter() {
-                        evaluated_args.push(self.evaluate_internal(arg, data)?);
-                    }
-                    return self.invoke_stored_lambda(&stored_lambda, &evaluated_args, data);
-                }
-
-                // Not a callable value
-                Err(EvaluatorError::TypeError(format!(
-                    "Cannot call non-function value: {:?}",
-                    callable
-                )))
+                self.apply_call_value(callable, args, data)
             }
 
             AstNode::Conditional {
@@ -7691,8 +7672,16 @@ impl Evaluator {
 
             // Function call - this is where TCO happens
             AstNode::Function { name, args, .. } => {
+                // A `?` argument makes a partial application, not a call: the
+                // non-TCO path builds it.
+                let has_placeholder = args.iter().any(|a| matches!(a, AstNode::Placeholder));
                 // Check if this is a call to a lambda value (user function)
-                if let Some(stored_lambda) = self.context.lookup_lambda_value(name).cloned() {
+                if let Some(stored_lambda) = self
+                    .context
+                    .lookup_lambda_value(name)
+                    .filter(|_| !has_placeholder)
+                    .cloned()
+                {
                     if stored_lambda.thunk {
                         let mut evaluated_args = Vec::with_capacity(args.len());
                         for arg in args {
@@ -7712,6 +7701,12 @@ impl Evaluator {
 
             // Call node (calling a lambda value)
             AstNode::Call { procedure, args } => {
+                // A `?` argument makes a partial application, not a call: the
+                // non-TCO path builds it.
+                if args.iter().any(|a| matches!(a, AstNode::Placeholder)) {
+                    let result = self.evaluate_internal(node, data)?;
+                    return Ok(LambdaResult::JValue(result));
+                }
                 // Evaluate the procedure to get the callable
                 let callable = self.evaluate_internal(procedure, data)?;
 
@@ -7730,8 +7725,9 @@ impl Evaluator {
                         });
                     }
                 }
-                // Not a thunk - evaluate normally
-                let result = self.evaluate_internal(node, data)?;
+                // Not a thunk - apply the value already evaluated, so the
+                // callee is not evaluated a second time.
+                let result = self.apply_call_value(callable, args, data)?;
                 Ok(LambdaResult::JValue(result))
             }
 
@@ -7748,6 +7744,41 @@ impl Evaluator {
                 Ok(LambdaResult::JValue(result))
             }
         }
+    }
+
+    /// Apply the value of a called expression to `args`, as jsonata-js
+    /// `evaluateFunction` does once it has the procedure's value.
+    fn apply_call_value(
+        &mut self,
+        callable: JValue,
+        args: &[AstNode],
+        data: &JValue,
+    ) -> Result<JValue, EvaluatorError> {
+        if args.iter().any(|a| matches!(a, AstNode::Placeholder)) {
+            let target = match &callable {
+                JValue::Lambda(stored) => PartialTarget::Lambda(Rc::clone(stored)),
+                JValue::Builtin { name } => PartialTarget::Named {
+                    name: name.to_string(),
+                    is_builtin: true,
+                },
+                _ => {
+                    return Err(EvaluatorError::EvaluationError(
+                        "T1008: Attempted to partially apply a non-function".to_string(),
+                    ))
+                }
+            };
+            return self.build_partial_application(target, args, data);
+        }
+        if !callable.is_function() {
+            return Err(EvaluatorError::TypeError(
+                "T1006: Attempted to invoke a non-function".to_string(),
+            ));
+        }
+        let mut evaluated_args = Vec::with_capacity(args.len());
+        for arg in args.iter() {
+            evaluated_args.push(self.evaluate_internal(arg, data)?);
+        }
+        self.call_function_value(&callable, &evaluated_args, data)
     }
 
     /// Call a function value, a lambda or a builtin, with `values`.
@@ -8858,6 +8889,29 @@ impl Evaluator {
             ));
         }
 
+        // A user-defined target is captured as a closure value so the partial
+        // still works after the target's defining scope pops; builtins and
+        // host fns stay name-resolved (they are global and cannot dangle, and
+        // by-name resolution preserves call-time shadowing).
+        let target = match self.context.lookup_lambda_value(name) {
+            Some(rc) => PartialTarget::Lambda(Rc::clone(rc)),
+            None => PartialTarget::Named {
+                name: name.to_string(),
+                is_builtin,
+            },
+        };
+        self.build_partial_application(target, args, data)
+    }
+
+    /// Build the partial application of `target` to `args`, whose `?`
+    /// placeholders become the new function's parameters. The other
+    /// arguments are evaluated now.
+    fn build_partial_application(
+        &mut self,
+        target: PartialTarget,
+        args: &[AstNode],
+        data: &JValue,
+    ) -> Result<JValue, EvaluatorError> {
         // Evaluate non-placeholder arguments and track placeholder positions
         let mut bound_args: Vec<(usize, JValue)> = Vec::new();
         let mut placeholder_positions: Vec<usize> = Vec::new();
@@ -8877,18 +8931,6 @@ impl Evaluator {
             .enumerate()
             .map(|(i, _)| format!("__p{}", i))
             .collect();
-
-        // A user-defined target is captured as a closure value so the partial
-        // still works after the target's defining scope pops; builtins and
-        // host fns stay name-resolved (they are global and cannot dangle, and
-        // by-name resolution preserves call-time shadowing).
-        let target = match self.context.lookup_lambda_value(name) {
-            Some(rc) => PartialTarget::Lambda(Rc::clone(rc)),
-            None => PartialTarget::Named {
-                name: name.to_string(),
-                is_builtin,
-            },
-        };
 
         let stored_lambda = StoredLambda {
             params: param_names,

@@ -548,8 +548,9 @@ impl Lexer {
         let start = self.position;
 
         while let Some(ch) = self.current() {
-            // Continue if alphanumeric or underscore
-            if ch.is_alphanumeric() || ch == '_' {
+            // Continue if alphanumeric, underscore or `$` (not an operator
+            // in jsonata-js, so `a$b` and `$a$b` are single names)
+            if ch.is_alphanumeric() || ch == '_' || ch == '$' {
                 self.advance();
             } else {
                 break;
@@ -656,17 +657,17 @@ impl Lexer {
                     return self.emit_token(Token::Number(num));
                 }
 
-                // Variables (start with $)
-                Some('$') if self.peek(1) == Some('$') => {
-                    // $$ - parent variable
-                    self.advance(); // skip first $
-                    self.advance(); // skip second $
-                    let name = self.read_identifier();
-                    return self.emit_token(Token::ParentVariable(name));
-                }
+                // Variables (start with $). jsonata-js reads everything after
+                // the leading `$` up to a delimiter as the variable name, `$`
+                // included: `$$` is the variable named `$` (the input), `$$a`
+                // is the variable named `$a` -- not a field lookup on the
+                // parent (#201) -- and `$a$b` is the variable named `a$b`.
                 Some('$') => {
-                    self.advance();
+                    self.advance(); // skip the leading $
                     let name = self.read_identifier();
+                    if name == "$" {
+                        return self.emit_token(Token::ParentVariable(String::new()));
+                    }
                     return self.emit_token(Token::Variable(name));
                 }
 
@@ -1761,57 +1762,33 @@ impl Parser {
                                             steps: context_steps,
                                         };
                                     }
-                                    // Check if last step is a Lambda (inline function in path)
-                                    else if let AstNode::Lambda {
-                                        params,
-                                        body,
-                                        signature,
-                                        thunk,
-                                    } = last_step
+                                    // An inline lambda (or a parenthesised expression) as the
+                                    // last step: `a.function($v){...}(args)` or `a.(f)(args)`.
+                                    // jsonata-js calls the procedure once per context item with
+                                    // exactly the arguments written -- the context value is NOT
+                                    // passed as an implicit first argument (#202).
+                                    else if matches!(
+                                        last_step,
+                                        AstNode::Lambda { .. } | AstNode::FunctionApplication(_)
+                                    ) && steps[steps.len() - 1].stages.is_empty()
+                                        && steps[steps.len() - 1].focus.is_none()
+                                        && steps[steps.len() - 1].index_var.is_none()
                                     {
-                                        // Extract all but the last step as the path context
                                         let mut context_steps = steps.clone();
-                                        context_steps.pop();
-
-                                        // In path context, determine if we need to prepend $
-                                        // - If fewer args than params, prepend $ (context value) as first arg
-                                        // - If args == params, use args as-is
-                                        let full_args = if args.len() < params.len() {
-                                            let mut new_args =
-                                                vec![AstNode::Variable("$".to_string())];
-                                            new_args.extend(args.clone());
-                                            new_args
-                                        } else {
-                                            args.clone()
+                                        let procedure = match context_steps.pop().map(|s| s.node) {
+                                            Some(AstNode::FunctionApplication(inner)) => *inner,
+                                            Some(lambda) => lambda,
+                                            None => {
+                                                return Err(ParserError::InvalidSyntax(
+                                                    invalid_call_message(&args),
+                                                ))
+                                            }
                                         };
-
-                                        // Create a lambda invocation block
-                                        // ($__path_lambda := lambda; $__path_lambda(args...))
-                                        let lambda_invocation = AstNode::Block(vec![
-                                            AstNode::Binary {
-                                                op: crate::ast::BinaryOp::ColonEqual,
-                                                lhs: Box::new(AstNode::Variable(
-                                                    "__path_lambda__".to_string(),
-                                                )),
-                                                rhs: Box::new(AstNode::Lambda {
-                                                    params: params.clone(),
-                                                    body: body.clone(),
-                                                    signature: signature.clone(),
-                                                    thunk: *thunk,
-                                                }),
-                                            },
-                                            AstNode::Function {
-                                                name: "__path_lambda__".to_string(),
-                                                args: full_args,
-                                                is_builtin: true,
-                                            },
-                                        ]);
-
-                                        // Append as function application to the path
                                         context_steps.push(PathStep::new(
-                                            AstNode::FunctionApplication(Box::new(
-                                                lambda_invocation,
-                                            )),
+                                            AstNode::FunctionApplication(Box::new(AstNode::Call {
+                                                procedure: Box::new(procedure),
+                                                args,
+                                            })),
                                         ));
 
                                         self.bump_parse_depth()?;

@@ -167,3 +167,19 @@ class TestNoImpact:
         expr = jsonatapy.compile("$scale(base * $factor)")
         expr.register("scale", lambda v: v + 1)
         assert expr.evaluate({"base": 10}, {"factor": 2}) == 21
+
+
+class TestCalleeEvaluatedOnce:
+    def test_tail_call_callee_runs_once(self):
+        # The callee of a call in a lambda's tail position is evaluated once,
+        # so a host function inside it runs once per call.
+        calls = []
+
+        def tick():
+            calls.append(1)
+            return 1
+
+        expr = jsonatapy.compile("(function() { ($tick(); $string)(1) })()")
+        expr.register("tick", tick)
+        assert expr.evaluate(None) == "1"
+        assert len(calls) == 1

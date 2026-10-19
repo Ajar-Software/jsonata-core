@@ -295,6 +295,35 @@ const EXTRA = [
   '(function($sort) { $exists($sort) })()', '($f := function($v) { $type($v) }; $f())',
   '($f := function($v, $w) { [$v, $w] }; $f(1))',
   '($f := function($n, $acc) { $n = 0 ? $type($acc) : $f($n - 1) }; $f(3))',
+  // `$$` is the variable named `$`, so `$$arr` is the (unbound) variable
+  // `$arr`, not a field of the input (#201).
+  '$$arr', '$string($$arr)', '$string($$missing)', '$exists($$arr)', '{"x": $$arr}',
+  '$$arr[0]', '$$v.w', 'arr.$$v', '$$$', '($arr := 5; $$arr)', '($b := $$v; $b)',
+  '($$x := 2; $$x * 3)', '$$', '$$.arr', '$$.x.y',
+  // A lambda called as a path step gets exactly the arguments written; the
+  // context item is not passed as an implicit first argument (#202).
+  'arr.function($v) { $v * 2 }()', 'arr.function($v) { $v * 2 }(3)',
+  'arr.function($v) { $v * 2 }($)', 'arr.function() { $ * 2 }()',
+  'arr.function($v, $w) { $v + $w }(1)', 'arr.function($v) { $v * 2 }(2, 3)',
+  'arr.(function($v) { $v * 2 })($)', 'arr.(function($v) { $v * 2 })()',
+  'arr.(function($v) { $v * 2 }($))', '($f := function() { function($x) { $x + 1 } }; arr.$f()(10))',
+  // A called expression applies whatever function it gives, as jsonata-js
+  // `evaluateFunction` does: a lambda, a builtin, a partial application or a
+  // composition. A `?` argument partially applies it; a non-function is T1006.
+  '$type(arr.function($v, $w) { $v + $w }(?, 1))', 'arr.function($v, $w) { $v + $w }(?, 1)(5)',
+  '(function($v, $w) { $v + $w })(?, 1)(5)', '$type((function($v, $w) { $v + $w })(?, 1))',
+  'arr.function($v) { $v }($)()', 'arr.function($v) { $v }($)(1)', '(1)(2)', '(nope)(2)',
+  '("x")(?)', '["x", "y"].($uppercase)($)', 'arr.($string)()', 'objs.($sum)(p)',
+  '($u := $uppercase; ["x", "y"].($u)($))', '($uppercase)("x")', '($substring)(?, 1)("abc")',
+  '["abc", "de"].($substring)($, ?)(1)', '($f := $uppercase ~> $trim; [" x"].($f)($))',
+  '($u := $string; arr.$u())', '($f := function($x) { $x * 10 }; ($f)(?)(2))',
+  // A `?` call in a lambda's tail position is a partial application too.
+  '(function() { (function($a) { $string($a) })(?) })()("x")',
+  '($g := function($a) { $uppercase($a) }; $f := function() { $g(?) }; $f()("x"))',
+  '($g := function($a, $b) { $a & $b }; $f := function($x) { $g($x, ?) }; $f("a")("b"))',
+  '($f := function() { (function($a, $b) { $a + $b })(1, ?) }; $f()(2))',
+  // `$` is not an operator, so it can sit inside a name.
+  '$a$b', '($a$b := 3; $a$b)', '($$a$b := 4; $$a$b)', '($a$b := 3; $$a$b)',
 ];
 
 // The same questions with a top-level array as input. jsonata-js wraps that
