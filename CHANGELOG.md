@@ -80,6 +80,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `{"k": [5]}` for `z: [[5]]`), an object constructor inside a `.( … )` block reads `$` as its
   own context (`[1].([[5]].{"v": $})` is `{"v": 5}`), and a field sort term over an array item
   reads its items' fields, so `[[{"p":2},{"p":1}],[{"p":3}]]^(p)` raises T2008 as in jsonata-js.
+  The order-by clause sorts with jsonata-js's merge sort and comparator: a missing term sorts
+  last in either direction (`[{"p":1},{"q":1}]^(>p)` keeps its order; it put `{"q":1}` first),
+  and is checked before the types, so `[{"p":null},{"q":1}]^(p)` keeps its order instead of
+  raising T2008. A leading array constructor with a focus or index binding is evaluated once,
+  the binding ignored, so `[$]@$w.($)` over `[1,2,3]` is `[1,2,3]`.
+- **A higher-order function evaluates its callback once, to a function value**
+  ([#204](https://github.com/txjmb/jsonata-core/issues/204)). `$map`, `$filter`, `$reduce`,
+  `$single`, `$sift`, `$each` and `$sort` evaluate a callback that is not an inline lambda or a
+  variable once, then call the function it gives with as many arguments as it takes, as
+  jsonata-js's `hofFuncArgs` does. Before, the expression was evaluated again for each item
+  with the item as context, so `$map([1,2], ($string))` and `$map([1,2], [$string][0])` gave
+  functions instead of `["1","2"]`, `$filter([1,2], (function($v){$v>1}))` was undefined
+  instead of 2, and a host function inside the callback ran once per item. `$reduce` raises
+  D3050 for any callback taking fewer than two arguments, so `$reduce([1,2], $sum ~> $string)`
+  and `$reduce([1,2], $string)` are D3050. The nine higher-order builtins have their
+  jsonata-js arities, so `$map([[3,1]], $sort)` hands `$sort` two arguments.
+- **A regex literal is a function value**
+  ([#205](https://github.com/txjmb/jsonata-core/issues/205)). As in jsonata-js, `/re/` called
+  with a string gives its first match as `{match, start, end, groups, next}`, with `start` and
+  `end` in UTF-16 code units, `groups` always present and `next()` giving the following match
+  (undefined after the last, D1004 for a zero-length one). It can be bound
+  (`($f := /a/; $f("xa"))`), passed as a callback (`$filter(["ab","cd"], /b/)`), composed on
+  either side of `~>` (`$sort ~> /a/`), and passed to `$match`, `$replace`, `$split` and
+  `$contains` from a variable. `$type(/a/)` is `"function"`, `$string(/a/)` is `""`,
+  `$boolean(/a/)` is false, and a regex returned to Python is `None`. `"xa" ~> /a/` goes
+  through the general `~>` path, so its result has `groups` and `next`. A regex now reads as
+  one after `:=`, `(`, `:`, `=`, `?` and the other operators that were read as division
+  before (`$string(/a/)` was S0211), `m.next()` calls a field holding a function, and `~>`
+  binds at 40 as in jsonata-js, so `"é" & "a" ~> /a/` matches `"éa"`. Deliberate
+  divergences: an undefined subject gives undefined (jsonata-js matches the text
+  `"undefined"`), and each match's `next()` continues from where that match ended, while
+  jsonata-js's continues from wherever the regex last stopped, shared by every match it
+  gave: `($m := /a/("xaya"); [$m.next().start, $m.next().start])` is `[3, 3]` here and `[3]`
+  in jsonata-js.
 - **Non-tail recursion goes about 10,000 calls deep**
   ([#200](https://github.com/txjmb/jsonata-core/issues/200)). Evaluation stopped at 302 levels
   with U1001, so `($f := function($n){ $n <= 0 ? 0 : 1 + $f($n - 1) }; $f(150))` failed where
