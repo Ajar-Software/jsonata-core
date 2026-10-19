@@ -6809,6 +6809,461 @@
    }
   },
   {
+   "expression": "(acct.Order.P[N=\"C\"])^(%.id)",
+   "result": {
+    "N": "C"
+   }
+  },
+  {
+   "expression": "acct.Order.(P[N=\"C\"])^(%.id)",
+   "result": {
+    "N": "C"
+   }
+  },
+  {
+   "expression": "(acct.Order[0].P[0])^(%.id)",
+   "result": {
+    "N": "A"
+   }
+  },
+  {
+   "expression": "acct.Order.P[N=\"C\"]^(%.id)",
+   "result": {
+    "N": "C"
+   }
+  },
+  {
+   "expression": "(acct.Order.P[N=\"C\"])^(N)",
+   "result": {
+    "N": "C"
+   }
+  },
+  {
+   "expression": "(acct.Order.P[N=\"C\"])^(%.id).N",
+   "result": "C"
+  },
+  {
+   "expression": "(acct.Order.P)[N = \"Z\"]^(>%.id)",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "(o.t)[N = \"C\"]^(>%.id)",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "acct.Order.P^(>%.id)[N = \"C\"]",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "acct.Order.P^(>%.id)^(N)",
+   "result": [
+    {
+     "N": "C"
+    },
+    {
+     "N": "A"
+    },
+    {
+     "N": "B"
+    }
+   ]
+  },
+  {
+   "expression": "acct.Order.P^(>%.id){N: N}",
+   "result": {}
+  },
+  {
+   "expression": "o.t^(>%.id)^($)",
+   "result": {
+    "$error": "T2008"
+   }
+  },
+  {
+   "expression": "acct.Order.P^(>%.id)[0].N",
+   "result": "C"
+  },
+  {
+   "expression": "acct.Order.P^(>%.id)[N = \"C\"].N",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "acct.Order.P^(>%.id)[$i = 0]",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "acct.Order#$i.P^(N)[N = \"C\"]",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "acct.Order#$i.P^(N)^(>N)",
+   "result": [
+    {
+     "N": "A"
+    },
+    {
+     "N": "B"
+    },
+    {
+     "N": "C"
+    }
+   ]
+  },
+  {
+   "expression": "acct.Order.P#$i^(N){N: N}",
+   "result": {}
+  },
+  {
+   "expression": "acct.Order@$o.P^(N)[N = \"C\"]",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "arr^($)#$i[$i > 0]",
+   "result": [
+    2,
+    3
+   ]
+  },
+  {
+   "expression": "acct.Order.P^(>%.id)[0]^(N)",
+   "result": {
+    "N": "C"
+   }
+  },
+  {
+   "expression": "acct.Order.P^(>%.id)[$count($.'@') > 0]",
+   "result": [
+    {
+     "N": "C"
+    },
+    {
+     "N": "A"
+    },
+    {
+     "N": "B"
+    }
+   ]
+  },
+  {
+   "expression": "acct.Order.P^(>%.id)[$count($.'@') > 0]{N: N}",
+   "result": {}
+  },
+  {
+   "expression": "acct.Order.P^(>%.id)[0]{N: N}",
+   "result": {}
+  },
+  {
+   "expression": "acct.Order.P^(>%.id)[true]{N: N}",
+   "result": {}
+  },
+  {
+   "expression": "acct.Order.P^(>%.id)[[0, 1]]{N: N}",
+   "result": {}
+  },
+  {
+   "expression": "acct.Order.P^(>%.id)[N = \"C\"]^(N)",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "acct.Order.P[N = \"C\"][]^(%.id)[N = \"C\"]",
+   "result": [
+    {
+     "N": "C"
+    }
+   ]
+  },
+  {
+   "expression": "acct.Order.P[N = \"C\"][]^(%.id){N: N}",
+   "result": {
+    "C": "C"
+   }
+  },
+  {
+   "expression": "acct.Order.P[N = \"C\"][]^(%.id)^(N)",
+   "result": [
+    {
+     "N": "C"
+    }
+   ]
+  },
+  {
+   "expression": "acct.Order.P^(>%.id)^(N)#$k.$k",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "acct.Order.P^(>%.id)^(N)#$k[$k = 0]",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "acct.Order.P^(>%.id)[N = \"C\"]#$k",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "acct.Order.P^(>%.id)[N = \"C\"]#$k.{\"k\": $k, \"v\": $}",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "acct.Order.P^(>%.id)#$k[N = \"C\"]",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "acct.Order.P^(>%.id)#$k[$k = 1]",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "acct.Order.P^(>%.id)#$k.{\"k\": $k}",
+   "result": [
+    {},
+    {},
+    {}
+   ]
+  },
+  {
+   "expression": "acct.Order.P[N = \"C\"]^(%.id)#$k[N = \"C\"]",
+   "result": {
+    "N": "C"
+   }
+  },
+  {
+   "expression": "acct.Order.P[N = \"C\"]^(%.id)[N = \"C\"]{N: N}",
+   "result": {
+    "C": "C"
+   }
+  },
+  {
+   "expression": "acct.Order.P[N = \"C\"]^(%.id)[0]{N: N}",
+   "result": {
+    "C": "C"
+   }
+  },
+  {
+   "expression": "acct.Order.P[N = \"C\"]^(%.id)[true]{N: N}",
+   "result": {
+    "C": "C"
+   }
+  },
+  {
+   "expression": "acct.Order.P[N = \"C\"]^(%.id)[]{N: N}",
+   "result": {
+    "C": "C"
+   }
+  },
+  {
+   "expression": "acct.Order[1].P^(%.id)[0]{N: N}",
+   "result": {
+    "C": "C"
+   }
+  },
+  {
+   "expression": "acct.Order#$i.P[N = \"C\"]^($i)[0]{N: N}",
+   "result": {
+    "C": "C"
+   }
+  },
+  {
+   "expression": "acct.Order.P^(>%.id)#$k{N: N}",
+   "result": {}
+  },
+  {
+   "expression": "acct.Order.P^(>%.id)#$k^(N)",
+   "result": [
+    {
+     "N": "C"
+    },
+    {
+     "N": "A"
+    },
+    {
+     "N": "B"
+    }
+   ]
+  },
+  {
+   "expression": "acct.Order.P^(>%.id)#$k^(N).N",
+   "result": [
+    "C",
+    "A",
+    "B"
+   ]
+  },
+  {
+   "expression": "acct.Order.P^(>%.id)#$k[$k > 0].N",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "acct.Order.P#$i^(>$i){\"k\": $keys($)}",
+   "result": {
+    "k": [
+     "@",
+     "i"
+    ]
+   }
+  },
+  {
+   "expression": "acct.Order.P#$i^(>$i)[i = 1]",
+   "result": {
+    "N": "B"
+   }
+  },
+  {
+   "expression": "acct.Order.P#$i^(>$i)[$.i = 0]",
+   "result": [
+    {
+     "N": "A"
+    },
+    {
+     "N": "C"
+    }
+   ]
+  },
+  {
+   "expression": "acct.Order.P#$i^(>$i){\"x\": $sum(i)}",
+   "result": {
+    "x": 1
+   }
+  },
+  {
+   "expression": "acct.Order.P#$i^(>$i)^(i).N",
+   "result": [
+    "A",
+    "C",
+    "B"
+   ]
+  },
+  {
+   "expression": "acct.Order.P@$p^(>$p.N){\"k\": $keys($)}",
+   "result": {
+    "k": [
+     "@",
+     "p"
+    ]
+   }
+  },
+  {
+   "expression": "acct.Order.P@$p^(>$p.N){p.N: N}",
+   "result": {}
+  },
+  {
+   "expression": "acct.Order.P@$p^(>$p.N)[p.N = \"B\"].N",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "acct.Order.P#$i^(>$i)[$i = 1].N",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "acct.Order.P#$i^(>$i)#$j[i = 0].{\"j\": $j}",
+   "result": [
+    {},
+    {}
+   ]
+  },
+  {
+   "expression": "($x := acct.Order.P^(>%.id); $x[N = \"C\"])",
+   "result": {
+    "N": "C"
+   }
+  },
+  {
+   "expression": "(acct.Order.P^(>%.id))[N = \"C\"]",
+   "result": {
+    "N": "C"
+   }
+  },
+  {
+   "expression": "(true ? acct.Order.P^(>%.id) : 0)[N = \"C\"]",
+   "result": {
+    "N": "C"
+   }
+  },
+  {
+   "expression": "{\"a\": acct.Order.P^(>%.id)}.a[N = \"C\"]",
+   "result": {
+    "N": "C"
+   }
+  },
+  {
+   "expression": "(acct.Order.P^(>%.id)){N: N}",
+   "result": {
+    "C": "C",
+    "A": "A",
+    "B": "B"
+   }
+  },
+  {
+   "expression": "($x := acct.Order.P^(>%.id); $x{N: N})",
+   "result": {
+    "C": "C",
+    "A": "A",
+    "B": "B"
+   }
+  },
+  {
+   "expression": "(acct.Order.P^(>%.id))^(N)",
+   "result": [
+    {
+     "N": "A"
+    },
+    {
+     "N": "B"
+    },
+    {
+     "N": "C"
+    }
+   ]
+  },
+  {
+   "expression": "$string(acct.Order.P^(>%.id))",
+   "result": "[{\"N\":\"C\"},{\"N\":\"A\"},{\"N\":\"B\"}]"
+  },
+  {
+   "expression": "acct.Order.P^(>%.id) ~> $sort(function($a, $b) { $a.N < $b.N })",
+   "result": [
+    {
+     "N": "C"
+    },
+    {
+     "N": "B"
+    },
+    {
+     "N": "A"
+    }
+   ]
+  },
+  {
    "expression": "$match(\"aba\", /a/)",
    "result": [
     {

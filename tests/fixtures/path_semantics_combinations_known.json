@@ -2,36 +2,6 @@
  "_comment": "Hand-maintained. Combination cases (tests/fixtures/path_semantics_combinations.json) that still differ from jsonata-js on both engines, by the issue that tracks them. tests/path_semantics_test.rs fails if this list and the actual divergences differ.",
  "issues": [
   {
-   "issue": 207,
-   "title": "A sort over a block's tuple stream doesn't unwrap a single or empty result",
-   "expressions": [
-    "(acct.Order.P)[0]^(>%.id)",
-    "(acct.Order.P)[-1]^(>%.id)",
-    "(acct.Order.P)[N = \"C\"]^(>%.id)",
-    "acct.Order.(P)[0]^(>%.id)",
-    "acct.Order.(P)[-1]^(>%.id)",
-    "acct.Order.(P)[N = \"C\"]^(>%.id)",
-    "acct.(Order.P)[0]^(>%.id)",
-    "acct.(Order.P)[-1]^(>%.id)",
-    "acct.(Order.P)[N = \"C\"]^(>%.id)",
-    "(o.t)[0]^(>%.id)",
-    "(o.t)[-1]^(>%.id)",
-    "(o.t)[N = \"C\"]^(>%.id)",
-    "(objs)[0]^(>%.id)",
-    "(objs)[-1]^(>%.id)",
-    "(objs)[N = \"C\"]^(>%.id)",
-    "(acct.Order.P){N: N}^(>%.id)",
-    "(acct.Order.P){N: %.id}^(>%.id)",
-    "(acct.Order.P){\"k\": $count($)}^(>%.id)",
-    "(o.t){N: N}^(>%.id)",
-    "(o.t){N: %.id}^(>%.id)",
-    "(o.t){\"k\": $count($)}^(>%.id)",
-    "(objs){N: N}^(>%.id)",
-    "(objs){N: %.id}^(>%.id)",
-    "(objs){\"k\": $count($)}^(>%.id)"
-   ]
-  },
-  {
    "issue": 211,
    "title": "A % filter on a whole block or bare * is accepted; jsonata-js raises S0217",
    "expressions": [
@@ -57,9 +27,6 @@
     "(o.t)[%.id = \"o1\"][N = \"C\"]",
     "(o.t)[%.id = \"o1\"][%.id = \"o1\"]",
     "(o.t)[%.id = \"o1\"][]",
-    "(o.t)[%.id = \"o1\"]^(N)",
-    "(o.t)[%.id = \"o1\"]^(>%.id)",
-    "(o.t)[%.id = \"o1\"]^($)",
     "(o.t)[%.id = \"o1\"]{N: N}",
     "(o.t)[%.id = \"o1\"]{N: %.id}",
     "(o.t)[%.id = \"o1\"]{\"k\": $count($)}",
@@ -73,9 +40,6 @@
     "(objs)[%.id = \"o1\"][N = \"C\"]",
     "(objs)[%.id = \"o1\"][%.id = \"o1\"]",
     "(objs)[%.id = \"o1\"][]",
-    "(objs)[%.id = \"o1\"]^(N)",
-    "(objs)[%.id = \"o1\"]^(>%.id)",
-    "(objs)[%.id = \"o1\"]^($)",
     "(objs)[%.id = \"o1\"]{N: N}",
     "(objs)[%.id = \"o1\"]{N: %.id}",
     "(objs)[%.id = \"o1\"]{\"k\": $count($)}",
@@ -147,29 +111,6 @@
     "*{N: N}@$v",
     "*{N: %.id}@$v",
     "*{\"k\": $count($)}@$v"
-   ]
-  },
-  {
-   "issue": 214,
-   "title": "Stages after a % sort",
-   "expressions": [
-    "acct.Order.P^(>%.id)[N = \"C\"]",
-    "acct.Order.P^(>%.id)^(N)",
-    "acct.Order.P^(>%.id){N: N}",
-    "(acct.Order.P)^(>%.id)[N = \"C\"]",
-    "(acct.Order.P)^(>%.id)^(N)",
-    "(acct.Order.P)^(>%.id){N: N}",
-    "acct.Order.(P)^(>%.id)[N = \"C\"]",
-    "acct.Order.(P)^(>%.id)^(N)",
-    "acct.Order.(P)^(>%.id){N: N}",
-    "acct.(Order.P)^(>%.id)[N = \"C\"]",
-    "acct.(Order.P)^(>%.id)^(N)",
-    "acct.(Order.P)^(>%.id){N: N}",
-    "o.t^(>%.id)^($)",
-    "(o.t)^(>%.id)^($)",
-    "acct.Order.P{N: N}^(>%.id)",
-    "acct.Order.(P){N: N}^(>%.id)",
-    "acct.(Order.P){N: N}^(>%.id)"
    ]
   }
  ]

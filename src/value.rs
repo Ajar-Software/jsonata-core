@@ -60,6 +60,11 @@ pub enum JValue {
 ///   path over it treats it as a single item; `$`, `*` and an object
 ///   constructor see the bare array. This flag stands for that wrapper, and
 ///   `JValue::bare` removes it.
+/// - `sorted_tuples`: tuple-stream wrappers that a sort of a tuple stream
+///   returned. jsonata-js's sort builds a plain array of the tuples, which
+///   drops the stream's `tupleStream` mark, so a filter, sort or group-by
+///   right after it sees each tuple as an object rather than its `@` value
+///   (#214). The next path step makes a marked stream again.
 ///
 /// The flags sit beside the `Rc`, not inside it, so flagging an array that is
 /// shared (an input array, a bound variable) is O(1) and never copies the
@@ -76,6 +81,7 @@ pub struct JArray {
     pub cons: bool,
     pub keep_singleton: bool,
     pub outer_wrapper: bool,
+    pub sorted_tuples: bool,
 }
 
 impl JArray {
@@ -88,6 +94,7 @@ impl JArray {
             cons: false,
             keep_singleton: false,
             outer_wrapper: false,
+            sorted_tuples: false,
         }
     }
 
@@ -120,7 +127,7 @@ impl JArray {
 
     /// A new sequence of the same items, sharing them: what jsonata-js
     /// builds when a step collects an array's items with `createSequence()`.
-    /// O(1); none of this array's other flags carry over.
+    /// O(1); of this array's other flags only `sorted_tuples` carries over.
     #[inline]
     pub fn fresh_sequence(&self) -> JArray {
         JArray {
@@ -129,6 +136,8 @@ impl JArray {
             cons: false,
             keep_singleton: false,
             outer_wrapper: false,
+            // Tuples stay unmarked when a step collects them (#214).
+            sorted_tuples: self.sorted_tuples,
         }
     }
 
