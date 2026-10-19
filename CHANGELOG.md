@@ -70,8 +70,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   leaked into the body: `($f := function($x){ $string($x) }; ($string := function($x){"z"};
   $f(1)))` is `"1"` as in jsonata-js (it was `"z"`), and `($g := function(){ $v }; $f :=
   function($v){ $g() }; $f(1))` is undefined (it was `1`). The same holds for transforms,
-  partial applications, tail calls, and internal temporaries such as `$__temp_arg_0`. A binding
-  in the defining scope is still seen, even one made after the function. Every compiled fast
+  partial applications, tail calls, and internal temporaries such as `$__temp_arg_0`, and to a
+  closure returned from another function, which resolves through its maker's defining scope and
+  never its maker's callers. While the defining scope is still running, a binding made there
+  after the function is seen too; once that scope has finished, only the bindings the function
+  captured when it was defined remain (jsonata-js keeps the whole scope alive, so
+  `($f := ($g := function(){ $y }; $y := 5; $g); $f())` is 5 there and undefined here). A partial
+  application such as `$uppercase(?)` now resolves its function when it is made, as jsonata-js
+  does: rebinding `$uppercase` afterwards no longer changes it, and partially applying an
+  unbound name is T1008 when the partial is made. Every compiled fast
   path now checks builtin shadowing through one rule, so `$map`/`$filter`/`$reduce` callbacks,
   object constructors, predicates and fused aggregates call a builtin only where the
   tree-walker would; a parameter named like a builtin (`function($string){ $string(1) }`) now

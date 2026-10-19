@@ -10093,6 +10093,43 @@
    "result": "A"
   },
   {
+   "expression": "($p := $uppercase(?); $uppercase := function($s) { \"u\" }; $p(\"a\"))",
+   "result": "A"
+  },
+  {
+   "expression": "($f := $sum; $p := $f(?); $f := function($x) { 0 }; $p([1, 2]))",
+   "result": 3
+  },
+  {
+   "expression": "($p := $notreal(?); $p(1))",
+   "result": {
+    "$error": "T1008"
+   }
+  },
+  {
+   "expression": "($A := function() { function() { $secret } }; $C := function($secret) { $A()() }; $C(\"leak\"))",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "($A := function() { function($v) { $string($v) } }; $C := function($string) { $map([1, 2], $A()) }; $C(function($x) { \"leak\" }))",
+   "result": [
+    "1",
+    "2"
+   ]
+  },
+  {
+   "expression": "($mk := function() { ($local := \"L\"; function() { $local & $other }) }; $C := function($other) { $mk()() }; $C(\"leak\"))",
+   "result": "L"
+  },
+  {
+   "expression": "($A := function() { function() { $secret } }; ($secret := \"leak\"; $g := $A(); $g()))",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
    "expression": "$$arr",
    "result": {
     "$undefined": true

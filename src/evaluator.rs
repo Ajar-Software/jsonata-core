@@ -2668,13 +2668,13 @@ pub(crate) enum PartialTarget {
     /// A user-defined function, captured as a closure value at creation time —
     /// this is what lets the partial outlive the scope that defined its target.
     Lambda(Rc<StoredLambda>),
-    /// A builtin or host function, resolved BY NAME at each invocation.
-    /// These are global and cannot dangle, and name resolution preserves
-    /// call-time shadowing (`$up := $uppercase(?); $uppercase := ...` — the
-    /// later user binding wins, matching jsonata-js's environment chain).
+    /// A host function (`register_fn`/`register_fn_override`), which has no
+    /// value form, applied BY NAME at each invocation through
+    /// `evaluate_function_call`, resolved in the partial's defining scope.
     Named { name: String, is_builtin: bool },
-    /// A builtin given as a value (`($uppercase)(?)`): that builtin, whatever
-    /// its name is bound to by the time the partial is called.
+    /// A builtin, resolved when the partial is made (`$uppercase(?)`,
+    /// `($uppercase)(?)`, `$f := $sum; $f(?)`): that builtin, whatever its
+    /// name is bound to by the time the partial is called.
     Builtin(String),
 }
 
@@ -2782,17 +2782,42 @@ impl Scope {
     }
 }
 
-/// Where a function was defined: the frame that was on top of the scope
-/// stack then. Calling the function resolves the names its body does not
-/// bind or capture through this frame and its ancestors, as jsonata-js
-/// resolves them through the function's `environment`.
-#[derive(Clone, Copy, Debug)]
+/// Where a function was defined: the frames its body could see then, the
+/// frame on top of the scope stack first, then each frame a lookup from it
+/// would reach (its lexical ancestors, skipping callers' frames). Calling
+/// the function resolves the names its body does not bind or capture
+/// through the first of these still on the stack, as jsonata-js resolves
+/// them through the function's `environment`.
+#[derive(Clone, Debug)]
 pub(crate) struct DefScope {
     /// The defining context (`Context::ctx_id`); 0 for a function defined
     /// outside any scope, which sees only the root frame.
     ctx: u64,
-    depth: usize,
-    id: u64,
+    /// `(index, id)` of each visible frame above the root, innermost first.
+    /// The root frame (index 0) is always visible and never listed.
+    chain: DefChain,
+}
+
+/// Lexical chains are short (a few blocks and calls), so they are kept
+/// inline, without an allocation per function created.
+const DEF_CHAIN_INLINE: usize = 6;
+
+#[derive(Clone, Debug)]
+enum DefChain {
+    Inline {
+        len: u8,
+        frames: [(usize, u64); DEF_CHAIN_INLINE],
+    },
+    Heap(Rc<[(usize, u64)]>),
+}
+
+impl DefChain {
+    fn frames(&self) -> &[(usize, u64)] {
+        match self {
+            DefChain::Inline { len, frames } => &frames[..*len as usize],
+            DefChain::Heap(frames) => frames,
+        }
+    }
 }
 
 impl DefScope {
@@ -2800,8 +2825,10 @@ impl DefScope {
     /// bindings) is visible.
     pub(crate) const ROOT: DefScope = DefScope {
         ctx: 0,
-        depth: 0,
-        id: 0,
+        chain: DefChain::Inline {
+            len: 0,
+            frames: [(0, 0); DEF_CHAIN_INLINE],
+        },
     };
 }
 
@@ -2866,29 +2893,58 @@ impl Context {
         }
     }
 
-    /// Where the defining scope at `def` is on the stack now: its index if
-    /// it is still live, else the index of its nearest live ancestor (a
-    /// function that outlived its block sees what is left of its scope).
+    /// Where the defining scope at `def` is on the stack now: its frame if
+    /// it is still live, else its innermost lexical ancestor that is (a
+    /// function that outlived its block sees what is left of its scope, and
+    /// never the frames of whoever called the function that made it).
     fn barrier_for(&self, def: &DefScope) -> usize {
         if def.ctx != self.ctx_id {
             return 0;
         }
-        // A frame at or below `def.depth` that is not the one live at
-        // definition was pushed after it, so its id is larger than `def.id`.
-        let mut k = def.depth.min(self.scope_stack.len() - 1);
-        while k > 0 && self.scope_stack[k].id > def.id {
-            k -= 1;
-        }
-        k
+        // Frame ids are never reused, so a matching id is the same frame.
+        def.chain
+            .frames()
+            .iter()
+            .find(|&&(index, id)| {
+                self.scope_stack
+                    .get(index)
+                    .is_some_and(|scope| scope.id == id)
+            })
+            .map_or(0, |&(index, _)| index)
     }
 
     /// The defining scope for a function created now.
     fn def_scope(&self) -> DefScope {
-        let depth = self.scope_stack.len() - 1;
+        let mut frames = [(0, 0); DEF_CHAIN_INLINE];
+        let mut len = 0;
+        let mut heap: Option<Vec<(usize, u64)>> = None;
+        let mut i = self.scope_stack.len() - 1;
+        while i > 0 {
+            let scope = &self.scope_stack[i];
+            match &mut heap {
+                Some(v) => v.push((i, scope.id)),
+                None if len < DEF_CHAIN_INLINE => {
+                    frames[len] = (i, scope.id);
+                    len += 1;
+                }
+                None => {
+                    let mut v = frames.to_vec();
+                    v.push((i, scope.id));
+                    heap = Some(v);
+                }
+            }
+            i = scope.barrier.unwrap_or(i - 1);
+        }
+        let chain = match heap {
+            Some(v) => DefChain::Heap(Rc::from(v)),
+            None => DefChain::Inline {
+                len: len as u8,
+                frames,
+            },
+        };
         DefScope {
             ctx: self.ctx_id,
-            depth,
-            id: self.scope_stack[depth].id,
+            chain,
         }
     }
 
@@ -9341,16 +9397,23 @@ impl Evaluator {
             ));
         }
 
-        // A user-defined target is captured as a closure value so the partial
-        // still works after the target's defining scope pops; builtins and
-        // host fns stay name-resolved (they are global and cannot dangle, and
-        // by-name resolution preserves call-time shadowing).
-        let target = match self.context.lookup_lambda_value(name) {
-            Some(rc) => PartialTarget::Lambda(Rc::clone(rc)),
-            None => PartialTarget::Named {
+        // The target is resolved now, as jsonata-js evaluates the procedure
+        // when it builds the partial: a closure or builtin value, so rebinding
+        // the name afterwards does not change it. Only a host function, which
+        // has no value form, is still applied by name.
+        let target = match bound {
+            Some(JValue::Lambda(rc)) => PartialTarget::Lambda(Rc::clone(rc)),
+            Some(JValue::Builtin { name: b }) => PartialTarget::Builtin(b.to_string()),
+            _ if self.host_fns.contains_key(name) => PartialTarget::Named {
                 name: name.to_string(),
                 is_builtin,
             },
+            _ if self.is_builtin_function(name) => PartialTarget::Builtin(name.to_string()),
+            _ => {
+                return Err(EvaluatorError::EvaluationError(
+                    "T1008: Attempted to partially apply a non-function".to_string(),
+                ))
+            }
         };
         self.build_partial_application(target, args, data)
     }

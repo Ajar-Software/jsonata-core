@@ -404,6 +404,14 @@ const EXTRA = [
   '($f := function($x) { $string($x) }; ($string := function($x) { "z" }; [1].($f)($)))',
   '($p := ($uppercase)(?); $uppercase := function($x) { "z" }; $p("a"))',
   '($p := ($uppercase)(?); ($uppercase := function($x) { "z" }; $p("a")))',
+  '($p := $uppercase(?); $uppercase := function($s) { "u" }; $p("a"))',
+  '($f := $sum; $p := $f(?); $f := function($x) { 0 }; $p([1, 2]))', '($p := $notreal(?); $p(1))',
+  // A returned closure resolves through its maker's defining scope, not the
+  // frames of whoever called the maker.
+  '($A := function() { function() { $secret } }; $C := function($secret) { $A()() }; $C("leak"))',
+  '($A := function() { function($v) { $string($v) } }; $C := function($string) { $map([1, 2], $A()) }; $C(function($x) { "leak" }))',
+  '($mk := function() { ($local := "L"; function() { $local & $other }) }; $C := function($other) { $mk()() }; $C("leak"))',
+  '($A := function() { function() { $secret } }; ($secret := "leak"; $g := $A(); $g()))',
   // `$$` is the variable named `$`, so `$$arr` is the (unbound) variable
   // `$arr`, not a field of the input (#201).
   '$$arr', '$string($$arr)', '$string($$missing)', '$exists($$arr)', '{"x": $$arr}',

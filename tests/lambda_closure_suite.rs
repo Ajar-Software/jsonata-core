@@ -268,29 +268,31 @@ fn partial_of_lambda_captures_target_at_creation() {
 }
 
 #[test]
-fn partial_of_builtin_sees_later_shadowing() {
-    // A builtin-named partial resolves its target BY NAME at invocation time,
-    // so a user binding that shadows the builtin afterwards wins. (Matches
-    // jsonata-js, where the partial's generated thunk resolves through the
-    // environment chain.)
+fn partial_of_builtin_ignores_later_shadowing() {
+    // The partial resolves `$uppercase` when it is made, as jsonata-js's
+    // partialApplyProcedure evaluates the procedure first, so a user binding
+    // that shadows the builtin afterwards does not change it.
     assert_eval(
         "( $up := $uppercase(?); $uppercase := function($x){ \"shadowed\" }; $up(\"a\") )",
-        "\"shadowed\"",
+        "\"A\"",
     );
 }
 
 #[test]
 fn partial_of_builtin_reference_binding() {
     // $f := $sum stores a builtin reference; partially applying through it
-    // resolves the builtin at invocation.
+    // applies that builtin, even after $f is rebound.
     assert_eval("( $f := $sum; $p := $f(?); $p([1,2,3]) )", "6");
+    assert_eval(
+        "( $f := $sum; $p := $f(?); $f := function($x){ 0 }; $p([1,2]) )",
+        "3",
+    );
 }
 
 #[test]
-fn partial_of_unknown_name_fails_at_invocation() {
-    // Creating the partial succeeds (the sigil form defers resolution);
-    // invoking it reports the missing function.
-    assert_error_contains("( $p := $notreal(?); $p(1) )", "T1006");
+fn partial_of_unknown_name_fails_at_creation() {
+    // jsonata-js evaluates the target first; nothing is bound: T1008.
+    assert_error_contains("( $p := $notreal(?); $p(1) )", "T1008");
 }
 
 #[test]
@@ -605,6 +607,33 @@ fn escaped_closure_resolves_builtin_not_caller_binding() {
         "( $h := ( $k := 1; function($x){ $string($x + $k) } ); \
            ( $string := function($x){ \"z\" }; $h(1) ) )",
         "\"2\"",
+    );
+}
+
+#[test]
+fn returned_closure_does_not_see_callers_of_its_maker() {
+    // The closure's defining frame (the maker's call) is gone when it runs;
+    // it resolves through the maker's own defining scope, never through the
+    // frames of whoever called the maker.
+    assert_eval(
+        "( $A := function(){ function(){ $exists($secret) } }; \
+           $C := function($secret){ $A()() }; $C(\"leak\") )",
+        "false",
+    );
+    assert_eval(
+        "( $A := function(){ function($v){ $string($v) } }; \
+           $C := function($string){ $map([1,2], $A()) }; $C(function($x){ \"leak\" }) )",
+        "[\"1\",\"2\"]",
+    );
+    assert_eval(
+        "( $mk := function(){ ( $local := \"L\"; function(){ $local & $other } ) }; \
+           $C := function($other){ $mk()() }; $C(\"leak\") )",
+        "\"L\"",
+    );
+    assert_eval(
+        "( $A := function(){ function(){ $exists($secret) } }; \
+           ( $secret := \"leak\"; $g := $A(); $g() ) )",
+        "false",
     );
 }
 
