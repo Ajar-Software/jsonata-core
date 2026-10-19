@@ -878,12 +878,10 @@ fn transform_as_path(
             lhs,
             rhs,
         } => transform_marker(op, *lhs, *rhs, false, state, depth),
-        // jsonata-js puts a group-by on its operand node, so a path around
-        // a block's group-by drops the block's slots like any other step's.
-        // The operand is still evaluated by itself, so its `@` stays unbound.
+        // A group-by keeps its operand's kind, so a path around it makes
+        // its operand a path.
         AstNode::ObjectTransform { input, pattern } => {
-            let mut input_t = transform_node(*input, state, depth)?;
-            input_t.pending.retain(|slot| slot.level > 0);
+            let input_t = transform_as_path(*input, state, depth)?;
             transform_group(input_t, pattern, state, depth)
         }
         other => transform_node(other, state, depth),
@@ -1465,6 +1463,13 @@ fn finish_value_path(steps: &mut [PathStep]) {
     if is_js_path_node(&step.node) {
         return;
     }
+    // A step's group-by operand was transformed as a path (see
+    // migrate_binding_markers); nothing makes it one here.
+    if let AstNode::ObjectTransform { input, .. } = &mut step.node {
+        if let AstNode::Path { steps } = &mut **input {
+            finish_value_path(steps);
+        }
+    }
     if step
         .stages
         .iter()
@@ -1811,7 +1816,13 @@ fn migrate_binding_markers(
                 }
             }
         }
-        other => match transform_node(other, state, depth + 1) {
+        // A group-by as a step: the path makes its operand a path, so a
+        // block's `@$v` binds as on main.
+        other => match if matches!(other, AstNode::ObjectTransform { .. }) {
+            transform_as_path(other, state, depth + 1)
+        } else {
+            transform_node(other, state, depth + 1)
+        } {
             Ok(t) => {
                 step.node = t.node;
                 Ok((vec![step], t.pending))

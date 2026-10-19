@@ -8492,20 +8492,20 @@
    "result": {}
   },
   {
-   "expression": "(objs)@$v{\"k\": $v.p}.k",
+   "expression": "(objs)@$v{\"k\": p}.k",
    "result": {
     "$undefined": true
    }
   },
   {
-   "expression": "(objs)@$v{\"k\": $v}.k",
-   "result": {
-    "$undefined": true
-   }
-  },
-  {
-   "expression": "(objs)@$v{\"k\": $v.p}.{\"x\": k}",
+   "expression": "(objs)@$v{\"k\": p}.{\"x\": k}",
    "result": {}
+  },
+  {
+   "expression": "(objs)@$v[0]{\"k\": p}.k",
+   "result": {
+    "$undefined": true
+   }
   },
   {
    "expression": "$match(\"aba\", /a/)",
