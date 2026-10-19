@@ -65,6 +65,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`$replace` drives a regex or a matcher function as jsonata-js does**
+  ([#198](https://github.com/txjmb/jsonata-core/issues/198)). A replacement function's
+  `$m.start` and `$m.end` count UTF-16 code units, so `$replace("éab", /a/, function($m)
+  {$string($m.start)})` is `"é1b"` (it was `"é2b"`). A zero-length match after the first is
+  D1004 with a replacement function too, so `$replace("abc", /x*/, function($m){"-"})` raises
+  it (it gave `"-a-b-c-"`), and is still found after the limit is reached. A first match may
+  be zero-length, so `$replace("abc", /x*$/, "-")` is `"abc-"` (it was D1004). A custom
+  matcher function works as the pattern, with a replacement string or function, and its
+  result is checked as `$match` checks it (T1010).
 - **`$$name` is the variable named `$name`**
   ([#201](https://github.com/txjmb/jsonata-core/issues/201)). jsonata-js reads everything after
   the leading `$` as the variable name, so `$$` is the variable `$` (the input) and `$$a` is
