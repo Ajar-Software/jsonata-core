@@ -320,7 +320,8 @@ async function main() {
   fs.writeFileSync(
     comboOut,
     '{\n "_comment": ' + JSON.stringify(fixture._comment) + ',\n "reference": ' +
-      JSON.stringify(fixture.reference) + ',\n "cases": [\n' + lines.join(',\n') + '\n ]\n}\n'
+      JSON.stringify(fixture.reference) + ',\n "data": ' + JSON.stringify(DATA) +
+      ',\n "cases": [\n' + lines.join(',\n') + '\n ]\n}\n'
   );
   console.log(`wrote ${combos.length} cases to ${path.relative(process.cwd(), comboOut)}`);
 }

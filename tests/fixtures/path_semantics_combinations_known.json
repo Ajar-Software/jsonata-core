@@ -260,21 +260,27 @@
     "${N: %.id}@$v",
     "${\"k\": $count($)}[]",
     "${\"k\": $count($)}@$v",
+    "*{N: N}[]",
+    "*{N: N}@$v",
+    "*{N: %.id}[]",
+    "*{N: %.id}@$v",
+    "*{\"k\": $count($)}[]",
+    "*{\"k\": $count($)}@$v"
+   ]
+  },
+  {
+   "issue": 209,
+   "title": "% can't look back through a group-by on a bare % or *",
+   "expressions": [
     "*{N: N}.%",
     "*{N: N}.%.id",
-    "*{N: N}[]",
     "*{N: N}^(>%.id)",
-    "*{N: N}@$v",
     "*{N: %.id}.%",
     "*{N: %.id}.%.id",
-    "*{N: %.id}[]",
     "*{N: %.id}^(>%.id)",
-    "*{N: %.id}@$v",
     "*{\"k\": $count($)}.%",
     "*{\"k\": $count($)}.%.id",
-    "*{\"k\": $count($)}[]",
-    "*{\"k\": $count($)}^(>%.id)",
-    "*{\"k\": $count($)}@$v"
+    "*{\"k\": $count($)}^(>%.id)"
    ]
   },
   {
