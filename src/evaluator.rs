@@ -3025,8 +3025,8 @@ fn is_tuple_object(obj: &IndexMap<String, JValue>) -> bool {
 /// True when an array's first item is a tuple wrapper, which is how a tuple
 /// stream is recognised: every item of one is a wrapper.
 #[inline]
-fn starts_with_tuple(arr: &JArray) -> bool {
-    matches!(arr.first(), Some(JValue::Object(obj)) if is_tuple_object(obj))
+fn starts_with_tuple(items: &[JValue]) -> bool {
+    matches!(items.first(), Some(JValue::Object(obj)) if is_tuple_object(obj))
 }
 
 /// The items of an array of tuples a sort of a tuple stream returned, as
@@ -4172,9 +4172,7 @@ impl Evaluator {
                 // `$e` AND resolves the relative `Phone` against the Contact `@`),
                 // and grouped tuples are reduced (per-key values appended) before
                 // the value expression sees them.
-                let reduce = items
-                    .first()
-                    .is_some_and(|it| matches!(it, JValue::Object(o) if is_tuple_object(o)));
+                let reduce = starts_with_tuple(&items);
 
                 // Bind a tuple wrapper's carried `$var`/`!label` keys into scope;
                 // returns the saved prior values so they can be restored.
@@ -4454,8 +4452,8 @@ impl Evaluator {
                 // Keep the input path's tuple wrappers so the sort terms can read
                 // the carried `%`/`$focus`/`$index` bindings per element.
                 let saved = self.keep_tuple_stream;
-                self.keep_tuple_stream =
-                    Self::is_tuple_path_node(input) || Self::sorts_tuples(input);
+                let tuple_input = Self::is_tuple_path_node(input) || Self::sorts_tuples(input);
+                self.keep_tuple_stream = tuple_input;
                 let value = self.evaluate_internal(input, data);
                 // The sort terms are expressions of their own, which keep no
                 // tuple stream.
@@ -4464,7 +4462,9 @@ impl Evaluator {
                 self.keep_tuple_stream = saved;
                 let mut sorted = sorted?;
                 if let JValue::Array(arr) = &mut sorted {
-                    if starts_with_tuple(arr) {
+                    // Only a tuple input gives tuples; input data shaped like
+                    // a wrapper is left alone.
+                    if tuple_input && starts_with_tuple(arr) {
                         if saved {
                             // Sorting tuples gives a plain array of them in
                             // jsonata-js, which is no longer marked as a tuple
@@ -5615,7 +5615,7 @@ impl Evaluator {
                         let mut stream = JArray::new(tuples);
                         stream.sorted_tuples = true;
                         tuples = match self.evaluate_filter(pred, JValue::Array(stream))? {
-                            JValue::Array(kept) => kept.to_vec(),
+                            JValue::Array(kept) => kept.into_vec(),
                             _ => Vec::new(),
                         };
                         continue;
