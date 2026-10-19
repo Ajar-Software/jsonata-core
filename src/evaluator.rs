@@ -2971,9 +2971,10 @@ fn regex_subject(value: &JValue) -> Option<String> {
             JValue::Object(_) => "[object Object]".to_string(),
             #[cfg(feature = "python")]
             JValue::LazyPyDict(_) => "[object Object]".to_string(),
-            JValue::Undefined | JValue::Lambda(_) | JValue::Builtin { .. } | JValue::Regex { .. } => {
-                return None
-            }
+            JValue::Undefined
+            | JValue::Lambda(_)
+            | JValue::Builtin { .. }
+            | JValue::Regex { .. } => return None,
         })
     }
     js_string(value)
@@ -3625,10 +3626,7 @@ impl Evaluator {
         if let Some(ref ce) = stored.compiled_body {
             if stored.signature.is_none()
                 && !stored.thunk
-                && !stored
-                    .captured_env
-                    .values()
-                    .any(|v| v.is_function())
+                && !stored.captured_env.values().any(|v| v.is_function())
             {
                 let call_data = stored.captured_data.as_ref().unwrap_or(data);
                 // A parameter without an argument is undefined, as on the
@@ -6806,9 +6804,7 @@ impl Evaluator {
                                 let captured_data = stored.captured_data.clone();
                                 let captured_env_clone = stored.captured_env.clone();
                                 let ce_clone = ce.clone();
-                                if !captured_env_clone.values().any(|v| {
-                                    v.is_function()
-                                }) {
+                                if !captured_env_clone.values().any(|v| v.is_function()) {
                                     let call_data = captured_data.as_ref().unwrap_or(data);
                                     let mut result = Vec::with_capacity(items.len() / 2);
                                     let mut vars: HashMap<&str, &JValue> = captured_env_clone
@@ -6966,9 +6962,7 @@ impl Evaluator {
                                     let captured_data = stored.captured_data.clone();
                                     let captured_env_clone = stored.captured_env.clone();
                                     let ce_clone = ce.clone();
-                                    if !captured_env_clone.values().any(|v| {
-                                        v.is_function()
-                                    }) {
+                                    if !captured_env_clone.values().any(|v| v.is_function()) {
                                         let call_data = captured_data.as_ref().unwrap_or(data);
                                         for item in items[start_idx..].iter() {
                                             let mut vars: HashMap<&str, &JValue> =
