@@ -4965,7 +4965,12 @@ impl Evaluator {
                 let next_reads_items = steps
                     .get(index + 1)
                     .is_some_and(|next| !matches!(next.node, AstNode::Sort { .. }));
-                if cons_single && step.stages.is_empty() && next_reads_items {
+                // `[]` is only a mark there, not a predicate.
+                let filters = step
+                    .stages
+                    .iter()
+                    .any(|stage| matches!(stage, Stage::Filter(_)));
+                if cons_single && !filters && next_reads_items {
                     JValue::Undefined
                 } else {
                     collect_single_step_result(value, steps.len() == 1)
@@ -5610,8 +5615,21 @@ impl Evaluator {
                 self.with_dollar_bound(&item, |ev| ev.evaluate_unwrapped_later(input, &item))?
             };
             let value = uncons(value);
+            // A sort step returns its sorted, filtered value as is to the
+            // next step in jsonata-js; only another step's results are
+            // flattened into a sequence.
+            let ends_in_sort = match input {
+                AstNode::Path { steps } => {
+                    matches!(
+                        steps.last().map(|step| &step.node),
+                        Some(AstNode::Sort { .. })
+                    )
+                }
+                AstNode::Sort { .. } => true,
+                _ => false,
+            };
             let value = match value {
-                JValue::Array(arr) if !arr.outer_wrapper => {
+                JValue::Array(arr) if !arr.outer_wrapper && !ends_in_sort => {
                     collect_single_step_result(JValue::Array(arr), false)
                 }
                 other => other,
@@ -5805,9 +5823,11 @@ impl Evaluator {
                 // The sort's own input path (`arr` in `arr^($)#$i`) gives what
                 // it orders. Over a tuple path the sort returns the tuples,
                 // whose bindings carry into the new stream.
+                // Its sequence of one item is not unwrapped: the item is the
+                // one value sorted, even when it is an array.
                 let saved = self.keep_tuple_stream;
                 self.keep_tuple_stream = true;
-                let value = self.evaluate_internal(&step.node, input);
+                let value = self.evaluate_unwrapped_later(&step.node, input);
                 self.keep_tuple_stream = saved;
                 value?
             };

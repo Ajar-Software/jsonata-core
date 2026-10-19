@@ -267,6 +267,15 @@ const EXTRA = [
   '[3][0]^($)[$exists($$.x.y) = false].$', '[3][0]^($)[$count($$.x.y)=1].$', '[3][0]^($)[$count($$.x.y)=2].$',
   // A `[]` on a consarray block keeps its array.
   '([1,2].$)[0][].$', '([1,2].$)[$=1][].$', '([1,2].$)[[0]][].$', '([3].$)[][0].$', 'n.(([1,2].$)[0][].$)',
+  // `[]` on a first-step sort is a mark, not a predicate.
+  '[3][0]^($)[].$', '([3].$)^($)[].$', '[3][0]^(>$)[].($)', '[{"x":3}][0]^(x)[].x', 'objs.([3][0]^($)[].$)',
+  '$map([1,2],function($q){([3].$)^($)[].$})', '[3][0]^($)[].x', '[3][0]^($)[][0].$', '[3][0]^($)[0][].$',
+  // A sort step passes its filtered value on as is; a sort with `#` sorts
+  // its input's one array as one item.
+  'nn^($)[0]^($)', 'n^(p)[-1]^($)', '[[3]]^($)[0]^($)', 'nn^($)[0]', '[[1,2]]^(1)[0]', 'nn^($)#$k',
+  'nn^($)#$k.$', '[[3]]^($)#$k', '$map([1], function($v){nn^($)#$k})', '$map([1], function($v){nn^($)[0]^($)})',
+  '$map([1], function($v){[[3]]^($)#$k})', '[[[1]]]^($)[0]^($)', '[[[1]]]^($)#$k', 'nn^($)^($)', '[[3]]^($)^($)',
+  'nn^($)[0][]^($)', 'n^($[0])[0]^($)', '[[3]]^($)[0]^($).$', 'n^(p)[-1]^($)[0]', 'one.z^($)#$k',
   // After a sort, a tuple's `#$i` or `@$v` binding reads as a field named `i` or `v`.
   'acct.Order.P#$i^(>$i){"k": $keys($)}', 'acct.Order.P#$i^(>$i)[i = 1]', 'acct.Order.P#$i^(>$i)[$.i = 0]',
   'acct.Order.P#$i^(>$i){"x": $sum(i)}', 'acct.Order.P#$i^(>$i)^(i).N', 'acct.Order.P@$p^(>$p.N){"k": $keys($)}',

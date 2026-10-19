@@ -8693,6 +8693,194 @@
    ]
   },
   {
+   "expression": "[3][0]^($)[].$",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "([3].$)^($)[].$",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "[3][0]^(>$)[].($)",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "[{\"x\":3}][0]^(x)[].x",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "objs.([3][0]^($)[].$)",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "$map([1,2],function($q){([3].$)^($)[].$})",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "[3][0]^($)[].x",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "[3][0]^($)[][0].$",
+   "result": [
+    3
+   ]
+  },
+  {
+   "expression": "[3][0]^($)[0][].$",
+   "result": [
+    3
+   ]
+  },
+  {
+   "expression": "nn^($)[0]^($)",
+   "result": [
+    [
+     1
+    ]
+   ]
+  },
+  {
+   "expression": "n^(p)[-1]^($)",
+   "result": [
+    3
+   ]
+  },
+  {
+   "expression": "[[3]]^($)[0]^($)",
+   "result": [
+    3
+   ]
+  },
+  {
+   "expression": "nn^($)[0]",
+   "result": [
+    [
+     1
+    ]
+   ]
+  },
+  {
+   "expression": "[[1,2]]^(1)[0]",
+   "result": [
+    1,
+    2
+   ]
+  },
+  {
+   "expression": "nn^($)#$k",
+   "result": [
+    [
+     1
+    ]
+   ]
+  },
+  {
+   "expression": "nn^($)#$k.$",
+   "result": [
+    1
+   ]
+  },
+  {
+   "expression": "[[3]]^($)#$k",
+   "result": [
+    3
+   ]
+  },
+  {
+   "expression": "$map([1], function($v){nn^($)#$k})",
+   "result": [
+    [
+     1
+    ]
+   ]
+  },
+  {
+   "expression": "$map([1], function($v){nn^($)[0]^($)})",
+   "result": [
+    [
+     1
+    ]
+   ]
+  },
+  {
+   "expression": "$map([1], function($v){[[3]]^($)#$k})",
+   "result": [
+    3
+   ]
+  },
+  {
+   "expression": "[[[1]]]^($)[0]^($)",
+   "result": [
+    [
+     1
+    ]
+   ]
+  },
+  {
+   "expression": "[[[1]]]^($)#$k",
+   "result": [
+    [
+     1
+    ]
+   ]
+  },
+  {
+   "expression": "nn^($)^($)",
+   "result": [
+    [
+     1
+    ]
+   ]
+  },
+  {
+   "expression": "[[3]]^($)^($)",
+   "result": [
+    3
+   ]
+  },
+  {
+   "expression": "nn^($)[0][]^($)",
+   "result": [
+    [
+     1
+    ]
+   ]
+  },
+  {
+   "expression": "n^($[0])[0]^($)",
+   "result": [
+    1,
+    2
+   ]
+  },
+  {
+   "expression": "[[3]]^($)[0]^($).$",
+   "result": 3
+  },
+  {
+   "expression": "n^(p)[-1]^($)[0]",
+   "result": 3
+  },
+  {
+   "expression": "one.z^($)#$k",
+   "result": 7
+  },
+  {
    "expression": "acct.Order.P#$i^(>$i){\"k\": $keys($)}",
    "result": {
     "k": [
