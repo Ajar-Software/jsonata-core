@@ -6,13 +6,18 @@
 //! function arguments and map stages. Cases marked `root` run on a
 //! top-level array instead of an object.
 //!
-//! Regenerate the fixture with `node scripts/gen_path_semantics_corpus.js`.
+//! A second test runs generated operator combinations (#212) from
+//! `fixtures/path_semantics_combinations.json`; the ones that still differ
+//! are listed by issue in `fixtures/path_semantics_combinations_known.json`.
+//!
+//! Regenerate both fixtures with `node scripts/gen_path_semantics_corpus.js`.
 //! Set `PATH_SEMANTICS_VERBOSE=1` to print every divergence.
 
 use jsonata_core::evaluator::Evaluator;
 use jsonata_core::value::JValue;
 use jsonata_core::Expression;
 use serde_json::{json, Map, Value};
+use std::collections::{BTreeMap, BTreeSet};
 
 mod common;
 use common::norm;
@@ -84,22 +89,22 @@ fn error_matches(expected: &Value, message: &str) -> bool {
     }
 }
 
-#[test]
-fn path_semantics_match_jsonata_js() {
-    let fixture: Value =
-        serde_json::from_str(include_str!("fixtures/path_semantics_differential.json")).unwrap();
-    let object_data = JValue::from(fixture["data"].clone());
-    let root_data = JValue::from(fixture["root_data"].clone());
+/// Runs each fixture case on both engines and returns the cases whose value
+/// differs from jsonata-js, as `(engine, expression)`.
+fn divergences(
+    fixture: &Value,
+    object_data: &JValue,
+    root_data: &JValue,
+) -> Vec<(&'static str, String)> {
     let verbose = std::env::var_os("PATH_SEMANTICS_VERBOSE").is_some();
-
     let mut divergences = Vec::new();
     for case in fixture["cases"].as_array().unwrap() {
         let src = case["expression"].as_str().unwrap();
         let expected = norm(&case["result"]);
         let data = if case["root"] == true {
-            &root_data
+            root_data
         } else {
-            &object_data
+            object_data
         };
         let expr = match Expression::compile(src) {
             Ok(expr) => expr,
@@ -132,14 +137,85 @@ fn path_semantics_match_jsonata_js() {
             }
         }
     }
+    divergences
+}
 
-    let known: Vec<(&str, String)> = KNOWN_DIVERGENCES
-        .iter()
-        .map(|(e, s)| (*e, s.to_string()))
-        .collect();
+fn assert_known(divergences: Vec<(&str, String)>, known: &[(&str, &str)], list: &str) {
+    let known: Vec<(&str, String)> = known.iter().map(|(e, s)| (*e, s.to_string())).collect();
     assert_eq!(
         divergences, known,
-        "divergences from jsonata-js changed; update KNOWN_DIVERGENCES \
-         (run with PATH_SEMANTICS_VERBOSE=1 to see them)"
+        "divergences from jsonata-js changed; update {list} \
+         (run with PATH_SEMANTICS_VERBOSE=1 to see each one's values)"
+    );
+}
+
+#[test]
+fn path_semantics_match_jsonata_js() {
+    let fixture: Value =
+        serde_json::from_str(include_str!("fixtures/path_semantics_differential.json")).unwrap();
+    let object_data = JValue::from(fixture["data"].clone());
+    let root_data = JValue::from(fixture["root_data"].clone());
+    assert_known(
+        divergences(&fixture, &object_data, &root_data),
+        KNOWN_DIVERGENCES,
+        "KNOWN_DIVERGENCES",
+    );
+}
+
+/// Operator combinations (#212). Cases that still differ are listed by
+/// issue in `fixtures/path_semantics_combinations_known.json`. The list holds
+/// expressions only, so this checks that each one fails to compile or
+/// diverges on both engines: a case fixed or broken on one engine alone
+/// fails the test too.
+#[test]
+fn path_combinations_match_jsonata_js() {
+    let fixture: Value =
+        serde_json::from_str(include_str!("fixtures/path_semantics_combinations.json")).unwrap();
+    let known: Value = serde_json::from_str(include_str!(
+        "fixtures/path_semantics_combinations_known.json"
+    ))
+    .unwrap();
+    assert!(
+        fixture["cases"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|case| case["root"] != true),
+        "the combinations fixture has no root data"
+    );
+    let data = JValue::from(fixture["data"].clone());
+
+    let mut engines: BTreeMap<String, BTreeSet<&str>> = BTreeMap::new();
+    for (engine, src) in divergences(&fixture, &data, &JValue::Undefined) {
+        engines.entry(src).or_default().insert(engine);
+    }
+    let one_engine: Vec<&String> = engines
+        .iter()
+        .filter(|(_, e)| e.len() == 1 && !e.contains("compile"))
+        .map(|(src, _)| src)
+        .collect();
+    let actual: BTreeSet<&String> = engines.keys().collect();
+
+    let listed: Vec<String> = known["issues"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|issue| issue["expressions"].as_array().unwrap())
+        .map(|e| e.as_str().unwrap().to_string())
+        .collect();
+    let expected: BTreeSet<&String> = listed.iter().collect();
+    assert_eq!(
+        expected.len(),
+        listed.len(),
+        "an expression is listed twice"
+    );
+
+    let new: Vec<_> = actual.difference(&expected).collect();
+    let fixed: Vec<_> = expected.difference(&actual).collect();
+    assert!(
+        new.is_empty() && fixed.is_empty() && one_engine.is_empty(),
+        "combination divergences changed; update \
+         fixtures/path_semantics_combinations_known.json\n  new: {new:?}\n  \
+         now matching: {fixed:?}\n  diverging on one engine only: {one_engine:?}"
     );
 }
