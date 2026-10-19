@@ -1,0 +1,108 @@
+name: Compare Benchmarks (Mac Mini)
+
+# Same-machine A/B check of two refs on the self-hosted Mac Mini runner.
+# The PR benchmark job (benchmark.yml) compares a PR against the last `main`
+# run, which ran on a different GitHub-hosted runner, so runner speed alone
+# can move every test 15-50% in one direction. This builds both refs here
+# and times them in alternating rounds (benchmarks/python/ab_compare.py), so
+# only the code differs. Read-only: it reports to the job summary and log,
+# and touches nothing in git.
+
+on:
+  workflow_dispatch:
+    inputs:
+      base_ref:
+        description: 'Base branch, tag or SHA'
+        required: true
+        default: 'main'
+      head_ref:
+        description: 'Head branch, tag or SHA to compare against the base'
+        required: true
+      rounds:
+        description: 'Interleaved rounds (each build reports its best round)'
+        required: false
+        default: '12'
+
+permissions:
+  contents: read
+
+# One benchmark at a time on the shared runner, so runs don't skew each other.
+concurrency:
+  group: mac-mini-benchmark-compare
+  cancel-in-progress: false
+
+jobs:
+  compare:
+    name: Compare Benchmarks (Mac Mini)
+    runs-on: [self-hosted, macOS, ARM64]
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      # actions/setup-python doesn't work on this runner (see
+      # benchmark-manual.yml).
+      - name: Install UV
+        uses: astral-sh/setup-uv@v7
+
+      - name: Install Python (macOS)
+        run: |
+          uv python install 3.14
+          uv venv --python 3.14 .venv
+          echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install maturin
+        run: uv pip install --upgrade maturin
+
+      - name: Build both refs
+        env:
+          BASE_REF: ${{ inputs.base_ref }}
+          HEAD_REF: ${{ inputs.head_ref }}
+        run: |
+          set -euo pipefail
+          # The runner is persistent, so clear anything a previous run left.
+          rm -rf "$RUNNER_TEMP/ab"
+          git worktree prune
+          mkdir -p "$RUNNER_TEMP/ab"
+          for side in base head; do
+            if [ "$side" = base ]; then ref="$BASE_REF"; else ref="$HEAD_REF"; fi
+            git fetch --quiet origin "$ref" || true
+            sha=$(git rev-parse --verify "origin/$ref^{commit}" 2>/dev/null || git rev-parse --verify "$ref^{commit}")
+            echo "$side: $ref ($sha)"
+            echo "${side}_sha=$sha" >> "$GITHUB_ENV"
+            git worktree add --detach "$RUNNER_TEMP/ab/src-$side" "$sha"
+            (cd "$RUNNER_TEMP/ab/src-$side" && \
+              CARGO_TARGET_DIR="$RUNNER_TEMP/ab/target" maturin build --release --out "$RUNNER_TEMP/ab/dist-$side")
+            mkdir -p "$RUNNER_TEMP/ab/pkg-$side"
+            python -m zipfile -e "$RUNNER_TEMP"/ab/dist-$side/*.whl "$RUNNER_TEMP/ab/pkg-$side"
+          done
+
+      - name: Compare
+        env:
+          ROUNDS: ${{ inputs.rounds }}
+          BASE_REF: ${{ inputs.base_ref }}
+          HEAD_REF: ${{ inputs.head_ref }}
+        run: |
+          set -euo pipefail
+          python benchmarks/python/ab_compare.py --rounds "$ROUNDS" --markdown \
+            "$RUNNER_TEMP/ab/pkg-base" "$RUNNER_TEMP/ab/pkg-head" > "$RUNNER_TEMP/ab/report.md"
+          {
+            echo "## Benchmark comparison (Mac Mini)"
+            echo
+            echo "Base: \`$BASE_REF\` (\`${base_sha:0:7}\`), head: \`$HEAD_REF\` (\`${head_sha:0:7}\`)"
+            echo
+            cat "$RUNNER_TEMP/ab/report.md"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Clean up
+        if: always()
+        run: |
+          git worktree remove --force "$RUNNER_TEMP/ab/src-base" 2>/dev/null || true
+          git worktree remove --force "$RUNNER_TEMP/ab/src-head" 2>/dev/null || true
+          git worktree prune
