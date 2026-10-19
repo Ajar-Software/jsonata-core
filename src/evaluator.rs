@@ -4328,31 +4328,7 @@ impl Evaluator {
                 // a partial application or a composition. A `?` argument makes a
                 // partial application; anything that is not a function is T1006.
                 let callable = self.evaluate_internal(procedure, data)?;
-                if args.iter().any(|a| matches!(a, AstNode::Placeholder)) {
-                    let target = match &callable {
-                        JValue::Lambda(stored) => PartialTarget::Lambda(Rc::clone(stored)),
-                        JValue::Builtin { name } => PartialTarget::Named {
-                            name: name.to_string(),
-                            is_builtin: true,
-                        },
-                        _ => {
-                            return Err(EvaluatorError::EvaluationError(
-                                "T1008: Attempted to partially apply a non-function".to_string(),
-                            ))
-                        }
-                    };
-                    return self.build_partial_application(target, args, data);
-                }
-                if !callable.is_function() {
-                    return Err(EvaluatorError::TypeError(
-                        "T1006: Attempted to invoke a non-function".to_string(),
-                    ));
-                }
-                let mut evaluated_args = Vec::with_capacity(args.len());
-                for arg in args.iter() {
-                    evaluated_args.push(self.evaluate_internal(arg, data)?);
-                }
-                self.call_function_value(&callable, &evaluated_args, data)
+                self.apply_call_value(callable, args, data)
             }
 
             AstNode::Conditional {
@@ -7749,8 +7725,9 @@ impl Evaluator {
                         });
                     }
                 }
-                // Not a thunk - evaluate normally
-                let result = self.evaluate_internal(node, data)?;
+                // Not a thunk - apply the value already evaluated, so the
+                // callee is not evaluated a second time.
+                let result = self.apply_call_value(callable, args, data)?;
                 Ok(LambdaResult::JValue(result))
             }
 
@@ -7767,6 +7744,41 @@ impl Evaluator {
                 Ok(LambdaResult::JValue(result))
             }
         }
+    }
+
+    /// Apply the value of a called expression to `args`, as jsonata-js
+    /// `evaluateFunction` does once it has the procedure's value.
+    fn apply_call_value(
+        &mut self,
+        callable: JValue,
+        args: &[AstNode],
+        data: &JValue,
+    ) -> Result<JValue, EvaluatorError> {
+        if args.iter().any(|a| matches!(a, AstNode::Placeholder)) {
+            let target = match &callable {
+                JValue::Lambda(stored) => PartialTarget::Lambda(Rc::clone(stored)),
+                JValue::Builtin { name } => PartialTarget::Named {
+                    name: name.to_string(),
+                    is_builtin: true,
+                },
+                _ => {
+                    return Err(EvaluatorError::EvaluationError(
+                        "T1008: Attempted to partially apply a non-function".to_string(),
+                    ))
+                }
+            };
+            return self.build_partial_application(target, args, data);
+        }
+        if !callable.is_function() {
+            return Err(EvaluatorError::TypeError(
+                "T1006: Attempted to invoke a non-function".to_string(),
+            ));
+        }
+        let mut evaluated_args = Vec::with_capacity(args.len());
+        for arg in args.iter() {
+            evaluated_args.push(self.evaluate_internal(arg, data)?);
+        }
+        self.call_function_value(&callable, &evaluated_args, data)
     }
 
     /// Call a function value, a lambda or a builtin, with `values`.
