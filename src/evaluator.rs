@@ -4323,23 +4323,36 @@ impl Evaluator {
             // Call: invoke an arbitrary expression as a function
             // Used for IIFE patterns like (function($x){...})(5) or chained calls
             AstNode::Call { procedure, args } => {
-                // Evaluate the procedure to get the callable value
+                // As jsonata-js `evaluateFunction`: evaluate the procedure, then
+                // apply whatever function value it gives -- a lambda, a builtin,
+                // a partial application or a composition. A `?` argument makes a
+                // partial application; anything that is not a function is T1006.
                 let callable = self.evaluate_internal(procedure, data)?;
-
-                // Check if it's a lambda value
-                if let Some(stored_lambda) = self.lookup_lambda_from_value(&callable) {
-                    let mut evaluated_args = Vec::with_capacity(args.len());
-                    for arg in args.iter() {
-                        evaluated_args.push(self.evaluate_internal(arg, data)?);
-                    }
-                    return self.invoke_stored_lambda(&stored_lambda, &evaluated_args, data);
+                if args.iter().any(|a| matches!(a, AstNode::Placeholder)) {
+                    let target = match &callable {
+                        JValue::Lambda(stored) => PartialTarget::Lambda(Rc::clone(stored)),
+                        JValue::Builtin { name } => PartialTarget::Named {
+                            name: name.to_string(),
+                            is_builtin: true,
+                        },
+                        _ => {
+                            return Err(EvaluatorError::EvaluationError(
+                                "T1008: Attempted to partially apply a non-function".to_string(),
+                            ))
+                        }
+                    };
+                    return self.build_partial_application(target, args, data);
                 }
-
-                // Not a callable value
-                Err(EvaluatorError::TypeError(format!(
-                    "Cannot call non-function value: {:?}",
-                    callable
-                )))
+                if !callable.is_function() {
+                    return Err(EvaluatorError::TypeError(
+                        "T1006: Attempted to invoke a non-function".to_string(),
+                    ));
+                }
+                let mut evaluated_args = Vec::with_capacity(args.len());
+                for arg in args.iter() {
+                    evaluated_args.push(self.evaluate_internal(arg, data)?);
+                }
+                self.call_function_value(&callable, &evaluated_args, data)
             }
 
             AstNode::Conditional {
@@ -8850,6 +8863,29 @@ impl Evaluator {
             ));
         }
 
+        // A user-defined target is captured as a closure value so the partial
+        // still works after the target's defining scope pops; builtins and
+        // host fns stay name-resolved (they are global and cannot dangle, and
+        // by-name resolution preserves call-time shadowing).
+        let target = match self.context.lookup_lambda_value(name) {
+            Some(rc) => PartialTarget::Lambda(Rc::clone(rc)),
+            None => PartialTarget::Named {
+                name: name.to_string(),
+                is_builtin,
+            },
+        };
+        self.build_partial_application(target, args, data)
+    }
+
+    /// Build the partial application of `target` to `args`, whose `?`
+    /// placeholders become the new function's parameters. The other
+    /// arguments are evaluated now.
+    fn build_partial_application(
+        &mut self,
+        target: PartialTarget,
+        args: &[AstNode],
+        data: &JValue,
+    ) -> Result<JValue, EvaluatorError> {
         // Evaluate non-placeholder arguments and track placeholder positions
         let mut bound_args: Vec<(usize, JValue)> = Vec::new();
         let mut placeholder_positions: Vec<usize> = Vec::new();
@@ -8869,18 +8905,6 @@ impl Evaluator {
             .enumerate()
             .map(|(i, _)| format!("__p{}", i))
             .collect();
-
-        // A user-defined target is captured as a closure value so the partial
-        // still works after the target's defining scope pops; builtins and
-        // host fns stay name-resolved (they are global and cannot dangle, and
-        // by-name resolution preserves call-time shadowing).
-        let target = match self.context.lookup_lambda_value(name) {
-            Some(rc) => PartialTarget::Lambda(Rc::clone(rc)),
-            None => PartialTarget::Named {
-                name: name.to_string(),
-                is_builtin,
-            },
-        };
 
         let stored_lambda = StoredLambda {
             params: param_names,

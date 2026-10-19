@@ -307,6 +307,18 @@ const EXTRA = [
   'arr.function($v, $w) { $v + $w }(1)', 'arr.function($v) { $v * 2 }(2, 3)',
   'arr.(function($v) { $v * 2 })($)', 'arr.(function($v) { $v * 2 })()',
   'arr.(function($v) { $v * 2 }($))', '($f := function() { function($x) { $x + 1 } }; arr.$f()(10))',
+  // A called expression applies whatever function it gives, as jsonata-js
+  // `evaluateFunction` does: a lambda, a builtin, a partial application or a
+  // composition. A `?` argument partially applies it; a non-function is T1006.
+  '$type(arr.function($v, $w) { $v + $w }(?, 1))', 'arr.function($v, $w) { $v + $w }(?, 1)(5)',
+  '(function($v, $w) { $v + $w })(?, 1)(5)', '$type((function($v, $w) { $v + $w })(?, 1))',
+  'arr.function($v) { $v }($)()', 'arr.function($v) { $v }($)(1)', '(1)(2)', '(nope)(2)',
+  '("x")(?)', '["x", "y"].($uppercase)($)', 'arr.($string)()', 'objs.($sum)(p)',
+  '($u := $uppercase; ["x", "y"].($u)($))', '($uppercase)("x")', '($substring)(?, 1)("abc")',
+  '["abc", "de"].($substring)($, ?)(1)', '($f := $uppercase ~> $trim; [" x"].($f)($))',
+  '($u := $string; arr.$u())', '($f := function($x) { $x * 10 }; ($f)(?)(2))',
+  // `$` is not an operator, so it can sit inside a name.
+  '$a$b', '($a$b := 3; $a$b)', '($$a$b := 4; $$a$b)', '($a$b := 3; $$a$b)',
 ];
 
 // The same questions with a top-level array as input. jsonata-js wraps that

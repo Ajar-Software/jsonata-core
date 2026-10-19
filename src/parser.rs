@@ -548,8 +548,9 @@ impl Lexer {
         let start = self.position;
 
         while let Some(ch) = self.current() {
-            // Continue if alphanumeric or underscore
-            if ch.is_alphanumeric() || ch == '_' {
+            // Continue if alphanumeric, underscore or `$` (not an operator
+            // in jsonata-js, so `a$b` and `$a$b` are single names)
+            if ch.is_alphanumeric() || ch == '_' || ch == '$' {
                 self.advance();
             } else {
                 break;
@@ -656,27 +657,17 @@ impl Lexer {
                     return self.emit_token(Token::Number(num));
                 }
 
-                // Variables (start with $)
-                Some('$') if self.peek(1) == Some('$') => {
-                    // jsonata-js reads everything after the leading `$` as the
-                    // variable name, so `$$` is the variable named `$` (the
-                    // input) and `$$a` is the variable named `$a` -- not a
-                    // field lookup on the parent (#201).
+                // Variables (start with $). jsonata-js reads everything after
+                // the leading `$` up to a delimiter as the variable name, `$`
+                // included: `$$` is the variable named `$` (the input), `$$a`
+                // is the variable named `$a` -- not a field lookup on the
+                // parent (#201) -- and `$a$b` is the variable named `a$b`.
+                Some('$') => {
                     self.advance(); // skip the leading $
-                    let mut name = String::new();
-                    while self.current() == Some('$') {
-                        name.push('$');
-                        self.advance();
-                    }
-                    name.push_str(&self.read_identifier());
+                    let name = self.read_identifier();
                     if name == "$" {
                         return self.emit_token(Token::ParentVariable(String::new()));
                     }
-                    return self.emit_token(Token::Variable(name));
-                }
-                Some('$') => {
-                    self.advance();
-                    let name = self.read_identifier();
                     return self.emit_token(Token::Variable(name));
                 }
 

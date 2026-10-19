@@ -9657,6 +9657,136 @@
    ]
   },
   {
+   "expression": "$type(arr.function($v, $w) { $v + $w }(?, 1))",
+   "result": "array"
+  },
+  {
+   "expression": "arr.function($v, $w) { $v + $w }(?, 1)(5)",
+   "result": [
+    6,
+    6,
+    6
+   ]
+  },
+  {
+   "expression": "(function($v, $w) { $v + $w })(?, 1)(5)",
+   "result": 6
+  },
+  {
+   "expression": "$type((function($v, $w) { $v + $w })(?, 1))",
+   "result": "function"
+  },
+  {
+   "expression": "arr.function($v) { $v }($)()",
+   "result": {
+    "$error": "T1006"
+   }
+  },
+  {
+   "expression": "arr.function($v) { $v }($)(1)",
+   "result": {
+    "$error": "T1006"
+   }
+  },
+  {
+   "expression": "(1)(2)",
+   "result": {
+    "$error": "T1006"
+   }
+  },
+  {
+   "expression": "(nope)(2)",
+   "result": {
+    "$error": "T1006"
+   }
+  },
+  {
+   "expression": "(\"x\")(?)",
+   "result": {
+    "$error": "T1008"
+   }
+  },
+  {
+   "expression": "[\"x\", \"y\"].($uppercase)($)",
+   "result": [
+    "X",
+    "Y"
+   ]
+  },
+  {
+   "expression": "arr.($string)()",
+   "result": [
+    "1",
+    "2",
+    "3"
+   ]
+  },
+  {
+   "expression": "objs.($sum)(p)",
+   "result": [
+    1,
+    2
+   ]
+  },
+  {
+   "expression": "($u := $uppercase; [\"x\", \"y\"].($u)($))",
+   "result": [
+    "X",
+    "Y"
+   ]
+  },
+  {
+   "expression": "($uppercase)(\"x\")",
+   "result": "X"
+  },
+  {
+   "expression": "($substring)(?, 1)(\"abc\")",
+   "result": "bc"
+  },
+  {
+   "expression": "[\"abc\", \"de\"].($substring)($, ?)(1)",
+   "result": [
+    "bc",
+    "e"
+   ]
+  },
+  {
+   "expression": "($f := $uppercase ~> $trim; [\" x\"].($f)($))",
+   "result": "X"
+  },
+  {
+   "expression": "($u := $string; arr.$u())",
+   "result": [
+    "1",
+    "2",
+    "3"
+   ]
+  },
+  {
+   "expression": "($f := function($x) { $x * 10 }; ($f)(?)(2))",
+   "result": 20
+  },
+  {
+   "expression": "$a$b",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "($a$b := 3; $a$b)",
+   "result": 3
+  },
+  {
+   "expression": "($$a$b := 4; $$a$b)",
+   "result": 4
+  },
+  {
+   "expression": "($a$b := 3; $$a$b)",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
    "expression": "a",
    "root": true,
    "result": [
