@@ -100,7 +100,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   local arrays, objects or other functions, or tail-called, do not count, so such loops run in
   constant memory. A function that does live on, such as one passed to the next pass, keeps
   its frame, so a loop that passes a new closure on each pass still grows with the number of
-  passes.
+  passes. That is a cost of lexical scoping, as in jsonata-js: a loop that collects a closure
+  on each pass into an accumulator (`$f($k - 1, $append($acc, $c))`) keeps every pass's frame
+  with all its bindings, the accumulator so far included, so its memory grows with the square
+  of the number of passes (about 1.1 GB at 5,000 passes, where it was 41 MB). A builtin such as
+  `$map` run as a tail call applies its function arguments where the chain of tail calls began,
+  as jsonata-js does. Still different from jsonata-js: the right side of `?:` and `??` is not a
+  tail position here; a partial application of a user function does not carry the chain of
+  tail calls, and a `$eval(?)` partial runs where it is called, not where it was made; function
+  arguments of a builtin called outside a tail position are applied where the builtin runs, not
+  in jsonata-js's wrapper over the caller's environment; and a tail `$eval` takes the call
+  site's context as its input.
 - **Non-tail recursion goes about 10,000 calls deep**
   ([#200](https://github.com/txjmb/jsonata-core/issues/200)). Evaluation stopped at 302 levels
   with U1001, so `($f := function($n){ $n <= 0 ? 0 : 1 + $f($n - 1) }; $f(150))` failed where

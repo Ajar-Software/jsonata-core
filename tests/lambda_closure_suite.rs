@@ -805,6 +805,36 @@ fn tail_eval_runs_where_the_call_chain_began() {
         "( $f := function($a){ [$eval(\"$a * 2\")] }; $f(21) )",
         "[42]",
     );
+    assert_eval(
+        "( $n := 1; $f := function(){ ($n := 2; ($eval)(\"$n\")) }; ($n := 3; $f()) )",
+        "3",
+    );
+    // A builtin run as a tail call applies its function arguments where the
+    // chain began, so their own tail `$eval`s run there too.
+    assert_eval(
+        "( $n := 1; $f := function(){ ($n := 2; \
+           $filter([1, 2], function($v){ ($n := 9; $eval(\"$n = 2\")) })) }; $exists($f()) )",
+        "false",
+    );
+    assert_eval(
+        "( $n := 1; $f := function(){ ($n := 2; $map([1], function($v){ $eval(\"$n\") })) }; $f() )",
+        "1",
+    );
+    assert_eval(
+        "( $n := 1; $f := function(){ ($n := 2; $map([1], function($v){ $eval(\"$n\") })) }; \
+           $g := function(){ ($n := 3; $r := $f(); $r) }; $g() )",
+        "3",
+    );
+    assert_eval(
+        "( $n := 1; $f := function(){ ($n := 2; \
+           $r := $map([1], function($v){ $eval(\"$n\") }); $r) }; $f() )",
+        "2",
+    );
+    assert_eval(
+        "( $n := 1; $f := function(){ ($n := 2; $map([1], function($v){ \
+           ($n := 5; $map([1], function($w){ $eval(\"$n\") })) })) }; $f() )",
+        "1",
+    );
     // Not a tail call: the body's own scope, as in jsonata-js.
     assert_eval(
         "( $v := \"root\"; $h := function(){ ($r := $eval(\"$v\"); $r) }; ($v := \"caller\"; $h()) )",

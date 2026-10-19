@@ -2841,6 +2841,9 @@ struct Scope {
     /// keeps its bindings to itself instead of passing them to the frame
     /// below.
     opaque: bool,
+    /// The token's reference count when the frame was last judged seen
+    /// from outside (`Scope::still_seen`); 0 if it has not been.
+    seen_at: usize,
 }
 
 /// A value with a reference count, as `OwnershipWalk` sees it.
@@ -3001,10 +3004,11 @@ impl Scope {
     /// for every holder, nothing can see the frame afterwards. The walk
     /// looks into owned values only (functions first, as that is where
     /// holders are, and it stops once all are found), never into a value
-    /// referenced from elsewhere. Owned values go when the frame is reused,
-    /// and a frame kept instead is never walked again, so each value is
-    /// walked at most once: the walks cost no more, in all, than making the
-    /// values did.
+    /// referenced from elsewhere. Owned values go when the frame is reused;
+    /// a frame kept instead is walked again only once one of its token's
+    /// holders has gone (`Scope::still_seen`). So the walks cost, in all,
+    /// what making the owned values did, plus one walk of a kept frame per
+    /// holder it loses.
     fn seen_from_outside(&self) -> bool {
         let Some(token) = self.token.get() else {
             return false;
@@ -3024,6 +3028,22 @@ impl Scope {
         walk.run(self.bindings.values()) != std::ops::ControlFlow::Break(false)
     }
 
+    /// `seen_from_outside`, remembered: a frame judged seen stays so, with
+    /// no walk, until a holder of its token goes. A holder replaced by
+    /// another meanwhile only keeps the frame a while longer.
+    fn still_seen(&mut self) -> bool {
+        let count = match self.token.get() {
+            Some(token) => Rc::strong_count(token),
+            None => return false,
+        };
+        if count == self.seen_at {
+            return true;
+        }
+        let seen = self.seen_from_outside();
+        self.seen_at = if seen { count } else { 0 };
+        seen
+    }
+
     fn new(id: u64, barrier: Option<usize>) -> Self {
         Scope {
             bindings: HashMap::new(),
@@ -3033,6 +3053,7 @@ impl Scope {
             token: std::cell::OnceCell::new(),
             internal: false,
             opaque: false,
+            seen_at: 0,
         }
     }
 }
@@ -3138,6 +3159,12 @@ pub struct Context {
     /// from: jsonata-js's environment of the `apply` that runs a chain of
     /// tail calls, where it applies each one (`Evaluator::invoke_lambda_with_tco`).
     tail_base: usize,
+    /// Set while a builtin runs as a tail call: the frame its callbacks'
+    /// own tail-call chains begin at, as jsonata-js applies a function
+    /// argument of such a builtin in the trampoline's environment, and the
+    /// stack height the builtin applies them at (so a function applied
+    /// anywhere deeper, by a callback, starts where it is applied).
+    callback_base: Option<(usize, usize)>,
     /// The most frames the stack has held, for tests that bound it.
     #[cfg(test)]
     peak_depth: usize,
@@ -3151,6 +3178,7 @@ impl Context {
             ctx_id: NEXT_CONTEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             next_scope_id: 1,
             tail_base: 0,
+            callback_base: None,
             #[cfg(test)]
             peak_depth: 1,
         }
@@ -3258,7 +3286,7 @@ impl Context {
         };
         loop {
             let top = self.scope_stack.len() - 1;
-            if barrier >= top || self.scope_stack[top].seen_from_outside() {
+            if barrier >= top || self.scope_stack[top].still_seen() {
                 self.push_tail_call_scope(def);
                 *frames += 1;
                 return;
@@ -3277,6 +3305,7 @@ impl Context {
             // Its lexical chain changes; a function defined from now on
             // takes a new token, holding the new chain's.
             scope.token = std::cell::OnceCell::new();
+            scope.seen_at = 0;
             return;
         }
     }
@@ -5504,6 +5533,19 @@ impl Evaluator {
         }
         self.call_function_value(&func, &[lhs_value], data)
             .map(JValue::unwrap_sequence)
+    }
+
+    /// Whether an argument is a function with tail calls (written inline,
+    /// or a variable holding one), whose chain of tail calls would begin
+    /// where it is applied.
+    fn has_thunk_function_arg(&self, args: &[AstNode]) -> bool {
+        args.iter().any(|arg| match arg {
+            AstNode::Lambda { thunk, .. } => *thunk,
+            AstNode::Variable(name) => {
+                matches!(self.context.lookup(name), Some(JValue::Lambda(rc)) if rc.thunk)
+            }
+            _ => false,
+        })
     }
 
     /// The `(f, g)` a composition calls: the function that runs f (in its
@@ -8368,7 +8410,13 @@ impl Evaluator {
         initial_args: &[JValue],
         data: &JValue,
     ) -> Result<JValue, EvaluatorError> {
-        let base = self.context.scope_stack.len() - 1;
+        // A callback of a builtin run as a tail call starts its chain where
+        // that builtin's did; nothing it calls in turn does.
+        let height = self.context.scope_stack.len();
+        let base = match self.context.callback_base {
+            Some((base, at)) if at == height => base,
+            _ => height - 1,
+        };
         let outer_base = std::mem::replace(&mut self.context.tail_base, base);
         let result = self.run_tail_calls(stored_lambda, initial_args, data);
         self.context.tail_base = outer_base;
@@ -8628,6 +8676,40 @@ impl Evaluator {
                         data: data.clone(),
                     });
                 }
+                // A builtin given a function with tail calls, as a tail call:
+                // jsonata-js passes it the function unwrapped, and applies it
+                // in the trampoline's environment, so that function's own
+                // chain of tail calls begins there.
+                if matches!(
+                    name.as_str(),
+                    "map"
+                        | "filter"
+                        | "reduce"
+                        | "single"
+                        | "sift"
+                        | "each"
+                        | "sort"
+                        | "match"
+                        | "replace"
+                ) && !has_placeholder
+                    && self.context.lookup(name).is_none()
+                    && self.builtin_unshadowed(name, None)
+                    && self.has_thunk_function_arg(args)
+                {
+                    let mut evaluated_args = Vec::with_capacity(args.len());
+                    for arg in args {
+                        evaluated_args.push(self.evaluate_internal(arg, data)?);
+                    }
+                    // It applies them over the frame of its value arguments.
+                    let height = self.context.scope_stack.len() + 1;
+                    let outer = self
+                        .context
+                        .callback_base
+                        .replace((self.context.tail_base, height));
+                    let result = self.call_builtin_with_values(name, &evaluated_args, data);
+                    self.context.callback_base = outer;
+                    return Ok(LambdaResult::JValue(result?));
+                }
                 if tail_eval && self.builtin_unshadowed("eval", None) {
                     let mut evaluated_args = Vec::with_capacity(args.len());
                     for arg in args {
@@ -8670,6 +8752,18 @@ impl Evaluator {
                             data: data.clone(),
                         });
                     }
+                }
+                // `($eval)(...)` as a tail call, as `$eval(...)` above.
+                if matches!(&callable, JValue::Builtin { name } if &**name == "eval")
+                    && self.builtin_unshadowed("eval", None)
+                {
+                    let mut evaluated_args = Vec::with_capacity(args.len());
+                    for arg in args {
+                        evaluated_args.push(self.evaluate_internal(arg, data)?);
+                    }
+                    let at = self.context.tail_base;
+                    let result = self.eval_from_values_at(&evaluated_args, data, Some(at))?;
+                    return Ok(LambdaResult::JValue(result));
                 }
                 // Not a thunk - apply the value already evaluated, so the
                 // callee is not evaluated a second time.
@@ -11180,6 +11274,22 @@ mod tests {
             assert_eq!(result, JValue::from(20000.0), "{src}");
             assert!(depth < 16, "{src}: scope stack reached {depth} frames");
         }
+    }
+
+    #[test]
+    fn kept_frame_is_not_walked_again_each_pass() {
+        // The first pass's frame owns a large array and stays for a closure
+        // passed along every pass; deciding again on each pass that it
+        // stays must not walk the array again.
+        let start = std::time::Instant::now();
+        let (result, _) = peak_depth_of(
+            "($f := function($k, $keep){ ($big := $k = 5000 ? [1..20000] : []; \
+             $k = 0 ? $keep() : $f($k - 1, $k = 5000 ? function(){ $k } : $keep)) }; \
+             $f(5000, function(){ 0 }))",
+        );
+        assert_eq!(result, JValue::from(5000.0));
+        let elapsed = start.elapsed();
+        assert!(elapsed.as_secs() < 3, "took {elapsed:?}");
     }
 
     #[test]

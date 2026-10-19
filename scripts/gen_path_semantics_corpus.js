@@ -472,6 +472,27 @@ const EXTRA = [
   '($v := "root"; ($v := "caller"; $map(["$v"], function($s) { $eval($s) })))',
   '($x := 1; $f := function() { $eval("$x") }; ($x := 2; $f()))',
   '($c := $string ~> $eval; $g := function($a) { $c("$a") }; $g(3))',
+  // A frame kept for an escaping closure, with much else in it.
+  '($f := function($k, $keep) { ($big := $k = 2000 ? [1..20000] : []; $k = 0 ? $keep() : $f($k - 1, $k = 2000 ? function() { $k } : $keep)) }; $f(2000, function() { 0 }))',
+  '($f := function($k, $keep) { ($big := $k = 400 ? $reduce([1..200], function($a, $v) { {"n": $a} }, {}) : {}; $k = 0 ? $keep() : $f($k - 1, $k = 400 ? function() { $k } : $keep)) }; $f(400, function() { 0 }))',
+  // A builtin run as a tail call applies its function arguments where the
+  // chain of tail calls began (jsonata-js passes them unwrapped).
+  '($n := 1; $f := function() { ($n := 2; $filter([1, 2], function($v) { ($n := 9; $eval("$n = 2")) })) }; $f())',
+  '($n := 1; $f := function() { ($n := 2; $map([1], function($v) { $eval("$n") })) }; $f())',
+  '($n := 1; $f := function() { ($n := 2; $map([1], function($v) { $eval("$n") })) }; $g := function() { ($n := 3; $r := $f(); $r) }; $g())',
+  '($n := 1; $f := function() { ($n := 2; $r := $map([1], function($v) { $eval("$n") }); $r) }; $f())',
+  '($n := 1; $cb := function($v) { $eval("$n") }; $f := function() { ($n := 2; $map([1, 2], $cb)) }; $f())',
+  '($n := 1; $f := function() { ($n := 2; $reduce([1, 2, 3], function($a, $v) { $eval("$n") + $a }, 0)) }; $f())',
+  '($n := 1; $f := function() { ($n := 2; $map([1], function($v) { $map([1], function($w) { $eval("$n") }) })) }; $f())',
+  '($n := 1; $f := function() { ($n := 2; $map([1], function($v) { ($n := 5; $map([1], function($w) { $eval("$n") })) })) }; $f())',
+  '($n := 1; $f := function() { ($n := 2; $map([1], function($v) { ($n := 5; $r := $map([1], function($w) { $eval("$n") }); $r) })) }; $f())',
+  '($n := 1; $f := function() { ($n := 2; $map([1, 2], function($v) { $v * 10 })) }; $f())',
+  '($n := 1; $f := function() { ($n := 2; true ? $eval("$n") : 0) }; ($n := 3; $f()))',
+  '($n := 1; $f := function() { ($n := 2; ($eval)("$n")) }; ($n := 3; $f()))',
+  // Known divergences: jsonata-js treats both sides of `?:` and `??` as
+  // tail positions.
+  '($n := 1; $f := function() { ($n := 2; $x ?: $eval("$n")) }; ($n := 3; $f()))',
+  '($n := 1; $f := function() { ($n := 2; $x ?? $eval("$n")) }; ($n := 3; $f()))',
   // A composition's first function runs in a call frame of its own below
   // the defining scope, its second in the caller's (jsonata-js `chainAST`).
   '($c := $eval ~> $string; $c("$z := 5"); $z)', '("$x := 4" ~> ($eval ~> $string); $x)',

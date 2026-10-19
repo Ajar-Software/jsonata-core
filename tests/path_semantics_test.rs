@@ -49,6 +49,28 @@ const KNOWN_DIVERGENCES: &[(&str, &str)] = &[
         "tree",
         "($m := \"root\"; $other := function($f) { $f() }; $outer := function() { ($k := function() { $m }; $m := 1; $other($k)) }; $outer())",
     ),
+    // Not yet matched (#191): jsonata-js parses `a ?: b` and `a ?? b` as
+    // conditions, so `b` is a tail position and a `$eval` there runs where
+    // the chain of tail calls began. Here only `?` branches, a block's last
+    // expression and a call are tail positions, so it runs in the body's
+    // scope. Treating them as tail positions would also take the bodies
+    // that end in them off the compiled fast path.
+    (
+        "compiled",
+        "($n := 1; $f := function() { ($n := 2; $x ?: $eval(\"$n\")) }; ($n := 3; $f()))",
+    ),
+    (
+        "tree",
+        "($n := 1; $f := function() { ($n := 2; $x ?: $eval(\"$n\")) }; ($n := 3; $f()))",
+    ),
+    (
+        "compiled",
+        "($n := 1; $f := function() { ($n := 2; $x ?? $eval(\"$n\")) }; ($n := 3; $f()))",
+    ),
+    (
+        "tree",
+        "($n := 1; $f := function() { ($n := 2; $x ?? $eval(\"$n\")) }; ($n := 3; $f()))",
+    ),
     // Deliberate (#191, the documented late-binding gap): the composition's
     // `$eval` runs in its defining block, which has finished by the call.
     // jsonata-js keeps that block alive and sees its `$n`; here, as for any
