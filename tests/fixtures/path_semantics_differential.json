@@ -9487,7 +9487,10 @@
     "match": "n",
     "start": 1,
     "end": 2,
-    "groups": []
+    "groups": [],
+    "next": {
+     "$function": true
+    }
    }
   },
   {
@@ -10463,6 +10466,18 @@
    "result": 3
   },
   {
+   "expression": "($map([\"$w := 3\"], ($eval)); $w)",
+   "result": 3
+  },
+  {
+   "expression": "($x := 7; $map([\"$x\"], ($eval)))",
+   "result": 7
+  },
+  {
+   "expression": "($x := 7; $map([\"$x\"], ($string ~> $eval)))",
+   "result": 7
+  },
+  {
    "expression": "($n := 1; $f := function() { ($n := 2; $x ?: $eval(\"$n\")) }; ($n := 3; $f()))",
    "result": 3
   },
@@ -10982,6 +10997,654 @@
    "result": {
     "$undefined": true
    }
+  },
+  {
+   "expression": "$map([1,2], ($string))",
+   "result": [
+    "1",
+    "2"
+   ]
+  },
+  {
+   "expression": "$map([1,2], (true ? $string : $number))",
+   "result": [
+    "1",
+    "2"
+   ]
+  },
+  {
+   "expression": "$map([1,2], [$string][0])",
+   "result": [
+    "1",
+    "2"
+   ]
+  },
+  {
+   "expression": "$filter([1,2], (function($v){$v>1}))",
+   "result": 2
+  },
+  {
+   "expression": "$map(n, ($sum ~> $string))",
+   "result": [
+    "3",
+    "3"
+   ]
+  },
+  {
+   "expression": "$map(arr, ($sum ~> $string))",
+   "result": [
+    "1",
+    "2",
+    "3"
+   ]
+  },
+  {
+   "expression": "$reduce([1,2], $sum ~> $string)",
+   "result": {
+    "$error": "D3050"
+   }
+  },
+  {
+   "expression": "$map([[3,1]], $sort)",
+   "result": {
+    "$error": "T0410"
+   }
+  },
+  {
+   "expression": "$map([1], $map)",
+   "result": {
+    "$error": "T0410"
+   }
+  },
+  {
+   "expression": "$single([1,2], ($x := function($v){$v=2}))",
+   "result": 2
+  },
+  {
+   "expression": "$sift({\"a\":1,\"b\":2}, (function($v){$v>1}))",
+   "result": {
+    "b": 2
+   }
+  },
+  {
+   "expression": "$each({\"a\":1}, ($f := function($v,$k){$k}))",
+   "result": "a"
+  },
+  {
+   "expression": "$sort([3,1,2], (function($a,$b){$a>$b}))",
+   "result": [
+    1,
+    2,
+    3
+   ]
+  },
+  {
+   "expression": "$sort([3,1,2], ($f := function($a,$b){$a>$b}))",
+   "result": [
+    1,
+    2,
+    3
+   ]
+  },
+  {
+   "expression": "$map([1,2], ($x := 1; function($v){$v+$x}))",
+   "result": [
+    2,
+    3
+   ]
+  },
+  {
+   "expression": "$map([1,2], ($f := function($v){$v}; $f))",
+   "result": [
+    1,
+    2
+   ]
+  },
+  {
+   "expression": "$filter([1,2], $boolean ~> $not)",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "$map([1,2], (5))",
+   "result": {
+    "$error": "T0410"
+   }
+  },
+  {
+   "expression": "$filter([1,2], \"x\")",
+   "result": {
+    "$error": "T0410"
+   }
+  },
+  {
+   "expression": "$map([1,2], (nope))",
+   "result": {
+    "$error": "T0410"
+   }
+  },
+  {
+   "expression": "$reduce([1,2], (function($a){$a}))",
+   "result": {
+    "$error": "D3050"
+   }
+  },
+  {
+   "expression": "$reduce([1,2], ($f := $string))",
+   "result": {
+    "$error": "D3050"
+   }
+  },
+  {
+   "expression": "$reduce([1,2], $string)",
+   "result": {
+    "$error": "D3050"
+   }
+  },
+  {
+   "expression": "$reduce([1,2], $sum)",
+   "result": {
+    "$error": "D3050"
+   }
+  },
+  {
+   "expression": "$reduce(nope, $string)",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "$reduce([1,2,3], ($f := function($a,$b){$a+$b}))",
+   "result": 6
+  },
+  {
+   "expression": "$replace(\"abc\", /b/, ($f := function($m){\"X\"}))",
+   "result": "aXc"
+  },
+  {
+   "expression": "$map([\"xa\"], $match(?, /a/))",
+   "result": [
+    {
+     "match": "a",
+     "index": 1,
+     "groups": []
+    }
+   ]
+  },
+  {
+   "expression": "$map([1,2,3], ($k := 1; function($v){ $exists($__hof_callback) }))",
+   "result": [
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "expression": "($g := function(){ $__hof_callback }; $map([1], ($g)))",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "$reduce([1,2], $random)",
+   "result": {
+    "$error": "D3050"
+   }
+  },
+  {
+   "expression": "($f := function($x){ [$__chain_x] }; ($f ~> $string)(5))",
+   "result": "[]"
+  },
+  {
+   "expression": "($f := function($x){ $exists($__chain_x) or $exists($__chain_f) }; ($f ~> $string)(1))",
+   "result": "false"
+  },
+  {
+   "expression": "($f := /a/; $f(\"xa\"))",
+   "result": {
+    "match": "a",
+    "start": 1,
+    "end": 2,
+    "groups": [],
+    "next": {
+     "$function": true
+    }
+   }
+  },
+  {
+   "expression": "\"xa\" ~> /a/",
+   "result": {
+    "match": "a",
+    "start": 1,
+    "end": 2,
+    "groups": [],
+    "next": {
+     "$function": true
+    }
+   }
+  },
+  {
+   "expression": "$keys(\"xa\" ~> /a/)",
+   "result": [
+    "match",
+    "start",
+    "end",
+    "groups",
+    "next"
+   ]
+  },
+  {
+   "expression": "\"xa\" ~> /a/ ~> $keys",
+   "result": [
+    "match",
+    "start",
+    "end",
+    "groups",
+    "next"
+   ]
+  },
+  {
+   "expression": "(\"xa\" ~> /a/).groups",
+   "result": []
+  },
+  {
+   "expression": "$string(\"xa\" ~> /a/)",
+   "result": "{\"match\":\"a\",\"start\":1,\"end\":2,\"groups\":[],\"next\":\"\"}"
+  },
+  {
+   "expression": "$sort ~> /a/",
+   "result": {
+    "$function": true
+   }
+  },
+  {
+   "expression": "($sort ~> /a/)([3,1])",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "\"éa\" ~> /a/",
+   "result": {
+    "match": "a",
+    "start": 1,
+    "end": 2,
+    "groups": [],
+    "next": {
+     "$function": true
+    }
+   }
+  },
+  {
+   "expression": "\"😀a\" ~> /a/",
+   "result": {
+    "match": "a",
+    "start": 2,
+    "end": 3,
+    "groups": [],
+    "next": {
+     "$function": true
+    }
+   }
+  },
+  {
+   "expression": "(\"xaxa\" ~> /a/).next()",
+   "result": {
+    "match": "a",
+    "start": 3,
+    "end": 4,
+    "groups": [],
+    "next": {
+     "$function": true
+    }
+   }
+  },
+  {
+   "expression": "(\"xaxa\" ~> /a/).next().next()",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "(\"é😀aéa\" ~> /a/).next()",
+   "result": {
+    "match": "a",
+    "start": 5,
+    "end": 6,
+    "groups": [],
+    "next": {
+     "$function": true
+    }
+   }
+  },
+  {
+   "expression": "(\"xa\" ~> /a/).next()",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "(\"xa\" ~> /a/).next",
+   "result": {
+    "$function": true
+   }
+  },
+  {
+   "expression": "(\"aab\" ~> /a*/).next()",
+   "result": {
+    "$error": "D1004"
+   }
+  },
+  {
+   "expression": "(\"xyz\" ~> /x|z/).next().next()",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "/(a)(b)?/(\"xa\")",
+   "result": {
+    "match": "a",
+    "start": 1,
+    "end": 2,
+    "groups": [
+     "a",
+     {
+      "$undefined": true
+     }
+    ],
+    "next": {
+     "$function": true
+    }
+   }
+  },
+  {
+   "expression": "/a/i(\"XA\")",
+   "result": {
+    "match": "A",
+    "start": 1,
+    "end": 2,
+    "groups": [],
+    "next": {
+     "$function": true
+    }
+   }
+  },
+  {
+   "expression": "/a/(\"xa\", 5)",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "/a/(\"xaa\", 2)",
+   "result": {
+    "match": "a",
+    "start": 2,
+    "end": 3,
+    "groups": [],
+    "next": {
+     "$function": true
+    }
+   }
+  },
+  {
+   "expression": "/a/(5)",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "/5/(5)",
+   "result": {
+    "match": "5",
+    "start": 0,
+    "end": 1,
+    "groups": [],
+    "next": {
+     "$function": true
+    }
+   }
+  },
+  {
+   "expression": "/a/()",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "/a/(null)",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "/n/(null)",
+   "result": {
+    "match": "n",
+    "start": 0,
+    "end": 1,
+    "groups": [],
+    "next": {
+     "$function": true
+    }
+   }
+  },
+  {
+   "expression": "[1, 2] ~> /2/",
+   "result": {
+    "match": "2",
+    "start": 2,
+    "end": 3,
+    "groups": [],
+    "next": {
+     "$function": true
+    }
+   }
+  },
+  {
+   "expression": "objs[0] ~> /o/",
+   "result": {
+    "match": "o",
+    "start": 1,
+    "end": 2,
+    "groups": [],
+    "next": {
+     "$function": true
+    }
+   }
+  },
+  {
+   "expression": "\"é\" & \"a\" ~> /a/",
+   "result": {
+    "match": "a",
+    "start": 1,
+    "end": 2,
+    "groups": [],
+    "next": {
+     "$function": true
+    }
+   }
+  },
+  {
+   "expression": "1 + 2 ~> $string",
+   "result": "3"
+  },
+  {
+   "expression": "($f := /a/ ~> $string; $f(\"xa\"))",
+   "result": "{\"match\":\"a\",\"start\":1,\"end\":2,\"groups\":[],\"next\":\"\"}"
+  },
+  {
+   "expression": "$string(/a/)",
+   "result": ""
+  },
+  {
+   "expression": "$type(/a/)",
+   "result": "function"
+  },
+  {
+   "expression": "$boolean(/a/)",
+   "result": false
+  },
+  {
+   "expression": "$not(/a/)",
+   "result": true
+  },
+  {
+   "expression": "$exists(/a/)",
+   "result": true
+  },
+  {
+   "expression": "$count(/a/)",
+   "result": 1
+  },
+  {
+   "expression": "{\"r\": /a/}",
+   "result": {
+    "r": {
+     "$function": true
+    }
+   }
+  },
+  {
+   "expression": "true ? /a/ : 1",
+   "result": {
+    "$function": true
+   }
+  },
+  {
+   "expression": "/a/ = /a/",
+   "result": false
+  },
+  {
+   "expression": "($r := /a/; $match(\"xa\", $r))",
+   "result": {
+    "match": "a",
+    "index": 1,
+    "groups": []
+   }
+  },
+  {
+   "expression": "($r := /a/; $replace(\"xa\", $r, \"b\"))",
+   "result": "xb"
+  },
+  {
+   "expression": "($r := /a/; $split(\"xaxa\", $r))",
+   "result": [
+    "x",
+    "x",
+    ""
+   ]
+  },
+  {
+   "expression": "($r := /a/; $contains(\"xa\", $r))",
+   "result": true
+  },
+  {
+   "expression": "$match(\"xaxa\", function($s) { /a/($s) })",
+   "result": [
+    {
+     "match": "a",
+     "index": 1,
+     "groups": []
+    },
+    {
+     "match": "a",
+     "index": 3,
+     "groups": []
+    }
+   ]
+  },
+  {
+   "expression": "$match(\"xaxa\", /a/ ~> function($m) { $m })",
+   "result": [
+    {
+     "match": "a",
+     "index": 1,
+     "groups": []
+    },
+    {
+     "match": "a",
+     "index": 3,
+     "groups": []
+    }
+   ]
+  },
+  {
+   "expression": "$map([\"ab\",\"ab\",\"ab\"], /b/)",
+   "result": [
+    {
+     "match": "b",
+     "start": 1,
+     "end": 2,
+     "groups": [],
+     "next": {
+      "$function": true
+     }
+    },
+    {
+     "match": "b",
+     "start": 1,
+     "end": 2,
+     "groups": [],
+     "next": {
+      "$function": true
+     }
+    }
+   ]
+  },
+  {
+   "expression": "$map([\"ab\",\"ab\",\"ab\"], /b/).start",
+   "result": [
+    1,
+    1
+   ]
+  },
+  {
+   "expression": "$filter([\"ab\",\"cd\"], /b/)",
+   "result": "ab"
+  },
+  {
+   "expression": "$reduce([\"a\",\"b\"], /a/)",
+   "result": {
+    "match": "a",
+    "start": 0,
+    "end": 1,
+    "groups": [],
+    "next": {
+     "$function": true
+    }
+   }
+  },
+  {
+   "expression": "$sift({\"a\":\"x\",\"b\":\"y\"}, /x/)",
+   "result": {
+    "a": "x"
+   }
+  },
+  {
+   "expression": "$each({\"a\":\"x\"}, /x/)",
+   "result": {
+    "match": "x",
+    "start": 0,
+    "end": 1,
+    "groups": [],
+    "next": {
+     "$function": true
+    }
+   }
+  },
+  {
+   "expression": "$sort([\"b\",\"a\"], /x/)",
+   "result": [
+    "b",
+    "a"
+   ]
+  },
+  {
+   "expression": "$single([\"xa\", \"b\"], /a/)",
+   "result": "xa"
   },
   {
    "expression": "a",

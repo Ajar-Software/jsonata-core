@@ -489,6 +489,9 @@ const EXTRA = [
   '($n := 1; $f := function() { ($n := 2; $map([1, 2], function($v) { $v * 10 })) }; $f())',
   '($n := 1; $f := function() { ($n := 2; true ? $eval("$n") : 0) }; ($n := 3; $f()))',
   '($n := 1; $f := function() { ($n := 2; ($eval)("$n")) }; ($n := 3; $f()))',
+  // A callback evaluated once (#204) is applied in the caller's scope.
+  '($map(["$w := 3"], ($eval)); $w)', '($x := 7; $map(["$x"], ($eval)))',
+  '($x := 7; $map(["$x"], ($string ~> $eval)))',
   // Known divergences: jsonata-js treats both sides of `?:` and `??` as
   // tail positions.
   '($n := 1; $f := function() { ($n := 2; $x ?: $eval("$n")) }; ($n := 3; $f()))',
@@ -542,6 +545,41 @@ const EXTRA = [
   '($f := function() { (function($a, $b) { $a + $b })(1, ?) }; $f()(2))',
   // `$` is not an operator, so it can sit inside a name.
   '$a$b', '($a$b := 3; $a$b)', '($$a$b := 4; $$a$b)', '($a$b := 3; $$a$b)',
+  // A higher-order function's callback is evaluated once, to a function
+  // value, which is called with as many arguments as it takes (#204).
+  '$map([1,2], ($string))', '$map([1,2], (true ? $string : $number))', '$map([1,2], [$string][0])',
+  '$filter([1,2], (function($v){$v>1}))', '$map(n, ($sum ~> $string))', '$map(arr, ($sum ~> $string))',
+  '$reduce([1,2], $sum ~> $string)', '$map([[3,1]], $sort)', '$map([1], $map)',
+  '$single([1,2], ($x := function($v){$v=2}))', '$sift({"a":1,"b":2}, (function($v){$v>1}))',
+  '$each({"a":1}, ($f := function($v,$k){$k}))', '$sort([3,1,2], (function($a,$b){$a>$b}))',
+  '$sort([3,1,2], ($f := function($a,$b){$a>$b}))', '$map([1,2], ($x := 1; function($v){$v+$x}))',
+  '$map([1,2], ($f := function($v){$v}; $f))', '$filter([1,2], $boolean ~> $not)',
+  '$map([1,2], (5))', '$filter([1,2], "x")', '$map([1,2], (nope))',
+  '$reduce([1,2], (function($a){$a}))', '$reduce([1,2], ($f := $string))', '$reduce([1,2], $string)',
+  '$reduce([1,2], $sum)', '$reduce(nope, $string)', '$reduce([1,2,3], ($f := function($a,$b){$a+$b}))',
+  '$replace("abc", /b/, ($f := function($m){"X"}))', '$map(["xa"], $match(?, /a/))',
+  // The evaluated callback is held where no expression can name it.
+  '$map([1,2,3], ($k := 1; function($v){ $exists($__hof_callback) }))',
+  '($g := function(){ $__hof_callback }; $map([1], ($g)))', '$reduce([1,2], $random)',
+  '($f := function($x){ [$__chain_x] }; ($f ~> $string)(5))',
+  '($f := function($x){ $exists($__chain_x) or $exists($__chain_f) }; ($f ~> $string)(1))',
+  // A regex literal is a function: called with a string, it gives the first
+  // match, with `groups` and a `next` that gives the one after (#205).
+  '($f := /a/; $f("xa"))', '"xa" ~> /a/', '$keys("xa" ~> /a/)', '"xa" ~> /a/ ~> $keys',
+  '("xa" ~> /a/).groups', '$string("xa" ~> /a/)', '$sort ~> /a/', '($sort ~> /a/)([3,1])',
+  '"éa" ~> /a/', '"😀a" ~> /a/', '("xaxa" ~> /a/).next()', '("xaxa" ~> /a/).next().next()',
+  '("é😀aéa" ~> /a/).next()', '("xa" ~> /a/).next()', '("xa" ~> /a/).next', '("aab" ~> /a*/).next()',
+  '("xyz" ~> /x|z/).next().next()', '/(a)(b)?/("xa")', '/a/i("XA")', '/a/("xa", 5)', '/a/("xaa", 2)',
+  '/a/(5)', '/5/(5)', '/a/()', '/a/(null)', '/n/(null)', '[1, 2] ~> /2/', 'objs[0] ~> /o/',
+  '"é" & "a" ~> /a/', '1 + 2 ~> $string',
+  '($f := /a/ ~> $string; $f("xa"))', '$string(/a/)', '$type(/a/)', '$boolean(/a/)', '$not(/a/)',
+  '$exists(/a/)', '$count(/a/)', '{"r": /a/}', 'true ? /a/ : 1', '/a/ = /a/',
+  '($r := /a/; $match("xa", $r))', '($r := /a/; $replace("xa", $r, "b"))',
+  '($r := /a/; $split("xaxa", $r))', '($r := /a/; $contains("xa", $r))',
+  '$match("xaxa", function($s) { /a/($s) })', '$match("xaxa", /a/ ~> function($m) { $m })',
+  '$map(["ab","ab","ab"], /b/)', '$map(["ab","ab","ab"], /b/).start', '$filter(["ab","cd"], /b/)',
+  '$reduce(["a","b"], /a/)', '$sift({"a":"x","b":"y"}, /x/)', '$each({"a":"x"}, /x/)',
+  '$sort(["b","a"], /x/)', '$single(["xa", "b"], /a/)',
 ];
 
 // The same questions with a top-level array as input. jsonata-js wraps that
@@ -591,6 +629,8 @@ function comboExpressions() {
 
 function encode(v) {
   if (typeof v === 'undefined') return { $undefined: true };
+  // A regex literal evaluates to a plain JavaScript function (#205).
+  if (typeof v === 'function') return { $function: true };
   if (Array.isArray(v)) return Array.prototype.map.call(v, encode);
   if (v !== null && typeof v === 'object') {
     if (typeof v === 'function' || v._jsonata_lambda) return { $function: true };

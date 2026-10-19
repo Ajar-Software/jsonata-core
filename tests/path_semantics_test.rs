@@ -97,7 +97,9 @@ fn encode(v: &JValue) -> Value {
                 .map(|(k, v)| (k.clone(), encode(v)))
                 .collect::<Map<_, _>>(),
         ),
-        JValue::Lambda(_) | JValue::Builtin { .. } => json!({"$function": true}),
+        JValue::Lambda(_) | JValue::Builtin { .. } | JValue::Regex { .. } => {
+            json!({"$function": true})
+        }
         other => Value::from(other),
     }
 }

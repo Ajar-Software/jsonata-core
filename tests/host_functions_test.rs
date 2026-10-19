@@ -222,3 +222,31 @@ fn partial_of_host_override_ignores_later_rebinding() {
     .unwrap();
     assert_eq!(out, JValue::from("Pa"));
 }
+
+/// A higher-order function evaluates a callback expression once, to the
+/// function it gives, not once per item (#204): a host function inside it
+/// runs once.
+#[test]
+fn hof_callback_expression_runs_once() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    for expr in [
+        "$map([1, 2, 3], ($tick(); $string))",
+        "$filter([1, 2, 3], ($tick(); function($v) { $v > 1 }))",
+        "$reduce([1, 2, 3], ($tick(); function($a, $b) { $a + $b }))",
+        "$sort([3, 1, 2], ($tick(); function($a, $b) { $a > $b }))",
+        "$each({\"a\": 1, \"b\": 2}, ($tick(); function($v) { $v }))",
+    ] {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&calls);
+        eval_with(expr, json!({}), move |ev| {
+            ev.register_fn("tick", move |_: &[JValue]| {
+                counter.fetch_add(1, Ordering::SeqCst);
+                Ok(JValue::Null)
+            })
+            .unwrap();
+        })
+        .unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "{expr}");
+    }
+}
