@@ -159,7 +159,9 @@ const EXTRA = [
   'acct.Order.P{N: N}.$uppercase(N)', 'acct.Order{"k": id}.P.$string()', 'acct.Order{"k": id}.$count(P)',
   'acct.Order.P{N: N}.function($x) { $x }(1)', 'acct{"a": 1}(1)', 'acct^(x)[0]{"k": 1}[0]',
   '(acct.Order)#$i[0]{"k": id}[0]', 'acct^(id)[0]{"k": 1}.Order', 'acct.Order@$o[id = "zz"]{"k": 1}.id',
-  'acct.Order^(id)[0]{"k": id}.P',
+  'acct.Order^(id)[0]{"k": id}.P', '(objs){"k": p}[]{"j": 1}', '*{"a": 1}[]{"b": 1}',
+  '(objs){"k": p}[][]{"j": 1}', '($x := objs; $x{"k": p}#$i[0])', '($x := objs; $x{"k": p}@$v[0])',
+  '($x := objs; $x{"k": p}#$i{"j": 1})', '($x := objs; $x{"k": p}@$v{"j": 1})',
   // A `%` seeks through a group-by on a bare `*` or `%` (#209). As a step
   // the `*` is the ancestor; inside a block nothing binds it.
   'acct.(*{"k": 1}).%', 'acct.Order.(*{"k": N}).%', 'acct.Order.P.(%{"x": id}).%', '*{N: N}.%',

@@ -6322,6 +6322,48 @@
    "result": {}
   },
   {
+   "expression": "(objs){\"k\": p}[]{\"j\": 1}",
+   "result": {
+    "$error": "S0210"
+   }
+  },
+  {
+   "expression": "*{\"a\": 1}[]{\"b\": 1}",
+   "result": {
+    "$error": "S0210"
+   }
+  },
+  {
+   "expression": "(objs){\"k\": p}[][]{\"j\": 1}",
+   "result": {
+    "$error": "S0210"
+   }
+  },
+  {
+   "expression": "($x := objs; $x{\"k\": p}#$i[0])",
+   "result": {
+    "$error": "S0209"
+   }
+  },
+  {
+   "expression": "($x := objs; $x{\"k\": p}@$v[0])",
+   "result": {
+    "$error": "S0209"
+   }
+  },
+  {
+   "expression": "($x := objs; $x{\"k\": p}#$i{\"j\": 1})",
+   "result": {
+    "j": 1
+   }
+  },
+  {
+   "expression": "($x := objs; $x{\"k\": p}@$v{\"j\": 1})",
+   "result": {
+    "$error": "S0210"
+   }
+  },
+  {
    "expression": "acct.(*{\"k\": 1}).%",
    "result": {
     "$undefined": true

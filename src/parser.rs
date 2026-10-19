@@ -76,6 +76,43 @@ fn is_group_path(node: &AstNode) -> bool {
     }
 }
 
+/// Whether jsonata-js's `[` would find a group on the step a predicate
+/// after `node` attaches to (S0209): the node itself when it isn't a path,
+/// or a path's last step. `#` and `@` bind that same step, and `[]` keeps it.
+fn step_has_group(node: &AstNode) -> bool {
+    match node {
+        AstNode::ObjectTransform { .. } => true,
+        AstNode::Path { steps } => matches!(
+            steps.last().map(|s| &s.node),
+            Some(AstNode::ObjectTransform { .. })
+        ),
+        AstNode::Binary {
+            op: BinaryOp::FocusBind | BinaryOp::IndexBind,
+            lhs,
+            ..
+        } => step_has_group(lhs),
+        _ => false,
+    }
+}
+
+/// Whether jsonata-js's `{` would find a group already on `node` (S0210). A
+/// group on a path's step doesn't count, so `#`, which makes a path, ends the
+/// check, while `[]` and `@` leave a grouped non-path as it is.
+fn node_has_group(node: &AstNode) -> bool {
+    match node {
+        AstNode::ObjectTransform { .. } => true,
+        AstNode::Path { steps } if !is_group_path(node) => {
+            matches!(steps[0].node, AstNode::ObjectTransform { .. })
+        }
+        AstNode::Binary {
+            op: BinaryOp::FocusBind,
+            lhs,
+            ..
+        } => node_has_group(lhs),
+        _ => false,
+    }
+}
+
 /// Running out of input while expecting something is S0203; finding the wrong
 /// thing is S0202. A missing *parameter name* is its own code, S0208.
 fn expected_message(expected: &str, found: &str) -> String {
@@ -1607,15 +1644,7 @@ impl Parser {
                     // `[]` is not a predicate: jsonata-js sets keepArray on the
                     // grouped node instead, so `$x{k: v}[]` is the one-step path
                     // checked here when a predicate follows it.
-                    let grouped = match &lhs {
-                        AstNode::ObjectTransform { .. } => true,
-                        AstNode::Path { steps } => matches!(
-                            steps.last().map(|s| &s.node),
-                            Some(AstNode::ObjectTransform { .. })
-                        ),
-                        _ => false,
-                    };
-                    if grouped && self.current_token != Token::RightBracket {
+                    if step_has_group(&lhs) && self.current_token != Token::RightBracket {
                         return Err(ParserError::InvalidSyntax(
                             "S0209: A predicate cannot follow a grouping expression in a step"
                                 .to_string(),
@@ -1834,8 +1863,7 @@ impl Parser {
                 }
                 Token::LeftBrace => {
                     // S0210: Each step can only have one grouping expression
-                    // Check if lhs is already an ObjectTransform
-                    if matches!(lhs, AstNode::ObjectTransform { .. }) {
+                    if node_has_group(&lhs) {
                         return Err(ParserError::InvalidSyntax(
                             "S0210: Each step can only have one grouping expression".to_string(),
                         ));

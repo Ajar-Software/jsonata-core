@@ -4083,8 +4083,7 @@ impl Evaluator {
                 // group-by key/value expressions can read the carried `$focus`
                 // bindings off each wrapper (e.g. `...@$e...{ $e.FirstName: ... }`).
                 let saved_keep = self.keep_tuple_stream;
-                let tuple_input = Self::is_tuple_path_node(input);
-                self.keep_tuple_stream = tuple_input;
+                self.keep_tuple_stream = Self::is_tuple_path_node(input);
                 let input_value = self.evaluate_internal(input, data);
                 self.keep_tuple_stream = saved_keep;
                 let input_value = input_value?;
@@ -5188,9 +5187,8 @@ impl Evaluator {
                 let step = &steps[0];
                 step.index_var.is_some() || step.ancestor_label.is_some() || step.inner_tuple
             }
-            AstNode::Path { steps } => steps.iter().any(|step| step.is_tuple),
             AstNode::Sort { input, .. } => Self::groups_tuple_stream(input),
-            _ => false,
+            _ => Self::is_tuple_path_node(node),
         }
     }
 

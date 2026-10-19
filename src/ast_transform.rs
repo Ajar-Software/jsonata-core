@@ -1597,9 +1597,6 @@ fn seek_parent_wrapped_impl(
             Some(last) => seek_parent_wrapped(last, label, level, state, depth),
             None => Ok(level),
         },
-        // A group-by. jsonata-js keeps the group on the path node, so
-        // seekParent walks the grouped path's steps; here that path is the
-        // group-by's input.
         // A bare `*` or `%` that isn't a path step, such as the tail of
         // `acct.(*).%` or `acct.(*{...}).%`. seekParent counts the level as
         // it does for a step, but evaluating the node binds nothing, so a
@@ -1607,6 +1604,9 @@ fn seek_parent_wrapped_impl(
         // (#209).
         AstNode::Wildcard => Ok(level - 1),
         AstNode::Parent(_) => Ok(level + 1),
+        // A group-by. jsonata-js keeps the group on the path node, so
+        // seekParent walks the grouped path's steps; here that path is the
+        // group-by's input.
         AstNode::ObjectTransform { input, .. } => {
             seek_parent_wrapped(input.as_mut(), label, level, state, depth)
         }
