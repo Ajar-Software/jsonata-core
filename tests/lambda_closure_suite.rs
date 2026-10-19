@@ -611,6 +611,43 @@ fn escaped_closure_resolves_builtin_not_caller_binding() {
 }
 
 #[test]
+fn tail_call_keeps_frames_closures_were_defined_in() {
+    // The callee was defined in the caller's frame: it gets a frame of its
+    // own, so its parameter does not overwrite the caller's `$m`.
+    assert_eval(
+        "( $outer := function(){ ( $k := function(){ $m }; $m := 1; \
+             $inner := function($m){ $k() }; $inner(99) ) }; $outer() )",
+        "1",
+    );
+    // A closure made in the caller's frame is passed on by a tail call: the
+    // frame stays, so the closure still sees `$m`.
+    assert_eval(
+        "( $other := function($f){ $f() }; \
+           $outer := function(){ ( $k := function(){ $m }; $m := 1; $other($k) ) }; $outer() )",
+        "1",
+    );
+    // Plain tail recursion still runs in constant frames.
+    assert_eval(
+        "( $loop := function($n, $acc){ $n = 0 ? $acc : $loop($n - 1, $acc + 1) }; $loop(50000, 0) )",
+        "50000",
+    );
+}
+
+#[test]
+fn eval_does_not_see_internal_temporaries() {
+    assert_eval(
+        "( $c := $string ~> $eval; \
+           $c(\"[$exists($__chain_x), $exists($__chain_f), $exists($__temp_arg_0)]\") )",
+        "[false,false,false]",
+    );
+    assert_eval(
+        "( $m := $map; $m([\"$exists($__temp_arg_0)\", \"$exists($__temp_arg_1)\"], $eval) )",
+        "[false,false]",
+    );
+    assert_eval("( $x := 7; $m := $map; $m([\"$x\"], $eval) )", "7");
+}
+
+#[test]
 fn returned_closure_does_not_see_callers_of_its_maker() {
     // The closure's defining frame (the maker's call) is gone when it runs;
     // it resolves through the maker's own defining scope, never through the

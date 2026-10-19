@@ -186,3 +186,39 @@ fn no_host_fns_leaves_builtins_intact() {
     let out = eval_with("$sum([1,2,3])", json!(null), |_ev| {}).unwrap();
     assert_eq!(out, JValue::from_f64(6.0));
 }
+
+#[test]
+fn partial_of_host_fn_ignores_later_rebinding() {
+    // The partial takes the registered function when it is made, as
+    // jsonata-js takes a registered function's value (#191).
+    let out = eval_with(
+        "($p := $hf(?); $hf := function($x){ 'z' }; $p('a'))",
+        json!({}),
+        |ev| {
+            ev.register_fn("hf", |args: &[JValue]| {
+                let s = args.first().and_then(|v| v.as_str()).unwrap_or("");
+                Ok(JValue::from(format!("H{s}")))
+            })
+            .unwrap();
+        },
+    )
+    .unwrap();
+    assert_eq!(out, JValue::from("Ha"));
+}
+
+#[test]
+fn partial_of_host_override_ignores_later_rebinding() {
+    let out = eval_with(
+        "($p := $pad(?, 3); $pad := function($x, $n){ 'z' }; $p('a'))",
+        json!({}),
+        |ev| {
+            ev.register_fn_override("pad", |args: &[JValue]| {
+                let s = args.first().and_then(|v| v.as_str()).unwrap_or("");
+                Ok(JValue::from(format!("P{s}")))
+            })
+            .unwrap();
+        },
+    )
+    .unwrap();
+    assert_eq!(out, JValue::from("Pa"));
+}

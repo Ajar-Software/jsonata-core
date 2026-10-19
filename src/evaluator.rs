@@ -2668,14 +2668,24 @@ pub(crate) enum PartialTarget {
     /// A user-defined function, captured as a closure value at creation time —
     /// this is what lets the partial outlive the scope that defined its target.
     Lambda(Rc<StoredLambda>),
-    /// A host function (`register_fn`/`register_fn_override`), which has no
-    /// value form, applied BY NAME at each invocation through
-    /// `evaluate_function_call`, resolved in the partial's defining scope.
-    Named { name: String, is_builtin: bool },
+    /// A host function (`register_fn`/`register_fn_override`), taken from
+    /// the registry when the partial is made, as jsonata-js takes a
+    /// registered function's value.
+    Host(HostTarget),
     /// A builtin, resolved when the partial is made (`$uppercase(?)`,
     /// `($uppercase)(?)`, `$f := $sum; $f(?)`): that builtin, whatever its
     /// name is bound to by the time the partial is called.
     Builtin(String),
+}
+
+/// A host function held by a partial application.
+#[derive(Clone)]
+pub(crate) struct HostTarget(Rc<dyn HostFn>);
+
+impl std::fmt::Debug for HostTarget {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("HostTarget")
+    }
 }
 
 /// A partial application, carried inside a `StoredLambda` in place of a body.
@@ -2770,6 +2780,13 @@ struct Scope {
     /// skipping the caller's frames in between, so a function body sees the
     /// scope it was written in and not the one it is called from (#191).
     barrier: Option<usize>,
+    /// Set once a function has been defined that can see this frame: the
+    /// frame is then part of that function's scope, so the tail-call
+    /// trampoline must not clear it for another function (#191).
+    has_closures: std::cell::Cell<bool>,
+    /// An evaluator-internal frame (argument temporaries, a composition's
+    /// parts), which `$eval` does not see.
+    internal: bool,
 }
 
 impl Scope {
@@ -2778,6 +2795,8 @@ impl Scope {
             bindings: HashMap::new(),
             id,
             barrier,
+            has_closures: std::cell::Cell::new(false),
+            internal: false,
         }
     }
 }
@@ -2796,11 +2815,14 @@ pub(crate) struct DefScope {
     /// `(index, id)` of each visible frame above the root, innermost first.
     /// The root frame (index 0) is always visible and never listed.
     chain: DefChain,
+    /// The evaluator built this function (a composition); its frames are
+    /// internal.
+    internal: bool,
 }
 
 /// Lexical chains are short (a few blocks and calls), so they are kept
 /// inline, without an allocation per function created.
-const DEF_CHAIN_INLINE: usize = 6;
+const DEF_CHAIN_INLINE: usize = 8;
 
 #[derive(Clone, Debug)]
 enum DefChain {
@@ -2829,6 +2851,14 @@ impl DefScope {
             len: 0,
             frames: [(0, 0); DEF_CHAIN_INLINE],
         },
+        internal: false,
+    };
+
+    /// A function the evaluator builds itself, such as a composition: like
+    /// `ROOT`, and its frames are hidden from `$eval`.
+    pub(crate) const INTERNAL: DefScope = DefScope {
+        internal: true,
+        ..DefScope::ROOT
     };
 }
 
@@ -2875,21 +2905,49 @@ impl Context {
     fn push_scope_defined_at(&mut self, def: &DefScope) {
         let barrier = self.barrier_for(def);
         let id = self.fresh_scope_id();
-        self.scope_stack.push(Scope::new(id, Some(barrier)));
+        let mut scope = Scope::new(id, Some(barrier));
+        scope.internal = def.internal;
+        self.scope_stack.push(scope);
     }
 
-    /// Point the top frame's lookups at `def` (the tail-call trampoline
-    /// reuses one frame for each function it runs). A function defined in
-    /// that very frame keeps the frame, its bindings and its barrier, which
-    /// are its defining scope.
-    fn set_top_defined_at(&mut self, def: &DefScope) {
+    /// Push a frame for evaluator-internal bindings, hidden from `$eval`.
+    fn push_internal_scope(&mut self) {
+        let id = self.fresh_scope_id();
+        let mut scope = Scope::new(id, None);
+        scope.internal = true;
+        self.scope_stack.push(scope);
+    }
+
+    /// Push a frame whose lookups skip the internal frames on top of the
+    /// stack, for `$eval`, which evaluates in its caller's scope.
+    fn push_scope_below_internal(&mut self) {
+        let mut i = self.scope_stack.len() - 1;
+        while i > 0 && self.scope_stack[i].internal {
+            i = self.scope_stack[i].barrier.unwrap_or(i - 1);
+        }
+        let id = self.fresh_scope_id();
+        self.scope_stack.push(Scope::new(id, Some(i)));
+    }
+
+    /// Give a tail call to a function defined at `def` its frame, returning
+    /// how many frames were pushed (0 or 1). The trampoline reuses the
+    /// previous call's frame, cleared, when nothing can still see it: the
+    /// callee was defined elsewhere and no function was defined that sees
+    /// it. Otherwise that frame is someone's defining scope (the callee's,
+    /// or a closure's that may still be called), so it stays and the callee
+    /// gets a frame of its own above it. Plain tail recursion thus runs in
+    /// one frame.
+    fn enter_tail_call(&mut self, def: &DefScope) -> usize {
         let barrier = self.barrier_for(def);
         let top = self.scope_stack.len() - 1;
-        if barrier < top {
-            // Defined elsewhere: the previous function's parameters and
-            // locals are not in its scope.
+        if barrier < top && !self.scope_stack[top].has_closures.get() {
             self.clear_current_scope();
             self.scope_stack[top].barrier = Some(barrier);
+            self.scope_stack[top].internal = def.internal;
+            0
+        } else {
+            self.push_scope_defined_at(def);
+            1
         }
     }
 
@@ -2921,6 +2979,7 @@ impl Context {
         let mut i = self.scope_stack.len() - 1;
         while i > 0 {
             let scope = &self.scope_stack[i];
+            scope.has_closures.set(true);
             match &mut heap {
                 Some(v) => v.push((i, scope.id)),
                 None if len < DEF_CHAIN_INLINE => {
@@ -2945,6 +3004,7 @@ impl Context {
         DefScope {
             ctx: self.ctx_id,
             chain,
+            internal: false,
         }
     }
 
@@ -3861,7 +3921,7 @@ impl Evaluator {
         // signature, or body evaluation of its own.
         if let Some(partial) = &stored.partial {
             let partial = Rc::clone(partial);
-            return self.invoke_partial(&partial, &stored.def_scope, args, data);
+            return self.invoke_partial(&partial, args, data);
         }
         if let Some(result) = self.invoke_transform(stored, args) {
             return result;
@@ -5074,7 +5134,7 @@ impl Evaluator {
             partial: None,
             live_token: LiveLambdaToken::new(),
             // Its body names only what it captured.
-            def_scope: DefScope::ROOT,
+            def_scope: DefScope::INTERNAL,
         }))
     }
 
@@ -7850,6 +7910,8 @@ impl Evaluator {
         // Like any call's frame, it looks past the caller's scopes to the
         // function's defining one (re-pointed per iteration below).
         self.context.push_scope_defined_at(&stored_lambda.def_scope);
+        // Frames this trampoline has pushed (see `Context::enter_tail_call`).
+        let mut frames = 1;
 
         // Trampoline loop - keeps evaluating until we get a final value
         let result = loop {
@@ -7866,23 +7928,26 @@ impl Evaluator {
             // scenario it exists to catch (see jsonata-js's own `$inf := function
             // (){$inf()}; $inf()` guardrails-documentation example).
             if self.options.timeout_ms.is_none() && iterations > MAX_TCO_ITERATIONS {
-                self.context.pop_scope();
+                for _ in 0..frames {
+                    self.context.pop_scope();
+                }
                 return Err(EvaluatorError::EvaluationError(
                     "U1001: Stack overflow - maximum recursion depth (500) exceeded".to_string(),
                 ));
             }
             if let Err(e) = check_loop_timeout(&self.options, self.start_time) {
-                self.context.pop_scope();
+                for _ in 0..frames {
+                    self.context.pop_scope();
+                }
                 return Err(e);
             }
+            if iterations > 1 {
+                frames += self.context.enter_tail_call(&current_lambda.def_scope);
+            }
 
-            // Evaluate the lambda body within the persistent scope
-            let result = self.invoke_lambda_body_for_tco(
-                &current_lambda,
-                &current_args,
-                &current_data,
-                iterations > 1,
-            )?;
+            // Evaluate the lambda body within the trampoline's frame
+            let result =
+                self.invoke_lambda_body_for_tco(&current_lambda, &current_args, &current_data)?;
 
             match result {
                 LambdaResult::JValue(v) => break v,
@@ -7895,8 +7960,10 @@ impl Evaluator {
             }
         };
 
-        // Pop the persistent TCO scope; escaping closures carry their own storage.
-        self.context.pop_scope();
+        // Pop the trampoline's frames; escaping closures carry their own storage.
+        for _ in 0..frames {
+            self.context.pop_scope();
+        }
 
         Ok(result)
     }
@@ -7910,7 +7977,6 @@ impl Evaluator {
         lambda: &Rc<StoredLambda>,
         values: &[JValue],
         data: &JValue,
-        tail_call: bool,
     ) -> Result<LambdaResult, EvaluatorError> {
         if let Some(result) = self.invoke_transform(lambda, values) {
             return result.map(LambdaResult::JValue);
@@ -7922,11 +7988,8 @@ impl Evaluator {
             values.to_vec()
         };
 
-        // Bind directly into the persistent scope (managed by invoke_lambda_with_tco),
-        // which the first call pushed defined at its function's scope.
-        if tail_call {
-            self.context.set_top_defined_at(&lambda.def_scope);
-        }
+        // Bind directly into the trampoline's frame (managed by
+        // invoke_lambda_with_tco), defined at the function's scope.
         // Apply captured environment
         for (name, value) in &lambda.captured_env {
             self.context.bind(name.clone(), value.clone());
@@ -8718,7 +8781,7 @@ impl Evaluator {
         values: &[JValue],
         call: impl FnOnce(&mut Self, &[AstNode]) -> Result<JValue, EvaluatorError>,
     ) -> Result<JValue, EvaluatorError> {
-        self.context.push_scope();
+        self.context.push_internal_scope();
         let temp_args: Vec<AstNode> = values
             .iter()
             .enumerate()
@@ -8796,7 +8859,11 @@ impl Evaluator {
         };
 
         // Evaluate the parsed expression
-        match self.evaluate_internal(&parsed_ast, eval_context) {
+        // In the caller's scope, without the evaluator's own temporaries.
+        self.context.push_scope_below_internal();
+        let evaluated = self.evaluate_internal(&parsed_ast, eval_context);
+        self.context.pop_scope();
+        match evaluated {
             Ok(result) => Ok(result),
             Err(e) => {
                 // D3121 is the error code for evaluation errors in $eval
@@ -9398,16 +9465,14 @@ impl Evaluator {
         }
 
         // The target is resolved now, as jsonata-js evaluates the procedure
-        // when it builds the partial: a closure or builtin value, so rebinding
-        // the name afterwards does not change it. Only a host function, which
-        // has no value form, is still applied by name.
+        // when it builds the partial: a closure, builtin or host function, so
+        // rebinding the name afterwards does not change it.
         let target = match bound {
             Some(JValue::Lambda(rc)) => PartialTarget::Lambda(Rc::clone(rc)),
             Some(JValue::Builtin { name: b }) => PartialTarget::Builtin(b.to_string()),
-            _ if self.host_fns.contains_key(name) => PartialTarget::Named {
-                name: name.to_string(),
-                is_builtin,
-            },
+            _ if self.host_fns.contains_key(name) => {
+                PartialTarget::Host(HostTarget(Rc::clone(&self.host_fns[name])))
+            }
             _ if self.is_builtin_function(name) => PartialTarget::Builtin(name.to_string()),
             _ => {
                 return Err(EvaluatorError::EvaluationError(
@@ -9463,8 +9528,8 @@ impl Evaluator {
                 total_args: args.len(),
             })),
             live_token: LiveLambdaToken::new(),
-            // A builtin target is resolved by name here at each call.
-            def_scope: self.context.def_scope(),
+            // Its target is resolved already; the scope is never consulted.
+            def_scope: DefScope::ROOT,
         };
 
         Ok(JValue::Lambda(Rc::new(stored_lambda)))
@@ -9477,7 +9542,6 @@ impl Evaluator {
     fn invoke_partial(
         &mut self,
         partial: &PartialApplication,
-        def_scope: &DefScope,
         values: &[JValue],
         data: &JValue,
     ) -> Result<JValue, EvaluatorError> {
@@ -9501,17 +9565,10 @@ impl Evaluator {
                 self.invoke_stored_lambda(&stored, &full_args, data)
             }
             PartialTarget::Builtin(name) => self.call_builtin_with_values(name, &full_args, data),
-            PartialTarget::Named { name, is_builtin } => {
-                // Through evaluate_function_call, so builtins, host fns, late
-                // shadowing bindings and per-function special cases all
-                // behave exactly as a direct call would. The name resolves
-                // where the partial was made, not where it is called.
-                self.context.push_scope_defined_at(def_scope);
-                let result = self.with_value_args(&full_args, |ev, args| {
-                    ev.evaluate_function_call(name, args, *is_builtin, data)
-                });
-                self.context.pop_scope();
-                result
+            PartialTarget::Host(HostTarget(f)) => {
+                let f = Rc::clone(f);
+                let mut ctx = HostCtx::new();
+                f.call(&full_args, &mut ctx)
             }
         }
     }

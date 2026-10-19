@@ -37,6 +37,18 @@ const KNOWN_DIVERGENCES: &[(&str, &str)] = &[
     // undefined here.
     ("compiled", "nope ~> /n/"),
     ("tree", "nope ~> /n/"),
+    // Deliberate (#159): `$k` captures `$m` by value when it is defined,
+    // while it is still the outer "root"; jsonata-js sees the block's later
+    // `$m := 1` through the live frame. Without the outer `$m` nothing is
+    // captured and both give 1 (the case before this one in the corpus).
+    (
+        "compiled",
+        "($m := \"root\"; $other := function($f) { $f() }; $outer := function() { ($k := function() { $m }; $m := 1; $other($k)) }; $outer())",
+    ),
+    (
+        "tree",
+        "($m := \"root\"; $other := function($f) { $f() }; $outer := function() { ($k := function() { $m }; $m := 1; $other($k)) }; $outer())",
+    ),
 ];
 
 /// Mirror of `encode` in scripts/gen_path_semantics_corpus.js.

@@ -10130,6 +10130,51 @@
    }
   },
   {
+   "expression": "($outer := function() { ($k := function() { $m }; $m := 1; $inner := function($m) { $k() }; $inner(99)) }; $outer())",
+   "result": 1
+  },
+  {
+   "expression": "($outer := function() { ($k := function() { $m }; $m := 1; $inner := function($m) { $k() }; [$inner(99)]) }; $outer())",
+   "result": [
+    1
+   ]
+  },
+  {
+   "expression": "($other := function($f) { $f() }; $outer := function() { ($k := function() { $m }; $m := 1; $other($k)) }; $outer())",
+   "result": 1
+  },
+  {
+   "expression": "($m := \"root\"; $other := function($f) { $f() }; $outer := function() { ($k := function() { $m }; $m := 1; $other($k)) }; $outer())",
+   "result": 1
+  },
+  {
+   "expression": "($loop := function($n, $acc) { $n = 0 ? $acc : $loop($n - 1, $acc + 1) }; $loop(50000, 0))",
+   "result": 50000
+  },
+  {
+   "expression": "($a := function($n) { $n = 0 ? \"a\" : $b($n - 1) }; $b := function($n) { $n = 0 ? \"b\" : $a($n - 1) }; $a(5001))",
+   "result": "b"
+  },
+  {
+   "expression": "($c := $string ~> $eval; $c(\"[$exists($__chain_x), $exists($__chain_f), $exists($__temp_arg_0)]\"))",
+   "result": [
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "expression": "($m := $map; $m([\"$exists($__temp_arg_0)\", \"$exists($__temp_arg_1)\"], $eval))",
+   "result": [
+    false,
+    false
+   ]
+  },
+  {
+   "expression": "($x := 7; $m := $map; $m([\"$x\"], $eval))",
+   "result": 7
+  },
+  {
    "expression": "$$arr",
    "result": {
     "$undefined": true

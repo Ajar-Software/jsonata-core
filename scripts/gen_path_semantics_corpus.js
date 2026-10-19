@@ -412,6 +412,17 @@ const EXTRA = [
   '($A := function() { function($v) { $string($v) } }; $C := function($string) { $map([1, 2], $A()) }; $C(function($x) { "leak" }))',
   '($mk := function() { ($local := "L"; function() { $local & $other }) }; $C := function($other) { $mk()() }; $C("leak"))',
   '($A := function() { function() { $secret } }; ($secret := "leak"; $g := $A(); $g()))',
+  // A tail call keeps a frame that a closure or the callee was defined in.
+  '($outer := function() { ($k := function() { $m }; $m := 1; $inner := function($m) { $k() }; $inner(99)) }; $outer())',
+  '($outer := function() { ($k := function() { $m }; $m := 1; $inner := function($m) { $k() }; [$inner(99)]) }; $outer())',
+  '($other := function($f) { $f() }; $outer := function() { ($k := function() { $m }; $m := 1; $other($k)) }; $outer())',
+  '($m := "root"; $other := function($f) { $f() }; $outer := function() { ($k := function() { $m }; $m := 1; $other($k)) }; $outer())',
+  '($loop := function($n, $acc) { $n = 0 ? $acc : $loop($n - 1, $acc + 1) }; $loop(50000, 0))',
+  '($a := function($n) { $n = 0 ? "a" : $b($n - 1) }; $b := function($n) { $n = 0 ? "b" : $a($n - 1) }; $a(5001))',
+  // `$eval` sees its caller's scope, not the evaluator's temporaries.
+  '($c := $string ~> $eval; $c("[$exists($__chain_x), $exists($__chain_f), $exists($__temp_arg_0)]"))',
+  '($m := $map; $m(["$exists($__temp_arg_0)", "$exists($__temp_arg_1)"], $eval))',
+  '($x := 7; $m := $map; $m(["$x"], $eval))',
   // `$$` is the variable named `$`, so `$$arr` is the (unbound) variable
   // `$arr`, not a field of the input (#201).
   '$$arr', '$string($$arr)', '$string($$missing)', '$exists($$arr)', '{"x": $$arr}',
