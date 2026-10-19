@@ -11,6 +11,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **A `$` step over an array known to hold no arrays skips the nested-array scan**
+  ([#196](https://github.com/txjmb/jsonata-core/issues/196)). `JArray` gains a private `flat`
+  flag, read with `is_flat()` and set with `JArray::new_flat` or `JValue::sequence_flat`, for
+  arrays known to hold no array a path step flattens. Input conversion (JSON, `serde_json`,
+  Python lists), numeric ranges, path steps that flattened nothing, field lookups over arrays
+  and `[...]` constructors over flat parts set it where knowing costs nothing; `make_mut` and
+  `with_items` clear it. `$sum(values.$)` over 1,000 numbers runs about 14% fewer instructions
+  (callgrind), and results are unchanged, including `n.$` over nested arrays.
 - **A filter, sort or group-by right after a sort of a tuple stream sees each tuple as an
   object** ([#214](https://github.com/txjmb/jsonata-core/issues/214)). jsonata-js's sort returns
   a tuple stream's tuples as a plain array, so the stage that follows reads the tuple, not its

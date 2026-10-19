@@ -66,6 +66,14 @@ pub enum JValue {
 ///   right after it sees each tuple as an object rather than its `@` value
 ///   (#214). The next path step makes a marked stream again.
 ///
+/// One more flag describes the items rather than the value: `flat`, known
+/// to hold no array that a path step flattens (none but `cons` arrays), so a
+/// `$` step can reuse the items without scanning them (#196). It is private
+/// and set only by constructors that already know the answer (input
+/// conversion, numeric ranges, a step that flattened nothing); any mutation
+/// through `make_mut` clears it, and arrays built with new items start
+/// without it. `false` only means "not known".
+///
 /// The flags sit beside the `Rc`, not inside it, so flagging an array that is
 /// shared (an input array, a bound variable) is O(1) and never copies the
 /// items. They belong to this value, not to the allocation: two `JValue`s may
@@ -82,6 +90,9 @@ pub struct JArray {
     pub keep_singleton: bool,
     pub outer_wrapper: bool,
     pub sorted_tuples: bool,
+    /// No item is an array a step flattens (one without `cons`). Private, so
+    /// it can only be set where that is known; see the type's docs.
+    flat: bool,
 }
 
 impl JArray {
@@ -95,7 +106,32 @@ impl JArray {
             keep_singleton: false,
             outer_wrapper: false,
             sorted_tuples: false,
+            flat: false,
         }
+    }
+
+    /// A plain array that the caller knows holds no array a path step
+    /// flattens (see [`JArray::is_flat`]). Pass `flat = false` when that is
+    /// not known; the flag is only ever a shortcut, so `false` is always
+    /// correct. Checked in debug builds.
+    #[inline]
+    pub fn new_flat(items: Vec<JValue>, flat: bool) -> Self {
+        debug_assert!(
+            !flat || !items.iter().any(flattens_in_step),
+            "array marked flat holds an array"
+        );
+        JArray {
+            flat,
+            ..JArray::new(items)
+        }
+    }
+
+    /// True when the items are known to hold no array that a path step
+    /// flattens (none but `cons` arrays), so a `$` step can take them as
+    /// they are. `false` means not known, not that there is one.
+    #[inline]
+    pub fn is_flat(&self) -> bool {
+        self.flat
     }
 
     /// The shared items themselves, for code that follows reference counts.
@@ -105,9 +141,11 @@ impl JArray {
     }
 
     /// A mutable reference to the items, cloning them first if they are
-    /// shared (`Rc::make_mut`).
+    /// shared (`Rc::make_mut`). Clears `flat`, since the caller may store an
+    /// array in them.
     #[inline]
     pub fn make_mut(&mut self) -> &mut Vec<JValue> {
+        self.flat = false;
         Rc::make_mut(&mut self.items)
     }
 
@@ -127,13 +165,16 @@ impl JArray {
         JArray {
             items: Rc::new(items),
             outer_wrapper: false,
+            // The new items are not known to be flat.
+            flat: false,
             ..*self
         }
     }
 
     /// A new sequence of the same items, sharing them: what jsonata-js
     /// builds when a step collects an array's items with `createSequence()`.
-    /// O(1); of this array's other flags only `sorted_tuples` carries over.
+    /// O(1); of this array's other flags only `sorted_tuples` carries over,
+    /// with `flat`, which describes the shared items.
     #[inline]
     pub fn fresh_sequence(&self) -> JArray {
         JArray {
@@ -144,6 +185,7 @@ impl JArray {
             outer_wrapper: false,
             // Tuples stay unmarked when a step collects them (#214).
             sorted_tuples: self.sorted_tuples,
+            flat: self.flat,
         }
     }
 
@@ -152,6 +194,13 @@ impl JArray {
     pub fn ptr_eq(a: &JArray, b: &JArray) -> bool {
         Rc::ptr_eq(&a.items, &b.items)
     }
+}
+
+/// True for an item a path step flattens into its own items: an array not
+/// built by the `[...]` constructor.
+#[inline]
+pub fn flattens_in_step(value: &JValue) -> bool {
+    matches!(value, JValue::Array(arr) if !arr.cons)
 }
 
 impl Deref for JArray {
@@ -501,6 +550,16 @@ impl JValue {
         JValue::Array(JArray {
             sequence: true,
             ..JArray::new(v)
+        })
+    }
+
+    /// `JValue::sequence` for items the caller knows hold no array a path
+    /// step flattens; see [`JArray::new_flat`].
+    #[inline]
+    pub fn sequence_flat(v: Vec<JValue>, flat: bool) -> Self {
+        JValue::Array(JArray {
+            sequence: true,
+            ..JArray::new_flat(v, flat)
         })
     }
 
@@ -899,10 +958,14 @@ impl<'de> Visitor<'de> for JValueVisitor {
 
     fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<JValue, A::Error> {
         let mut vec = Vec::with_capacity(seq.size_hint().unwrap_or(0));
+        // Input arrays are never `cons`, so an input array is flat when it
+        // holds no array at all (#196).
+        let mut flat = true;
         while let Some(elem) = seq.next_element()? {
+            flat &= !matches!(elem, JValue::Array(_));
             vec.push(elem);
         }
-        Ok(JValue::array(vec))
+        Ok(JValue::Array(JArray::new_flat(vec, flat)))
     }
 
     fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<JValue, A::Error> {
@@ -974,7 +1037,15 @@ impl From<serde_json::Value> for JValue {
             serde_json::Value::Number(n) => JValue::Number(n.as_f64().unwrap_or(0.0)),
             serde_json::Value::String(s) => JValue::String(s.into()),
             serde_json::Value::Array(arr) => {
-                JValue::array(arr.into_iter().map(JValue::from).collect())
+                let mut flat = true;
+                let items = arr
+                    .into_iter()
+                    .map(|v| {
+                        flat &= !v.is_array();
+                        JValue::from(v)
+                    })
+                    .collect();
+                JValue::Array(JArray::new_flat(items, flat))
             }
             serde_json::Value::Object(map) => {
                 let m: IndexMap<String, JValue> =
@@ -1284,5 +1355,106 @@ mod tests {
         let rebuilt = arr.with_items(vec![JValue::from(2i64)]);
         assert!(rebuilt.sequence && !rebuilt.cons && !rebuilt.keep_singleton);
         assert_eq!(*rebuilt, vec![JValue::from(2i64)]);
+    }
+
+    // ── `flat` (#196) ────────────────────────────────────────────────────
+
+    fn is_flat(v: &JValue) -> bool {
+        v.as_jarray().expect("an array").is_flat()
+    }
+
+    #[test]
+    fn test_flat_set_by_json_input_without_nested_arrays() {
+        let v = JValue::from_json_str(r#"{"a": [1, "x", null, {"b": [2]}], "e": []}"#).unwrap();
+        assert!(is_flat(v.get("a").unwrap()));
+        assert!(is_flat(v.get("e").unwrap()));
+        // An array under an object item doesn't count; it is its own array.
+        assert!(is_flat(
+            v.get("a").unwrap().get_index(3).unwrap().get("b").unwrap()
+        ));
+    }
+
+    #[test]
+    fn test_flat_not_set_by_json_input_with_nested_arrays() {
+        let v = JValue::from_json_str("[[1, 2], 3]").unwrap();
+        assert!(!is_flat(&v));
+        // The inner array holds numbers only.
+        assert!(is_flat(v.get_index(0).unwrap()));
+        let deep = JValue::from_json_str("[1, [[2]]]").unwrap();
+        assert!(!is_flat(&deep));
+        assert!(!is_flat(deep.get_index(1).unwrap()));
+        assert!(is_flat(deep.get_index(1).unwrap().get_index(0).unwrap()));
+    }
+
+    #[test]
+    fn test_flat_from_serde_json_value() {
+        assert!(is_flat(&JValue::from(serde_json::json!([1, {"a": [1]}]))));
+        assert!(!is_flat(&JValue::from(serde_json::json!([1, [2]]))));
+    }
+
+    #[test]
+    fn test_flat_not_set_by_plain_constructors() {
+        let items = || vec![JValue::from(1i64)];
+        assert!(!is_flat(&JValue::array(items())));
+        assert!(!is_flat(&JValue::sequence(items())));
+        assert!(!is_flat(&JValue::cons(items())));
+        assert!(!is_flat(&jvalue!([1, 2])));
+        assert!(!JArray::default().is_flat());
+    }
+
+    #[test]
+    fn test_flat_cleared_by_make_mut() {
+        let mut v = JValue::from_json_str("[1, 2]").unwrap();
+        let shared = v.clone();
+        v.as_array_mut()
+            .unwrap()
+            .push(JValue::array(vec![JValue::from(3i64)]));
+        assert!(!is_flat(&v), "a mutated array must lose the flag");
+        assert!(is_flat(&shared), "the shared original is unchanged");
+
+        // Unshared, so `make_mut` doesn't copy: the flag still goes.
+        let JValue::Array(mut arr) = JValue::from_json_str("[1]").unwrap() else {
+            unreachable!()
+        };
+        arr.make_mut();
+        assert!(!arr.is_flat());
+    }
+
+    #[test]
+    fn test_flat_cleared_by_with_items_and_kept_by_sharing() {
+        let v = JValue::from_json_str("[1, 2]").unwrap();
+        let arr = v.as_jarray().unwrap();
+        assert!(!arr.with_items(vec![JValue::array(vec![])]).is_flat());
+        assert!(!arr.with_items(vec![JValue::from(1i64)]).is_flat());
+        // Same items: the flag describes them, so it carries over.
+        assert!(arr.fresh_sequence().is_flat());
+        assert!(arr.clone().is_flat());
+        assert!(is_flat(&v.clone().into_outer_wrapper().bare()));
+        let mut marked = v.clone();
+        marked.mark_sequence();
+        marked.mark_keep_singleton();
+        assert!(is_flat(&marked));
+    }
+
+    #[test]
+    fn test_flat_allows_cons_items() {
+        // A step keeps a constructed array whole, so it doesn't stop `flat`.
+        let arr = JArray::new_flat(vec![JValue::cons(vec![JValue::from(1i64)])], true);
+        assert!(arr.is_flat());
+        assert!(is_flat(&JValue::sequence_flat(
+            vec![JValue::from(1i64)],
+            true
+        )));
+        assert!(!is_flat(&JValue::sequence_flat(
+            vec![JValue::from(1i64)],
+            false
+        )));
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "array marked flat holds an array")]
+    fn test_flat_checked_in_debug_builds() {
+        JArray::new_flat(vec![JValue::array(vec![])], true);
     }
 }

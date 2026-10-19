@@ -227,13 +227,18 @@ unsafe fn convert_ptr(
         return crate::value::with_stack(|| {
             let len = ffi::PyList_GET_SIZE(ptr);
             let mut result = Vec::with_capacity(len as usize);
+            // A converted list is never `cons`: the list is flat for a `$`
+            // step when it holds no list (#196).
+            let mut flat = true;
             for i in 0..len {
                 // Borrowed reference; safe because nothing in convert_ptr can
                 // trigger user code that mutates the list while we iterate.
                 let item = ffi::PyList_GET_ITEM(ptr, i);
-                result.push(convert_ptr(py, item, lazy)?);
+                let value = convert_ptr(py, item, lazy)?;
+                flat &= !value.is_array();
+                result.push(value);
             }
-            Ok(JValue::array(result))
+            Ok(JValue::Array(crate::value::JArray::new_flat(result, flat)))
         });
     }
     if ffi::PyDict_Check(ptr) != 0 {
