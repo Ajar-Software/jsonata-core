@@ -13,7 +13,7 @@ use std::time::Instant;
 
 use crate::ast::{AstNode, BinaryOp, PathStep, Stage};
 use crate::parser;
-use crate::value::{with_stack, JArray, JValue};
+use crate::value::{flattens_in_step, with_stack, JArray, JValue};
 use indexmap::IndexMap;
 use std::rc::Rc;
 use thiserror::Error;
@@ -2087,9 +2087,15 @@ pub(crate) fn compiled_field_step(
         JValue::LazyPyDict(lazy) => Ok(lazy.get_field(field)?),
         JValue::Array(arr) => {
             let mut result = Vec::with_capacity(arr.len());
+            // Flat (#196) when no array was flattened in: every item pushed
+            // is then a non-array value.
+            let mut flat = true;
             for value in field_values(field, arr, options)? {
                 match value {
-                    JValue::Array(inner) => result.extend(inner.iter().cloned()),
+                    JValue::Array(inner) => {
+                        flat = false;
+                        result.extend(inner.iter().cloned())
+                    }
                     other => result.push(other),
                 }
             }
@@ -2097,7 +2103,7 @@ pub(crate) fn compiled_field_step(
             Ok(if result.is_empty() {
                 JValue::Undefined
             } else {
-                JValue::sequence(result)
+                JValue::sequence_flat(result, flat)
             })
         }
         _ => Ok(JValue::Undefined),
@@ -3312,11 +3318,9 @@ fn collect_step_results(mut results: Vec<JValue>, last_step: bool) -> JValue {
             return JValue::Array(arr.fresh_sequence());
         }
     }
-    if !results
-        .iter()
-        .any(|value| matches!(value, JValue::Array(arr) if !arr.cons))
-    {
-        return JValue::sequence(results);
+    if !results.iter().any(flattens_in_step) {
+        // Nothing to flatten: the results are the items, known flat (#196).
+        return JValue::sequence_flat(results, true);
     }
     let mut items = Vec::with_capacity(results.len());
     for value in results {
@@ -4368,7 +4372,7 @@ impl Evaluator {
             AstNode::Unary { op, operand } => self.evaluate_unary_op(*op, operand, data),
 
             // Array constructor - JSONata semantics:
-            AstNode::Array(elements) => Ok(JValue::array(self.construct_array(elements, data)?)),
+            AstNode::Array(elements) => Ok(JValue::Array(self.construct_array(elements, data)?)),
 
             AstNode::Object(pairs) => self.construct_object(pairs, data),
 
@@ -4765,23 +4769,32 @@ impl Evaluator {
     /// element that is itself an array constructor stays nested, any other
     /// array value is spliced in one level (`fn.append`), and undefined
     /// elements are dropped. Explicit nulls are values and stay.
+    ///
+    /// The array is marked flat (#196) when that is known at no cost: every
+    /// spliced array was flat and no pushed element is an array a step
+    /// flattens (one O(1) check per element, not per spliced item).
     fn construct_array(
         &mut self,
         elements: &[AstNode],
         data: &JValue,
-    ) -> Result<Vec<JValue>, EvaluatorError> {
+    ) -> Result<JArray, EvaluatorError> {
         let mut items = Vec::with_capacity(elements.len());
+        let mut flat = true;
         for element in elements {
             let value = self.evaluate_internal(element, data)?;
             match value {
                 JValue::Undefined => {}
                 JValue::Array(arr) if !matches!(element, AstNode::Array(_)) => {
+                    flat &= arr.is_flat();
                     items.extend(arr.iter().cloned())
                 }
-                other => items.push(other),
+                other => {
+                    flat &= !flattens_in_step(&other);
+                    items.push(other)
+                }
             }
         }
-        Ok(items)
+        Ok(JArray::new_flat(items, flat))
     }
 
     /// `lhs ~> rhs`, following jsonata-js `evaluateApplyExpression`.
@@ -5291,12 +5304,12 @@ impl Evaluator {
     ) -> Result<JValue, EvaluatorError> {
         // A `$` step without stages yields its input items again; unless one
         // of them is an array to flatten, that is the input as a sequence.
+        // An array known to be flat skips the O(n) scan (#196).
         if let (AstNode::Variable(name), Some(source)) = (&step.node, source) {
-            let flattens = |v: &JValue| matches!(v, JValue::Array(arr) if !arr.cons);
             if name.is_empty()
                 && step.stages.is_empty()
                 && !(last_step && items.len() == 1)
-                && !items.iter().any(flattens)
+                && (source.is_flat() || !items.iter().any(flattens_in_step))
             {
                 return Ok(JValue::Array(source.fresh_sequence()));
             }
@@ -5540,9 +5553,10 @@ impl Evaluator {
                 self.with_dollar(item, |ev| ev.evaluate_internal(expr, item))
             }
             AstNode::ArrayGroup(elements) => {
-                let items =
+                let mut arr =
                     self.with_dollar_bound(item, |ev| ev.construct_array(elements, item))?;
-                Ok(JValue::cons(items))
+                arr.cons = true;
+                Ok(JValue::Array(arr))
             }
             // These don't read `$`, so need no binding.
             AstNode::Variable(_) | AstNode::ParentVariable(_) | AstNode::Name(_) => {
@@ -9659,7 +9673,8 @@ impl Evaluator {
             }
         }
         // Note: if start > end, return empty array (not reversed)
-        Ok(JValue::sequence(result))
+        // Numbers only: flat for a `$` step (#196).
+        Ok(JValue::sequence_flat(result, true))
     }
 
     /// The `in` membership operator.
@@ -10813,5 +10828,58 @@ mod tests {
         let mut evaluator = Evaluator::new();
         let result = evaluator.evaluate(&ast, &data).unwrap();
         assert_eq!(result, serde_json::json!("OUT").into());
+    }
+
+    // --- #196: arrays known to be flat ---------------------------------------
+
+    fn eval_flat(expr: &str, data: &str) -> JValue {
+        let ast = crate::parser::parse(expr).unwrap();
+        let data = JValue::from_json_str(data).unwrap();
+        Evaluator::new().evaluate(&ast, &data).unwrap()
+    }
+
+    fn flat_of(v: &JValue) -> bool {
+        v.as_jarray().expect("an array").is_flat()
+    }
+
+    #[test]
+    fn test_flat_set_where_known() {
+        // A range holds numbers only.
+        assert!(flat_of(&eval_flat("1..5", "{}")));
+        // A step that flattened nothing.
+        assert!(flat_of(&eval_flat("a.b", r#"{"a": [{"b": 1}, {"b": 2}]}"#)));
+        // A `$` step over a flat input shares it, flag included.
+        assert!(flat_of(&eval_flat("v.$", r#"{"v": [1, 2, 3]}"#)));
+        // A constructor over flat parts.
+        assert!(flat_of(&eval_flat("[1..3, 4, v]", r#"{"v": [5, 6]}"#)));
+    }
+
+    #[test]
+    fn test_flat_not_set_over_nested_arrays() {
+        // A step that flattened arrays in may hold arrays from deeper down.
+        assert!(!flat_of(&eval_flat(
+            "a.b",
+            r#"{"a": [{"b": [[1]]}, {"b": 2}]}"#
+        )));
+        // A constructor holding an array, or splicing a non-flat one.
+        assert!(!flat_of(&eval_flat("[1, v]", r#"{"v": [[5], 6]}"#)));
+        assert!(!flat_of(&eval_flat("[[1, 2], 3]", "{}")));
+        // A function building a new array from its arguments.
+        assert!(!flat_of(&eval_flat(
+            "$append(v, [[9]])",
+            r#"{"v": [1, 2]}"#
+        )));
+    }
+
+    #[test]
+    fn test_dollar_step_over_nested_arrays_still_flattens() {
+        let data = r#"{"v": [1, 2], "n": [[1, 2], [3, [4]]]}"#;
+        let json = |e: &str| eval_flat(e, data).to_json_string().unwrap();
+        assert_eq!(json("n.$"), "[1,2,3,[4]]");
+        assert_eq!(json("n.$.$"), "[1,2,3,4]");
+        assert_eq!(json("$append(v, [[9]]).$"), "[1,2,9]");
+        assert_eq!(json("[v, [5]].$"), "[1,2,5]");
+        assert_eq!(json("[1..2, n].$"), "[1,2,1,2,3,[4]]");
+        assert_eq!(json("$sum([1..1000].$)"), "500500");
     }
 }

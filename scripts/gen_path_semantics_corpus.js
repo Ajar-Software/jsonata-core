@@ -108,6 +108,17 @@ const EXTRA = [
   'arr[]@$v.$v', 'objs[]@$o.$o.p', 'arr^($)#$i', 'arr^($)[0]#$i',
   'arr^($)#$i.$i', 'arr^(>$)#$i.{"v": $, "i": $i}', 'objs^(>p)#$i', 'objs^(>p)#$i.p',
   'objs^(>p)#$i.{"p": p, "i": $i}', 'objs#$j^(>p)#$i.{"j": $j, "i": $i}', 'arr^($)[$ > 1]#$i.{"v": $, "i": $i}',
+  // `$` steps over arrays known to be flat, or not (#196): input arrays,
+  // ranges, constructors, step results, and arrays rebuilt by functions.
+  'arr.$.$', 'n.$.$', 'nn.$.$', 'nn.$.$.$', 'o.t.$', 'o.t.$.$', 'objs.p.$', 'a.b.$',
+  'm.k.b.$', 'x.y.$', '$sum(arr.$)', '[1..3].$', '$sum([1..1000].$)', '[[1..3]].$',
+  '[1..3, [4]].$', '[[1, 2], 3].$', '[n, arr].$', '[arr, 4].$', '[arr, [5]].$',
+  '[[arr]].$', '[arr].$.$', '[1..2].[$].$', 'arr.[$].$', '$append(arr, [[9]]).$',
+  '$append(arr, [9]).$', '$append(n, arr).$', '$reverse(n).$', '$distinct(n).$',
+  '$sort(arr).$', '$map(arr, function($v) { [$v] }).$', '$filter(n, function($v) { true }).$',
+  '$lookup(o, "t").$', '($a := arr; $b := $append($a, [[1]]); [$a.$, $b.$])',
+  '($a := n; [$a.$, $a[0].$, $a.$.$])',
+
   // `$eval` wraps an array context the way evaluate wraps its input.
   '$eval("t", o)', '$eval("t[0]", o)', '$eval("$.t[0]", o)', '$eval("n[0]", $)',
   '$eval("p", objs)', '$eval("$[0]", arr)',
