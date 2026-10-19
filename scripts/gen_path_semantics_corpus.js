@@ -260,6 +260,13 @@ const EXTRA = [
   // A predicate on a consarray block leaves one value bare.
   '([1,2].$)[0].$', '([3].$)[$=3].$', '([{"a":7}].$)[0].a', 'objs.(([$].$)[0].p)', '([1,2].$)[].$',
   '([1,2].$)[$>0].$',
+  // A predicate on a first-step sort collects its value again, and the
+  // predicate's own paths are their own.
+  '[3][0]^($)[true].$', '[3][0]^($)[0].$', '([3].$)^($)[0].$', '([3].$)^($)[$=3].$',
+  '[3][0]^($)[true].$string()', 'n.([3][0]^($)[true].$)', '[3][0]^($)[$count($$.x.y)=0].$',
+  '[3][0]^($)[$exists($$.x.y) = false].$', '[3][0]^($)[$count($$.x.y)=1].$', '[3][0]^($)[$count($$.x.y)=2].$',
+  // A `[]` on a consarray block keeps its array.
+  '([1,2].$)[0][].$', '([1,2].$)[$=1][].$', '([1,2].$)[[0]][].$', '([3].$)[][0].$', 'n.(([1,2].$)[0][].$)',
   // After a sort, a tuple's `#$i` or `@$v` binding reads as a field named `i` or `v`.
   'acct.Order.P#$i^(>$i){"k": $keys($)}', 'acct.Order.P#$i^(>$i)[i = 1]', 'acct.Order.P#$i^(>$i)[$.i = 0]',
   'acct.Order.P#$i^(>$i){"x": $sum(i)}', 'acct.Order.P#$i^(>$i)^(i).N', 'acct.Order.P@$p^(>$p.N){"k": $keys($)}',

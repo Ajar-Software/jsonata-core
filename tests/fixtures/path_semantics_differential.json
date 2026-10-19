@@ -8613,6 +8613,86 @@
    ]
   },
   {
+   "expression": "[3][0]^($)[true].$",
+   "result": 3
+  },
+  {
+   "expression": "[3][0]^($)[0].$",
+   "result": 3
+  },
+  {
+   "expression": "([3].$)^($)[0].$",
+   "result": 3
+  },
+  {
+   "expression": "([3].$)^($)[$=3].$",
+   "result": 3
+  },
+  {
+   "expression": "[3][0]^($)[true].$string()",
+   "result": "3"
+  },
+  {
+   "expression": "n.([3][0]^($)[true].$)",
+   "result": [
+    3,
+    3
+   ]
+  },
+  {
+   "expression": "[3][0]^($)[$count($$.x.y)=0].$",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "[3][0]^($)[$exists($$.x.y) = false].$",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "[3][0]^($)[$count($$.x.y)=1].$",
+   "result": 3
+  },
+  {
+   "expression": "[3][0]^($)[$count($$.x.y)=2].$",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "([1,2].$)[0][].$",
+   "result": [
+    1
+   ]
+  },
+  {
+   "expression": "([1,2].$)[$=1][].$",
+   "result": [
+    1
+   ]
+  },
+  {
+   "expression": "([1,2].$)[[0]][].$",
+   "result": [
+    1
+   ]
+  },
+  {
+   "expression": "([3].$)[][0].$",
+   "result": [
+    3
+   ]
+  },
+  {
+   "expression": "n.(([1,2].$)[0][].$)",
+   "result": [
+    1,
+    1
+   ]
+  },
+  {
    "expression": "acct.Order.P#$i^(>$i){\"k\": $keys($)}",
    "result": {
     "k": [
