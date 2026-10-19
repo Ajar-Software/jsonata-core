@@ -46,10 +46,12 @@ jobs:
        github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: [self-hosted, macOS, ARM64]
     timeout-minutes: 45
-    # One comparison at a time on the shared runner, so runs don't skew each
-    # other. At job level, so a skipped run (another label) holds no slot.
+    # One comparison per PR at a time. Runs for different PRs still queue on
+    # the runner itself. A single shared group would keep only the newest
+    # pending run and cancel the others before they removed their label.
+    # At job level, so a skipped run (another label) holds no slot.
     concurrency:
-      group: mac-mini-benchmark-compare
+      group: mac-mini-benchmark-compare-${{ github.event.pull_request.number || github.run_id }}
       cancel-in-progress: false
     env:
       BASE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || inputs.base_ref }}
@@ -96,12 +98,23 @@ jobs:
           rm -rf "$RUNNER_TEMP/ab"
           git worktree prune
           mkdir -p "$RUNNER_TEMP/ab"
+          resolve() {
+            git fetch --quiet origin "$1" || true
+            git rev-parse --verify "origin/$1^{commit}" 2>/dev/null || git rev-parse --verify "$1^{commit}"
+          }
+          base_sha=$(resolve "$BASE_REF")
+          head_sha=$(resolve "$HEAD_REF")
+          # For a PR, compare against where it branched off, so commits that
+          # landed on the base branch since then don't count as the PR's.
+          if [ "$GITHUB_EVENT_NAME" = pull_request ]; then
+            base_sha=$(git merge-base "$base_sha" "$head_sha")
+          fi
+          echo "base: $BASE_REF ($base_sha)"
+          echo "head: $HEAD_REF ($head_sha)"
+          echo "base_sha=$base_sha" >> "$GITHUB_ENV"
+          echo "head_sha=$head_sha" >> "$GITHUB_ENV"
           for side in base head; do
-            if [ "$side" = base ]; then ref="$BASE_REF"; else ref="$HEAD_REF"; fi
-            git fetch --quiet origin "$ref" || true
-            sha=$(git rev-parse --verify "origin/$ref^{commit}" 2>/dev/null || git rev-parse --verify "$ref^{commit}")
-            echo "$side: $ref ($sha)"
-            echo "${side}_sha=$sha" >> "$GITHUB_ENV"
+            if [ "$side" = base ]; then sha="$base_sha"; else sha="$head_sha"; fi
             git worktree add --detach "$RUNNER_TEMP/ab/src-$side" "$sha"
             (cd "$RUNNER_TEMP/ab/src-$side" && \
               CARGO_TARGET_DIR="$RUNNER_TEMP/ab/target" maturin build --release --out "$RUNNER_TEMP/ab/dist-$side")
@@ -132,6 +145,30 @@ jobs:
           python - <<'EOF'
           import json, os, urllib.request
           body = open(os.path.join(os.environ["RUNNER_TEMP"], "ab", "report.md")).read()
+          url = f"{os.environ['GITHUB_API_URL']}/repos/{os.environ['GITHUB_REPOSITORY']}/issues/{os.environ['PR']}/comments"
+          request = urllib.request.Request(
+              url,
+              data=json.dumps({"body": body}).encode(),
+              headers={
+                  "Authorization": f"Bearer {os.environ['GH_TOKEN']}",
+                  "Accept": "application/vnd.github+json",
+              },
+              method="POST",
+          )
+          urllib.request.urlopen(request).read()
+          EOF
+
+      # The label is already gone, so say on the PR that the run failed.
+      - name: Report a failed run on the PR
+        if: failure() && github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          python - <<'EOF'
+          import json, os, urllib.request
+          run = f"{os.environ['GITHUB_SERVER_URL']}/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{os.environ['GITHUB_RUN_ID']}"
+          body = f"The Mac Mini benchmark comparison failed. See the [run log]({run}). Add the `benchmark-mac` label again to retry."
           url = f"{os.environ['GITHUB_API_URL']}/repos/{os.environ['GITHUB_REPOSITORY']}/issues/{os.environ['PR']}/comments"
           request = urllib.request.Request(
               url,

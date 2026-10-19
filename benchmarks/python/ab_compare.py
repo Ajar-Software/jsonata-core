@@ -91,8 +91,9 @@ def time_build(build_dir: str, scale: float) -> dict:
         env=env,
         capture_output=True,
         text=True,
-        check=True,
     )
+    if result.returncode != 0:
+        sys.exit(f"benchmark run failed for {build_dir}:\n{result.stderr}")
     return json.loads(result.stdout)
 
 
@@ -112,6 +113,8 @@ def main() -> int:
         return 0
     if not args.base or not args.head:
         parser.error("BASE_DIR and HEAD_DIR are required")
+    if args.rounds < 2:
+        parser.error("--rounds must be at least 2, so each build runs first once")
 
     best: dict[str, dict[str, float]] = {"base": {}, "head": {}}
     for round_no in range(args.rounds):
