@@ -173,6 +173,37 @@ const EXTRA = [
   '(acct.Order.P[%.id = "zz"]){"k": 1}', '$x@$y{"k": 1}', '[1, 2]@$y[$y > 5]{"k": 1}', '$x#$y{"k": 1}',
   'acct.Order@$o[id = "zz"]^(id){"k": 1}', 'acct.Order#$i[$i > 5]^(id){"k": 1}',
   'acct.Order[%.id = "zz"]^(id){"k": 1}', 'acct.Order[id = "zz"]^(id){"k": 1}',
+  // A sort over a block's tuple stream unwraps a single or empty result
+  // (#207).
+  '(acct.Order.P[N="C"])^(%.id)', 'acct.Order.(P[N="C"])^(%.id)', '(acct.Order[0].P[0])^(%.id)',
+  'acct.Order.P[N="C"]^(%.id)', '(acct.Order.P[N="C"])^(N)', '(acct.Order.P[N="C"])^(%.id).N',
+  '(acct.Order.P)[N = "Z"]^(>%.id)', '(o.t)[N = "C"]^(>%.id)',
+  // A sort of a tuple stream returns its tuples unmarked, so a filter, sort
+  // or group-by right after it sees each tuple as an object (#214).
+  'acct.Order.P^(>%.id)[N = "C"]', 'acct.Order.P^(>%.id)^(N)', 'acct.Order.P^(>%.id){N: N}',
+  'o.t^(>%.id)^($)', 'acct.Order.P^(>%.id)[0].N', 'acct.Order.P^(>%.id)[N = "C"].N',
+  'acct.Order.P^(>%.id)[$i = 0]', 'acct.Order#$i.P^(N)[N = "C"]', 'acct.Order#$i.P^(N)^(>N)',
+  'acct.Order.P#$i^(N){N: N}', 'acct.Order@$o.P^(N)[N = "C"]', 'arr^($)#$i[$i > 0]',
+  'acct.Order.P^(>%.id)[0]^(N)', 'acct.Order.P^(>%.id)[$count($.\'@\') > 0]',
+  'acct.Order.P^(>%.id)[$count($.\'@\') > 0]{N: N}', 'acct.Order.P^(>%.id)[0]{N: N}',
+  'acct.Order.P^(>%.id)[true]{N: N}', 'acct.Order.P^(>%.id)[[0, 1]]{N: N}',
+  'acct.Order.P^(>%.id)[N = "C"]^(N)',
+  'acct.Order.P[N = "C"][]^(%.id)[N = "C"]', 'acct.Order.P[N = "C"][]^(%.id){N: N}',
+  'acct.Order.P[N = "C"][]^(%.id)^(N)', 'acct.Order.P^(>%.id)^(N)#$k.$k', 'acct.Order.P^(>%.id)^(N)#$k[$k = 0]',
+  'acct.Order.P^(>%.id)[N = "C"]#$k', 'acct.Order.P^(>%.id)[N = "C"]#$k.{"k": $k, "v": $}',
+  'acct.Order.P^(>%.id)#$k[N = "C"]', 'acct.Order.P^(>%.id)#$k[$k = 1]', 'acct.Order.P^(>%.id)#$k.{"k": $k}',
+  'acct.Order.P[N = "C"]^(%.id)#$k[N = "C"]',
+  // A one-item sort keeps its mark through a filter, and `#` after a sort keeps it.
+  'acct.Order.P[N = "C"]^(%.id)[N = "C"]{N: N}', 'acct.Order.P[N = "C"]^(%.id)[0]{N: N}',
+  'acct.Order.P[N = "C"]^(%.id)[true]{N: N}', 'acct.Order.P[N = "C"]^(%.id)[]{N: N}',
+  'acct.Order[1].P^(%.id)[0]{N: N}', 'acct.Order#$i.P[N = "C"]^($i)[0]{N: N}',
+  'acct.Order.P^(>%.id)#$k{N: N}', 'acct.Order.P^(>%.id)#$k^(N)', 'acct.Order.P^(>%.id)#$k^(N).N',
+  'acct.Order.P^(>%.id)#$k[$k > 0].N',
+  // Outside a path, as a value, a sort of a tuple stream gives values.
+  '($x := acct.Order.P^(>%.id); $x[N = "C"])', '(acct.Order.P^(>%.id))[N = "C"]',
+  '(true ? acct.Order.P^(>%.id) : 0)[N = "C"]', '{"a": acct.Order.P^(>%.id)}.a[N = "C"]',
+  '(acct.Order.P^(>%.id)){N: N}', '($x := acct.Order.P^(>%.id); $x{N: N})', '(acct.Order.P^(>%.id))^(N)',
+  '$string(acct.Order.P^(>%.id))', 'acct.Order.P^(>%.id) ~> $sort(function($a, $b) { $a.N < $b.N })',
   // `$match` returns every match as a sequence (#194).
   '$match("aba", /a/)', '$match("aba", /a/, 1)', '$match("aba", /a/, 0)', '$match("aba", /z/)',
   '$match("xay", /a/)', '$match("ab", /(a)(c)?/)', '$match("abc", /x*/)', '$match("abc", /x*/, 1)',
