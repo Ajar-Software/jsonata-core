@@ -1,0 +1,190 @@
+name: Compare Benchmarks (Mac Mini)
+
+# Same-machine A/B check of two refs on the self-hosted Mac Mini runner.
+# The PR benchmark job (benchmark.yml) compares a PR against the last `main`
+# run, which ran on a different GitHub-hosted runner, so runner speed alone
+# can move every test 15-50% in one direction. This builds both refs here
+# and times them in alternating rounds (benchmarks/python/ab_compare.py), so
+# only the code differs. It touches nothing in git.
+#
+# Two ways to start it:
+# - Run it from the Actions tab with any two refs.
+# - Add the `benchmark-mac` label to a PR from this repository. It compares
+#   the PR's base and head commits, posts the table as a PR comment and
+#   removes the label, so adding it again runs it again. Labels need triage
+#   access, and PRs from forks are skipped, so outside code never runs on
+#   the self-hosted runner.
+
+on:
+  pull_request:
+    types: [labeled]
+  workflow_dispatch:
+    inputs:
+      base_ref:
+        description: 'Base branch, tag or SHA'
+        required: true
+        default: 'main'
+      head_ref:
+        description: 'Head branch, tag or SHA to compare against the base'
+        required: true
+      rounds:
+        description: 'Interleaved rounds (each build reports its best round)'
+        required: false
+        default: '12'
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+jobs:
+  compare:
+    name: Compare Benchmarks (Mac Mini)
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.label.name == 'benchmark-mac' &&
+       github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: [self-hosted, macOS, ARM64]
+    timeout-minutes: 45
+    # One comparison per PR at a time. Runs for different PRs still queue on
+    # the runner itself. A single shared group would keep only the newest
+    # pending run and cancel the others before they removed their label.
+    # At job level, so a skipped run (another label) holds no slot.
+    concurrency:
+      group: mac-mini-benchmark-compare-${{ github.event.pull_request.number || github.run_id }}
+      cancel-in-progress: false
+    env:
+      BASE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || inputs.base_ref }}
+      HEAD_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || inputs.head_ref }}
+      ROUNDS: ${{ inputs.rounds || '12' }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      # actions/setup-python doesn't work on this runner (see
+      # benchmark-manual.yml).
+      - name: Install UV
+        uses: astral-sh/setup-uv@v7
+
+      - name: Install Python (macOS)
+        run: |
+          uv python install 3.14
+          uv venv --python 3.14 .venv
+          echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install maturin
+        run: uv pip install --upgrade maturin
+
+      - name: Remove the trigger label
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          curl -fsS -X DELETE -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/issues/$PR/labels/benchmark-mac" > /dev/null || true
+
+      - name: Build both refs
+        run: |
+          set -euo pipefail
+          # The runner is persistent, so clear anything a previous run left.
+          rm -rf "$RUNNER_TEMP/ab"
+          git worktree prune
+          mkdir -p "$RUNNER_TEMP/ab"
+          resolve() {
+            git fetch --quiet origin "$1" || true
+            git rev-parse --verify "origin/$1^{commit}" 2>/dev/null || git rev-parse --verify "$1^{commit}"
+          }
+          base_sha=$(resolve "$BASE_REF")
+          head_sha=$(resolve "$HEAD_REF")
+          # For a PR, compare against where it branched off, so commits that
+          # landed on the base branch since then don't count as the PR's.
+          if [ "$GITHUB_EVENT_NAME" = pull_request ]; then
+            base_sha=$(git merge-base "$base_sha" "$head_sha")
+          fi
+          echo "base: $BASE_REF ($base_sha)"
+          echo "head: $HEAD_REF ($head_sha)"
+          echo "base_sha=$base_sha" >> "$GITHUB_ENV"
+          echo "head_sha=$head_sha" >> "$GITHUB_ENV"
+          for side in base head; do
+            if [ "$side" = base ]; then sha="$base_sha"; else sha="$head_sha"; fi
+            git worktree add --detach "$RUNNER_TEMP/ab/src-$side" "$sha"
+            (cd "$RUNNER_TEMP/ab/src-$side" && \
+              CARGO_TARGET_DIR="$RUNNER_TEMP/ab/target" maturin build --release --out "$RUNNER_TEMP/ab/dist-$side")
+            mkdir -p "$RUNNER_TEMP/ab/pkg-$side"
+            python -m zipfile -e "$RUNNER_TEMP"/ab/dist-$side/*.whl "$RUNNER_TEMP/ab/pkg-$side"
+          done
+
+      - name: Compare
+        run: |
+          set -euo pipefail
+          python benchmarks/python/ab_compare.py --rounds "$ROUNDS" --markdown \
+            "$RUNNER_TEMP/ab/pkg-base" "$RUNNER_TEMP/ab/pkg-head" > "$RUNNER_TEMP/ab/table.md"
+          {
+            echo "## Benchmark comparison (Mac Mini)"
+            echo
+            echo "Base \`${base_sha:0:7}\`, head \`${head_sha:0:7}\`, measured on the same machine."
+            echo
+            cat "$RUNNER_TEMP/ab/table.md"
+          } > "$RUNNER_TEMP/ab/report.md"
+          tee -a "$GITHUB_STEP_SUMMARY" < "$RUNNER_TEMP/ab/report.md"
+
+      - name: Post the table on the PR
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          python - <<'EOF'
+          import json, os, urllib.request
+          body = open(os.path.join(os.environ["RUNNER_TEMP"], "ab", "report.md")).read()
+          url = f"{os.environ['GITHUB_API_URL']}/repos/{os.environ['GITHUB_REPOSITORY']}/issues/{os.environ['PR']}/comments"
+          request = urllib.request.Request(
+              url,
+              data=json.dumps({"body": body}).encode(),
+              headers={
+                  "Authorization": f"Bearer {os.environ['GH_TOKEN']}",
+                  "Accept": "application/vnd.github+json",
+              },
+              method="POST",
+          )
+          urllib.request.urlopen(request).read()
+          EOF
+
+      # The label is already gone, so say on the PR that the run failed.
+      - name: Report a failed run on the PR
+        if: failure() && github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          python - <<'EOF'
+          import json, os, urllib.request
+          run = f"{os.environ['GITHUB_SERVER_URL']}/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{os.environ['GITHUB_RUN_ID']}"
+          body = f"The Mac Mini benchmark comparison failed. See the [run log]({run}). Add the `benchmark-mac` label again to retry."
+          url = f"{os.environ['GITHUB_API_URL']}/repos/{os.environ['GITHUB_REPOSITORY']}/issues/{os.environ['PR']}/comments"
+          request = urllib.request.Request(
+              url,
+              data=json.dumps({"body": body}).encode(),
+              headers={
+                  "Authorization": f"Bearer {os.environ['GH_TOKEN']}",
+                  "Accept": "application/vnd.github+json",
+              },
+              method="POST",
+          )
+          urllib.request.urlopen(request).read()
+          EOF
+
+      - name: Clean up
+        if: always()
+        run: |
+          git worktree remove --force "$RUNNER_TEMP/ab/src-base" 2>/dev/null || true
+          git worktree remove --force "$RUNNER_TEMP/ab/src-head" 2>/dev/null || true
+          git worktree prune
