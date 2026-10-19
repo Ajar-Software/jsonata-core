@@ -242,23 +242,10 @@ pub mod string {
             JValue::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
             JValue::Number(n) => out.push_str(&format_stringified_number(*n)),
             JValue::String(s) => write_json_escaped(s, out),
-            // The replacer maps functions to "" wherever they appear.
-            JValue::Lambda { .. } | JValue::Builtin { .. } => out.push_str("\"\""),
-            JValue::Regex { pattern, flags } => {
-                // Mirrors the serde Serialize impl: a regex value renders as
-                // {"pattern": ..., "flags": ...}.
-                out.push('{');
-                out.push_str(&open_sep);
-                write_json_escaped("pattern", out);
-                out.push_str(key_sep);
-                write_json_escaped(pattern, out);
-                out.push_str(item_sep);
-                out.push_str(&open_sep);
-                write_json_escaped("flags", out);
-                out.push_str(key_sep);
-                write_json_escaped(flags, out);
-                out.push_str(&close_sep);
-                out.push('}');
+            // The replacer maps functions, regexes included, to "" wherever
+            // they appear.
+            JValue::Lambda { .. } | JValue::Builtin { .. } | JValue::Regex { .. } => {
+                out.push_str("\"\"")
             }
             JValue::Array(arr) => {
                 if arr.is_empty() {
@@ -645,7 +632,8 @@ pub mod string {
     impl RegexMatch<'_> {
         /// The `{match, start, end, groups}` object jsonata-js hands a
         /// `$replace` replacement function. jsonata-js also gives it a `next`
-        /// function, which isn't reproduced here. Needs `utf16_span`.
+        /// function, which only a regex function value's result adds (see
+        /// `Evaluator::call_regex`). Needs `utf16_span`.
         pub fn to_object(&self) -> JValue {
             let (start, end) = self.utf16_span.expect("the cursor counts UTF-16 offsets");
             let mut obj = IndexMap::with_capacity(4);
@@ -677,6 +665,8 @@ pub mod string {
         s: &'s str,
         /// Where the next search starts (`lastIndex`); `None` before the first.
         from: Option<usize>,
+        /// Where the first search starts.
+        first_from: usize,
         /// Whether to fill in each match's `utf16_span`.
         count_utf16: bool,
         /// The UTF-16 offset of byte `counted_to`, kept as the search moves on.
@@ -690,6 +680,7 @@ pub mod string {
                 re,
                 s,
                 from: None,
+                first_from: 0,
                 count_utf16: false,
                 counted_to: 0,
                 utf16_index: 0,
@@ -703,9 +694,36 @@ pub mod string {
             self
         }
 
+        /// Start at `from`, in UTF-16 units, as jsonata-js's regex closure
+        /// does when called with `fromIndex` (`first`), or as a match's
+        /// `next()` does from where that match ended. `None` when `from` is
+        /// past the end, where JavaScript finds no match.
+        pub fn starting_at(mut self, from: usize, first: bool) -> Option<Self> {
+            let mut units = 0;
+            let mut byte = self.s.len();
+            for (i, c) in self.s.char_indices() {
+                if units >= from {
+                    byte = i;
+                    break;
+                }
+                units += c.len_utf16();
+            }
+            if units < from {
+                return None;
+            }
+            self.counted_to = byte;
+            self.utf16_index = units;
+            if first {
+                self.first_from = byte;
+            } else {
+                self.from = Some(byte);
+            }
+            Some(self)
+        }
+
         pub fn next_match(&mut self) -> Result<Option<RegexMatch<'s>>, FunctionError> {
             let start = match self.from {
-                None => 0,
+                None => self.first_from,
                 Some(from) if from >= self.s.len() => return Ok(None),
                 Some(from) => from,
             };
@@ -918,8 +936,8 @@ pub mod boolean {
                 })
             }
             JValue::Object(obj) => !obj.is_empty(),
-            JValue::Lambda { .. } | JValue::Builtin { .. } => false,
-            JValue::Regex { .. } => true,
+            // Functions are false, a regex being one (#205).
+            JValue::Lambda { .. } | JValue::Builtin { .. } | JValue::Regex { .. } => false,
             #[cfg(feature = "python")]
             JValue::LazyPyDict(lazy) => !lazy.is_empty(),
         }

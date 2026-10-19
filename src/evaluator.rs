@@ -2970,10 +2970,93 @@ fn duplicate_key_error(key: &str) -> EvaluatorError {
     ))
 }
 
+/// The variable a higher-order function's evaluated callback is bound to
+/// (see `evaluate_builtin_call`). It holds a space, so no expression can
+/// name it.
+const HOF_CALLBACK: &str = "hof callback";
+
+/// Which of a higher-order function's `arg_count` source arguments is its
+/// callback, for the ones that apply it from its source argument.
+fn hof_callback_index(name: &str, arg_count: usize) -> Option<usize> {
+    match (name, arg_count) {
+        ("map" | "filter" | "reduce" | "single" | "sort", 2..) => Some(1),
+        ("sift" | "each", 1) => Some(0),
+        ("sift" | "each", 2..) => Some(1),
+        _ => None,
+    }
+}
+
+/// The builtin name a regex match's `next` calls (see `Evaluator::call_regex`).
+/// It is only ever bound inside `next`, and holds a space, so no expression
+/// can name it.
+const REGEX_NEXT: &str = "regex next";
+
+/// The text a regex function value matches against, as JavaScript's
+/// `RegExp.prototype.exec` converts its argument with `String()`. `None`
+/// (the call gives undefined) for undefined, which jsonata-js would match as
+/// the text "undefined", and for a function.
+fn regex_subject(value: &JValue) -> Option<String> {
+    fn js_string(value: &JValue) -> Option<String> {
+        Some(match value {
+            JValue::String(s) => s.to_string(),
+            JValue::Number(n) => crate::value::js_number_to_string(*n),
+            JValue::Bool(b) => b.to_string(),
+            JValue::Null => "null".to_string(),
+            // Array.prototype.toString: the items joined by commas, with
+            // null and undefined as empty text.
+            JValue::Array(items) => {
+                let mut parts = Vec::with_capacity(items.len());
+                for item in items.iter() {
+                    parts.push(match item {
+                        JValue::Null | JValue::Undefined => String::new(),
+                        item => js_string(item)?,
+                    });
+                }
+                parts.join(",")
+            }
+            JValue::Object(_) => "[object Object]".to_string(),
+            #[cfg(feature = "python")]
+            JValue::LazyPyDict(_) => "[object Object]".to_string(),
+            JValue::Undefined
+            | JValue::Lambda(_)
+            | JValue::Builtin { .. }
+            | JValue::Regex { .. } => return None,
+        })
+    }
+    js_string(value)
+}
+
+/// Where a regex function value starts looking, from its second argument:
+/// jsonata-js sets `lastIndex` to `fromIndex || 0`, which JavaScript reads
+/// as a whole, non-negative number. A higher-order function's index or key
+/// lands here (`$map(["ab", "ab"], /b/)` looks from 0, then 1).
+fn regex_from_index(value: &JValue) -> usize {
+    let n = match value {
+        JValue::Number(n) => *n,
+        JValue::Bool(b) => f64::from(u8::from(*b)),
+        JValue::String(s) => {
+            let s = s.trim();
+            if s.is_empty() {
+                0.0
+            } else {
+                s.parse::<f64>().unwrap_or(f64::NAN)
+            }
+        }
+        _ => f64::NAN,
+    };
+    if n.is_nan() || n <= 0.0 {
+        0
+    } else if n >= usize::MAX as f64 {
+        usize::MAX
+    } else {
+        n.floor() as usize
+    }
+}
+
 /// jsonata-js's T1003, for an object key that is not a string.
 fn key_type_error(key: &JValue) -> EvaluatorError {
     let key = match key {
-        JValue::Lambda(_) | JValue::Builtin { .. } => format!("{key:?}"),
+        key if key.is_function() => format!("{key:?}"),
         _ => key.to_json_string().unwrap_or_else(|_| format!("{key:?}")),
     };
     EvaluatorError::TypeError(format!(
@@ -3623,10 +3706,7 @@ impl Evaluator {
         if let Some(ref ce) = stored.compiled_body {
             if stored.signature.is_none()
                 && !stored.thunk
-                && !stored
-                    .captured_env
-                    .values()
-                    .any(|v| matches!(v, JValue::Lambda { .. } | JValue::Builtin { .. }))
+                && !stored.captured_env.values().any(|v| v.is_function())
             {
                 let call_data = stored.captured_data.as_ref().unwrap_or(data);
                 // A parameter without an argument is undefined, as on the
@@ -3662,14 +3742,6 @@ impl Evaluator {
         )
     }
 
-    /// Extract the shared closure handle from a JValue, if it is a lambda.
-    fn lookup_lambda_from_value(&self, value: &JValue) -> Option<Rc<StoredLambda>> {
-        if let JValue::Lambda(rc) = value {
-            return Some(Rc::clone(rc));
-        }
-        None
-    }
-
     /// Get the number of parameters a callback function expects by inspecting its AST.
     /// This is used to avoid passing unnecessary arguments to callbacks in HOF functions.
     /// Returns the parameter count, or usize::MAX if unable to determine (meaning pass all args).
@@ -3684,6 +3756,10 @@ impl Evaluator {
                 if let Some(value) = self.context.lookup(var_name) {
                     if let JValue::Lambda(stored_lambda) = value {
                         return stored_lambda.params.len();
+                    }
+                    // jsonata-js's regex closure is `function(str, fromIndex)`.
+                    if let JValue::Regex { .. } = value {
+                        return 2;
                     }
                     // `$f := $uppercase` stores a `JValue::Builtin`, so the
                     // arity belongs to the builtin it names, not to `$f`.
@@ -4813,10 +4889,11 @@ impl Evaluator {
     /// `f ~> g` for two functions: the function `λ($x) { g(f($x)) }`, as
     /// jsonata-js builds from its `chainAST`.
     fn compose_functions(f: JValue, g: JValue) -> JValue {
-        // Names no expression binds: `$x` would be visible to f and g.
-        const F: &str = "__chain_f";
-        const G: &str = "__chain_g";
-        const X: &str = "__chain_x";
+        // Names no expression can spell: `$x` or `$__chain_x` would be
+        // visible to f and g.
+        const F: &str = "chain f";
+        const G: &str = "chain g";
+        const X: &str = "chain x";
         let call = |name: &str, arg: AstNode| AstNode::Function {
             name: name.to_string(),
             args: vec![arg],
@@ -5864,66 +5941,6 @@ impl Evaluator {
         // Pipes the LHS result to the RHS function as the first argument
         // e.g., expr ~> func(arg2) becomes func(expr, arg2)
         if op == BinaryOp::ChainPipe {
-            // Handle regex on RHS - treat as $match(lhs, regex)
-            if let AstNode::Regex { pattern, flags } = rhs {
-                // Evaluate LHS
-                let lhs_value = self.evaluate_internal(lhs, data)?;
-                // Do regex match inline
-                return match lhs_value {
-                    JValue::String(s) => {
-                        // Build the regex via the shared flag translation
-                        // ($split/$replace use the same helper, so i/m/s
-                        // behave identically on every entry point).
-                        match crate::functions::string::build_regex(pattern, flags)
-                            .map_err(|e| EvaluatorError::EvaluationError(e.to_string()))
-                        {
-                            Ok(re) => {
-                                if let Some(m) = re.find(&s) {
-                                    // Return match object
-                                    let mut result = IndexMap::new();
-                                    result.insert(
-                                        "match".to_string(),
-                                        JValue::string(m.as_str().to_string()),
-                                    );
-                                    result.insert(
-                                        "start".to_string(),
-                                        JValue::Number(m.start() as f64),
-                                    );
-                                    result
-                                        .insert("end".to_string(), JValue::Number(m.end() as f64));
-
-                                    // Capture groups
-                                    let mut groups = Vec::new();
-                                    for cap in re.captures_iter(&s).take(1) {
-                                        for i in 1..cap.len() {
-                                            if let Some(c) = cap.get(i) {
-                                                groups.push(JValue::string(c.as_str().to_string()));
-                                            }
-                                        }
-                                    }
-                                    if !groups.is_empty() {
-                                        result.insert("groups".to_string(), JValue::array(groups));
-                                    }
-
-                                    Ok(JValue::object(result))
-                                } else {
-                                    Ok(JValue::Null)
-                                }
-                            }
-                            Err(e) => Err(EvaluatorError::EvaluationError(format!(
-                                "Invalid regex: {}",
-                                e
-                            ))),
-                        }
-                    }
-                    JValue::Null => Ok(JValue::Null),
-                    JValue::Undefined => Ok(JValue::Undefined),
-                    _ => Err(EvaluatorError::TypeError(
-                        "Left side of ~> /regex/ must be a string".to_string(),
-                    )),
-                };
-            }
-
             return self.evaluate_apply_expression(lhs, rhs, data);
         }
 
@@ -6255,22 +6272,15 @@ impl Evaluator {
         // parameters holding function values are all ordinary bindings now, so
         // one lookup covers them — and parameter shadowing (Y-combinator's
         // function($g){$g($g)}) falls out of plain scope order.
+        // A builtin reference (`$f := $sum`) and a regex (`$f := /a/`) are
+        // function values too.
         if let Some(value) = self.context.lookup(name).cloned() {
-            if let JValue::Lambda(stored_lambda) = &value {
+            if value.is_function() {
                 let mut evaluated_args = Vec::with_capacity(args.len());
                 for arg in args {
                     evaluated_args.push(self.evaluate_internal(arg, data)?);
                 }
-                return self.invoke_stored_lambda(stored_lambda, &evaluated_args, data);
-            }
-            if let JValue::Builtin { name: builtin_name } = &value {
-                // This is a built-in function reference (e.g., $f bound to $sum),
-                // called directly with an explicit argument list.
-                let mut evaluated_args = Vec::with_capacity(args.len());
-                for arg in args {
-                    evaluated_args.push(self.evaluate_internal(arg, data)?);
-                }
-                return self.call_builtin_with_values(builtin_name, &evaluated_args, data);
+                return self.call_function_value(&value, &evaluated_args, data);
             }
         }
 
@@ -6294,6 +6304,17 @@ impl Evaluator {
         // If the function was called without $ prefix and it's not a stored lambda,
         // it's an error (unknown function without $ prefix)
         if !is_builtin && name != "__lambda__" {
+            // jsonata-js evaluates the name as a path on the input, so a
+            // field holding a function is called: a regex match's `next()`.
+            if let JValue::Object(obj) = data {
+                if let Some(function) = obj.get(name).filter(|f| f.is_function()).cloned() {
+                    let mut evaluated_args = Vec::with_capacity(args.len());
+                    for arg in args {
+                        evaluated_args.push(self.evaluate_internal(arg, data)?);
+                    }
+                    return self.call_function_value(&function, &evaluated_args, data);
+                }
+            }
             // Reached only for a call written WITHOUT the `$`. jsonata-js
             // separates the two cases: a name that is a builtin was almost
             // certainly missing its sigil, and gets T1005 with the suggestion;
@@ -6323,8 +6344,6 @@ impl Evaluator {
         args: &[AstNode],
         data: &JValue,
     ) -> Result<JValue, EvaluatorError> {
-        use crate::functions;
-
         // Special handling for $exists function
         // It needs to know if the argument is explicit null vs undefined
         if name == "exists" && args.len() == 1 {
@@ -6402,6 +6421,40 @@ impl Evaluator {
         if let Some(coerced) = validate_builtin_args(name, &evaluated_args, data)? {
             evaluated_args = coerced;
         }
+
+        // A callback that is not an inline lambda or a variable is evaluated
+        // once, here, and its value called for each item (#204).
+        if let Some(index) = hof_callback_index(name, args.len()) {
+            if !matches!(args[index], AstNode::Lambda { .. } | AstNode::Variable(_)) {
+                // Validation may have put the context in front of the
+                // arguments (`$sift(fn)`), or dropped an undefined last one.
+                let shift = evaluated_args.len().saturating_sub(args.len());
+                let callback = evaluated_args
+                    .get(index + shift)
+                    .cloned()
+                    .unwrap_or(JValue::Undefined);
+                let mut bound_args = args.to_vec();
+                bound_args[index] = AstNode::Variable(HOF_CALLBACK.to_string());
+                self.context.push_scope();
+                self.context.bind(HOF_CALLBACK.to_string(), callback);
+                let result = self.call_evaluator_builtin(name, &bound_args, evaluated_args, data);
+                self.context.pop_scope();
+                return result;
+            }
+        }
+        self.call_evaluator_builtin(name, args, evaluated_args, data)
+    }
+
+    /// The builtins that call back into evaluation, given their source
+    /// arguments and their validated values.
+    fn call_evaluator_builtin(
+        &mut self,
+        name: &str,
+        args: &[AstNode],
+        evaluated_args: Vec<JValue>,
+        data: &JValue,
+    ) -> Result<JValue, EvaluatorError> {
+        use crate::functions;
 
         match name {
             "replace" => {
@@ -6549,9 +6602,8 @@ impl Evaluator {
                     // must still fall through: `$sift(missing.x)` iterates no
                     // keys and is undefined, not an error.
                     match evaluated_args.last() {
-                        Some(JValue::Lambda { .. } | JValue::Builtin { .. })
-                        | Some(JValue::Undefined)
-                        | None => {}
+                        Some(JValue::Undefined) | None => {}
+                        Some(function) if function.is_function() => {}
                         Some(_) => return Err(EvaluatorError::TypeError(
                             "T0410: Argument 2 of function sift does not match function signature"
                                 .to_string(),
@@ -6689,12 +6741,7 @@ impl Evaluator {
                                         let captured_data = stored.captured_data.clone();
                                         let captured_env_clone = stored.captured_env.clone();
                                         let ce_clone = ce.clone();
-                                        if !captured_env_clone.values().any(|v| {
-                                            matches!(
-                                                v,
-                                                JValue::Lambda { .. } | JValue::Builtin { .. }
-                                            )
-                                        }) {
+                                        if !captured_env_clone.values().any(|v| v.is_function()) {
                                             let call_data = captured_data.as_ref().unwrap_or(data);
                                             let mut result = Vec::with_capacity(arr.len());
                                             let mut vars: HashMap<&str, &JValue> =
@@ -6833,9 +6880,7 @@ impl Evaluator {
                                 let captured_data = stored.captured_data.clone();
                                 let captured_env_clone = stored.captured_env.clone();
                                 let ce_clone = ce.clone();
-                                if !captured_env_clone.values().any(|v| {
-                                    matches!(v, JValue::Lambda { .. } | JValue::Builtin { .. })
-                                }) {
+                                if !captured_env_clone.values().any(|v| v.is_function()) {
                                     let call_data = captured_data.as_ref().unwrap_or(data);
                                     let mut result = Vec::with_capacity(items.len() / 2);
                                     let mut vars: HashMap<&str, &JValue> = captured_env_clone
@@ -6909,21 +6954,21 @@ impl Evaluator {
                     ));
                 }
 
-                // Check that the callback function has at least 2 parameters
-                if let AstNode::Lambda { params, .. } = &args[1] {
-                    if params.len() < 2 {
-                        return Err(EvaluatorError::EvaluationError(
-                            "D3050: The second argument of reduce must be a function with at least two arguments".to_string(),
-                        ));
-                    }
-                } else if let AstNode::Function { name, .. } = &args[1] {
-                    // For now, we can't validate built-in function signatures here
-                    // But user-defined functions via lambda will be validated above
-                    let _ = name; // avoid unused warning
-                }
-
                 // Evaluate the array argument
                 let array = self.evaluate_internal(&args[0], data)?;
+                if array.is_undefined() {
+                    return Ok(JValue::Undefined);
+                }
+
+                // As jsonata-js `foldLeft`: the callback must take at least
+                // two arguments, whatever kind of function it is. A host
+                // function's arity is unknown (MAX) and passes.
+                let param_count = self.get_callback_param_count(&args[1]);
+                if param_count < 2 {
+                    return Err(EvaluatorError::EvaluationError(
+                        "D3050: The second argument of reduce function must be a function with at least two arguments".to_string(),
+                    ));
+                }
 
                 // Convert single value to array (JSONata reduce accepts single values)
                 // Use references to avoid upfront cloning of all elements
@@ -6954,9 +6999,6 @@ impl Evaluator {
                 };
 
                 let start_idx = if args.len() == 3 { 0 } else { 1 };
-
-                // Detect how many parameters the callback expects
-                let param_count = self.get_callback_param_count(&args[1]);
 
                 // CompiledExpr fast path: direct lambda with 2 params, compilable body
                 if param_count == 2 {
@@ -6996,9 +7038,7 @@ impl Evaluator {
                                     let captured_data = stored.captured_data.clone();
                                     let captured_env_clone = stored.captured_env.clone();
                                     let ce_clone = ce.clone();
-                                    if !captured_env_clone.values().any(|v| {
-                                        matches!(v, JValue::Lambda { .. } | JValue::Builtin { .. })
-                                    }) {
+                                    if !captured_env_clone.values().any(|v| v.is_function()) {
                                         let call_data = captured_data.as_ref().unwrap_or(data);
                                         for item in items[start_idx..].iter() {
                                             let mut vars: HashMap<&str, &JValue> =
@@ -7210,11 +7250,12 @@ impl Evaluator {
         }
     }
 
-    /// Apply a function (lambda or expression) to values
+    /// Apply a higher-order function's callback to `values`.
     ///
-    /// This handles both:
-    /// 1. Lambda nodes: function($x) { $x * 2 } - binds parameters and evaluates body
-    /// 2. Simple expressions: price * 2 - evaluates with values as context
+    /// `evaluate_builtin_call` has already replaced a callback that is not an
+    /// inline lambda or a variable with a variable bound to its value
+    /// (`bind_hof_callback`), so the callback is evaluated once, as in
+    /// jsonata-js, however many items it is applied to.
     fn apply_function(
         &mut self,
         func_node: &AstNode,
@@ -7231,56 +7272,12 @@ impl Evaluator {
                 // Direct lambda - invoke it
                 self.invoke_lambda(params, body, signature.as_ref(), values, data, *thunk)
             }
-            AstNode::Function {
-                name,
-                args,
-                is_builtin,
-            } => {
-                // Function call - check if it has placeholders (partial application)
-                let has_placeholder = args.iter().any(|arg| matches!(arg, AstNode::Placeholder));
-
-                if has_placeholder {
-                    // This is a partial application - evaluate it to get the lambda value
-                    let partial_lambda =
-                        self.create_partial_application(name, args, *is_builtin, data)?;
-
-                    // Now invoke the partial lambda with the provided values
-                    if let Some(stored) = self.lookup_lambda_from_value(&partial_lambda) {
-                        return self.invoke_stored_lambda(&stored, values, data);
-                    }
-                    Err(EvaluatorError::EvaluationError(
-                        "Failed to apply partial application".to_string(),
-                    ))
-                } else {
-                    // Regular function call without placeholders
-                    // Evaluate it and apply if it returns a function
-                    let result = self.evaluate_internal(func_node, data)?;
-
-                    // Check if result is a lambda value
-                    if let Some(stored) = self.lookup_lambda_from_value(&result) {
-                        return self.invoke_stored_lambda(&stored, values, data);
-                    }
-
-                    // Otherwise just return the result
-                    Ok(result)
-                }
-            }
             AstNode::Variable(var_name) => {
                 if let Some(value) = self.context.lookup(var_name).cloned() {
-                    // A lambda value covers user-defined functions, closures and
-                    // partial applications alike
-                    if let JValue::Lambda(stored) = &value {
-                        return self.invoke_stored_lambda(stored, values, data);
-                    }
-                    // `$f := $uppercase` binds a `JValue::Builtin`, which is
-                    // not a lambda and so fell through to "evaluate as a plain
-                    // variable" below -- the callback yielded the builtin value
-                    // itself rather than calling it. It takes the same
-                    // by-reference route a literal `$uppercase` callback takes
-                    // (#126 group 5).
-                    if let JValue::Builtin { name } = &value {
-                        let name = name.to_string();
-                        return self.call_builtin_with_values(&name, values, data);
+                    // A lambda (closure, partial application, composition,
+                    // transform), a builtin reference or a regex.
+                    if value.is_function() {
+                        return self.call_function_value(&value, values, data);
                     }
                     // Regular variable value - evaluate with first value as context
                     if values.is_empty() {
@@ -7301,27 +7298,14 @@ impl Evaluator {
                     }
                 }
             }
-            // A composition (`$sum ~> $string`) or a transform evaluates to a
-            // function value, which is called. The higher-order function's
-            // signature has already rejected a `~>` that gives anything else.
-            AstNode::Binary {
-                op: BinaryOp::ChainPipe,
-                ..
-            }
-            | AstNode::Transform { .. } => {
+            // Not reached from the higher-order functions (see above); any
+            // other expression is evaluated to the function it gives.
+            _ => {
                 let value = self.evaluate_internal(func_node, data)?;
                 if value.is_function() {
                     return self.call_function_value(&value, values, data);
                 }
                 Ok(value)
-            }
-            _ => {
-                // For non-lambda expressions, evaluate with first value as context
-                if values.is_empty() {
-                    self.evaluate_internal(func_node, data)
-                } else {
-                    self.evaluate_internal(func_node, &values[0])
-                }
             }
         }
     }
@@ -7939,8 +7923,8 @@ impl Evaluator {
         self.call_function_value(&callable, &evaluated_args, data)
     }
 
-    /// Call a function value, a lambda or a builtin, with `values`.
-    /// `function` must be one of the two.
+    /// Call a function value, a lambda, a builtin or a regex, with `values`.
+    /// `function` must be one of the three.
     fn call_function_value(
         &mut self,
         function: &JValue,
@@ -7950,10 +7934,102 @@ impl Evaluator {
         match function {
             JValue::Lambda(stored) => self.invoke_stored_lambda(stored, values, data),
             JValue::Builtin { name } => self.call_builtin_with_values(name, values, data),
+            JValue::Regex { pattern, flags } => {
+                let text = values.first().and_then(regex_subject);
+                let from = values.get(1).map_or(0, regex_from_index);
+                Self::call_regex(function, pattern, flags, text.as_deref(), from, true)
+            }
             other => Err(EvaluatorError::TypeError(format!(
                 "T1006: Attempted to invoke a non-function: {other:?}"
             ))),
         }
+    }
+
+    /// Call the function a regex literal evaluates to, following jsonata-js
+    /// `evaluateRegex`: the first match in `text` at or after `from` (in
+    /// UTF-16 units) as `{match, start, end, groups, next}`, or undefined.
+    /// `next()` gives the match after this one, undefined once this one
+    /// ends the string, and D1004 for a zero-length one, which would never
+    /// move on. `regex` is the regex value itself, which `next` carries.
+    ///
+    /// Deliberate divergence: jsonata-js matches an undefined subject as the
+    /// text "undefined" (`nope ~> /n/` matches); here it gives undefined.
+    fn call_regex(
+        regex: &JValue,
+        pattern: &str,
+        flags: &str,
+        text: Option<&str>,
+        from: usize,
+        first: bool,
+    ) -> Result<JValue, EvaluatorError> {
+        let Some(text) = text else {
+            return Ok(JValue::Undefined);
+        };
+        let re = crate::functions::string::build_regex(pattern, flags)?;
+        let Some(mut matches) = crate::functions::string::RegexMatches::new(&re, text)
+            .counting_utf16()
+            .starting_at(from, first)
+        else {
+            return Ok(JValue::Undefined);
+        };
+        let Some(found) = matches.next_match()? else {
+            return Ok(JValue::Undefined);
+        };
+        let (_, end) = found.utf16_span.expect("counting UTF-16 offsets");
+        let mut result = match found.to_object() {
+            JValue::Object(result) => result,
+            other => return Ok(other),
+        };
+        // `next` is `λ() { REGEX_NEXT(regex, text, end) }`, its arguments
+        // captured like a composition's functions (see `compose_functions`).
+        // The names hold spaces, so expressions can't see them.
+        const NEXT: &str = REGEX_NEXT;
+        const RE: &str = "regex re";
+        const TEXT: &str = "regex text";
+        const END: &str = "regex end";
+        let next = JValue::Lambda(Rc::new(StoredLambda {
+            params: Vec::new(),
+            body: AstNode::Function {
+                name: NEXT.to_string(),
+                args: [RE, TEXT, END]
+                    .iter()
+                    .map(|name| AstNode::Variable(name.to_string()))
+                    .collect(),
+                is_builtin: false,
+            },
+            compiled_body: None,
+            signature: None,
+            captured_env: HashMap::from([
+                (NEXT.to_string(), JValue::builtin(REGEX_NEXT)),
+                (RE.to_string(), regex.clone()),
+                (TEXT.to_string(), JValue::string(text)),
+                (END.to_string(), JValue::from(end as i64)),
+            ]),
+            captured_data: None,
+            thunk: false,
+            self_name: None,
+            partial: None,
+            live_token: LiveLambdaToken::new(),
+        }));
+        Rc::make_mut(&mut result).insert("next".to_string(), next);
+        Ok(JValue::Object(result))
+    }
+
+    /// The body of a regex match's `next()`: `values` are the regex, the
+    /// text and where the match ended (see `call_regex`). Undefined once
+    /// the match ended the text; D1004 for a zero-length next match.
+    fn regex_next(values: &[JValue]) -> Result<JValue, EvaluatorError> {
+        let (
+            Some(regex @ JValue::Regex { pattern, flags }),
+            Some(JValue::String(text)),
+            Some(&JValue::Number(end)),
+        ) = (values.first(), values.get(1), values.get(2))
+        else {
+            return Err(EvaluatorError::EvaluationError(
+                "a regex match's next() takes its regex, text and end".to_string(),
+            ));
+        };
+        Self::call_regex(regex, pattern, flags, Some(text), end as usize, false)
     }
 
     /// $match(str, matcher, limit) with a custom matcher function, following
@@ -8397,6 +8473,10 @@ impl Evaluator {
         values: &[JValue],
         context: &JValue,
     ) -> Result<JValue, EvaluatorError> {
+        // Only a regex match's `next` holds this builtin (see `call_regex`).
+        if name == REGEX_NEXT {
+            return Self::regex_next(values);
+        }
         // A host override applied in value position (e.g. `$f := $now; $f()`) or
         // passed to a higher-order function reaches dispatch here rather than
         // through `evaluate_function_call`. Check the registry first so the
