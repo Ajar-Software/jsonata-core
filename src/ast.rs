@@ -58,6 +58,45 @@ pub struct PathStep {
     /// its bindings, rather than its values.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub inner_tuple: bool,
+    /// The step's object constructor or `.(expr)` body compiled for the
+    /// evaluator's fast path, filled the first time the step runs over
+    /// several items (#197). Not part of the step's meaning: ignored by
+    /// equality and serialization. A clone carries over (shares) what is
+    /// already compiled and otherwise fills its own cache, so a function
+    /// body, cloned when the function is created, compiles each step at most
+    /// once per function value. Code that changes `node` of a step that has
+    /// already been evaluated must reset this to `StepCompileCache::default()`.
+    #[serde(skip)]
+    pub compiled: StepCompileCache,
+}
+
+/// A lazily filled cache of a path step's compiled form; see
+/// `PathStep::compiled`. Starts empty (`Default`), compares equal to any
+/// other, and is skipped by serde.
+///
+/// It holds the compiled expression and the builtins it calls, not a verdict
+/// on whether the fast path may run: that depends on the bindings in scope
+/// where the step runs (#191), so the evaluator checks it on every use.
+#[derive(Clone, Default)]
+pub struct StepCompileCache(
+    pub(crate) std::cell::OnceCell<Option<std::rc::Rc<crate::evaluator::CompiledBody>>>,
+);
+
+impl PartialEq for StepCompileCache {
+    fn eq(&self, _other: &Self) -> bool {
+        true
+    }
+}
+
+impl std::fmt::Debug for StepCompileCache {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let state = match self.0.get() {
+            None => "empty",
+            Some(None) => "not compilable",
+            Some(Some(_)) => "compiled",
+        };
+        write!(f, "StepCompileCache({state})")
+    }
 }
 
 /// AST Node types
@@ -293,6 +332,7 @@ impl PathStep {
             ancestor_label: None,
             is_tuple: false,
             inner_tuple: false,
+            compiled: StepCompileCache::default(),
         }
     }
 
@@ -306,6 +346,7 @@ impl PathStep {
             ancestor_label: None,
             is_tuple: false,
             inner_tuple: false,
+            compiled: StepCompileCache::default(),
         }
     }
 }

@@ -449,10 +449,12 @@ fn compiled_builtin_names(expr: &CompiledExpr, out: &mut Vec<&'static str>) {
     }
 }
 
-/// A function body compiled when the function is defined, with the builtin
-/// names it calls directly. Whether those names still mean the builtins is
-/// only known when it is called, so the body is reached only through
-/// `Evaluator::usable_compiled_body`.
+/// A function body compiled when the function is defined, or a path step's
+/// body compiled the first time the step runs (`PathStep::compiled`), with
+/// the builtin names it calls directly. Whether those names still mean the
+/// builtins is only known where it runs, so a function body is reached only
+/// through `Evaluator::usable_compiled_body` and a step body only through
+/// `Evaluator::cached_step_body`.
 #[derive(Clone, Debug)]
 pub(crate) struct CompiledBody {
     expr: CompiledExpr,
@@ -473,13 +475,33 @@ impl CompiledBody {
         }
         let var_refs: Vec<&str> = params.iter().map(|s| s.as_str()).collect();
         let expr = try_compile_expr_with_allowed_vars(body, &var_refs)?;
+        Some(CompiledBody::new(expr))
+    }
+
+    /// Compile a path step's body (an object constructor or the expression
+    /// of a `.(expr)` step) to run on each of the step's items, with no
+    /// variables of its own.
+    fn compile_step(body: &AstNode) -> Option<CompiledBody> {
+        #[cfg(test)]
+        STEP_COMPILES.with(|n| n.set(n.get() + 1));
+        try_compile_expr(body).map(CompiledBody::new)
+    }
+
+    fn new(expr: CompiledExpr) -> CompiledBody {
         let mut builtins = Vec::new();
         compiled_builtin_names(&expr, &mut builtins);
-        Some(CompiledBody {
+        CompiledBody {
             expr,
             builtins: builtins.into_boxed_slice(),
-        })
+        }
     }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// How many times a path step's body has been compiled on this thread,
+    /// for tests that check the step cache (#197).
+    static STEP_COMPILES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 /// Reject (fall back to the tree-walker) a fully-built `CompiledExpr` tree
@@ -6151,7 +6173,7 @@ impl Evaluator {
             AstNode::Name(field) => field_values(field, items, &self.options)?,
             // `$` is each item itself.
             AstNode::Variable(name) if name.is_empty() => items.to_vec(),
-            node => self.evaluate_step_node_per_item(node, items)?,
+            _ => self.evaluate_step_node_per_item(step, items)?,
         };
         let mut results = Vec::with_capacity(values.len());
         for value in values {
@@ -6169,24 +6191,23 @@ impl Evaluator {
     /// compiled path, which gives the same values with less per-item work.
     fn evaluate_step_node_per_item(
         &mut self,
-        node: &AstNode,
+        step: &PathStep,
         items: &[JValue],
     ) -> Result<Vec<JValue>, EvaluatorError> {
-        // Compiling costs about one tree evaluation and isn't cached, so it
-        // only pays off over several items. A node calling a builtin that a
-        // binding here shadows stays on the tree-walker (`compile_in_scope`).
-        let body = match node {
-            _ if items.len() < 2 => None,
-            AstNode::Object(_) => Some(node),
-            AstNode::FunctionApplication(expr) => Some(&**expr),
-            _ => None,
+        let node = &step.node;
+        // Compiling costs about one tree evaluation. It is done once per step
+        // and kept on the step (#197), but a step only ever seen with one
+        // item would pay it for nothing, so it waits for one with several.
+        let compiled = if items.len() < 2 {
+            None
+        } else {
+            self.cached_step_body(step)
         };
-        let compiled = body.and_then(|body| self.compile_in_scope(body, None));
         let mut values = Vec::with_capacity(items.len());
         if let Some(compiled) = compiled {
             for item in items {
                 values.push(eval_compiled(
-                    &compiled,
+                    &compiled.expr,
                     item,
                     None,
                     &self.options,
@@ -9701,10 +9722,19 @@ impl Evaluator {
         }
     }
 
+    /// Whether each of `names` still means the builtin right here, in the
+    /// current scope.
+    fn builtins_unshadowed_here(&self, names: &[&str]) -> bool {
+        names
+            .iter()
+            .all(|name| self.builtin_unshadowed(name, self.context.lookup(name)))
+    }
+
     /// Compile `node` to run right here, in the current scope: `None` if it
     /// does not compile or calls a builtin a binding here shadows. Every
     /// evaluator site that compiles part of an expression goes through this
-    /// (or `CompiledBody` for function bodies), so none can skip the rule.
+    /// (or `CompiledBody` for function bodies, or `cached_step_body` for path
+    /// steps), so none can skip the rule.
     fn compile_in_scope(
         &self,
         node: &AstNode,
@@ -9716,10 +9746,28 @@ impl Evaluator {
         };
         let mut names = Vec::new();
         compiled_builtin_names(&compiled, &mut names);
-        names
-            .iter()
-            .all(|name| self.builtin_unshadowed(name, self.context.lookup(name)))
-            .then_some(compiled)
+        self.builtins_unshadowed_here(&names).then_some(compiled)
+    }
+
+    /// The compiled body of an object constructor or `.(expr)` step, if it
+    /// may run right here: compiled the first time and kept on the step
+    /// (#197), which is safe because compiling reads nothing but the node.
+    /// Whether the builtins it calls are shadowed depends on where the step
+    /// runs (one call of a function may bind `$string`, the next not), so
+    /// that is checked on every use, as `compile_in_scope` does.
+    fn cached_step_body<'a>(&self, step: &'a PathStep) -> Option<&'a CompiledBody> {
+        let body = match &step.node {
+            AstNode::Object(_) => &step.node,
+            AstNode::FunctionApplication(expr) => &**expr,
+            _ => return None,
+        };
+        let compiled = step
+            .compiled
+            .0
+            .get_or_init(|| CompiledBody::compile_step(body).map(Rc::new))
+            .as_ref()?;
+        self.builtins_unshadowed_here(&compiled.builtins)
+            .then_some(&**compiled)
     }
 
     /// A function's compiled body, if calling it now may take the fast path:
@@ -11944,5 +11992,144 @@ mod tests {
             .join()
             .unwrap();
         assert!(elapsed.as_secs() < 5, "took {elapsed:?}");
+    }
+
+    // --- #197: a step's compiled body is cached on the step -----------------
+
+    mod step_cache {
+        use super::*;
+
+        fn step_compiles() -> usize {
+            STEP_COMPILES.with(|n| n.get())
+        }
+
+        fn jv(s: &str) -> JValue {
+            JValue::from_json_str(s).unwrap()
+        }
+
+        fn big(n: usize) -> JValue {
+            let items: Vec<String> = (0..n)
+                .map(|i| {
+                    format!(
+                        r#"{{"items": [{{"x": {i}, "y": "a"}}, {{"x": {}, "y": "b"}}, {{"x": 0, "y": "c"}}]}}"#,
+                        i + 1
+                    )
+                })
+                .collect();
+            jv(&format!(r#"{{"big": [{}]}}"#, items.join(",")))
+        }
+
+        fn assert_map_rows(result: &JValue) {
+            let JValue::Array(rows) = result else {
+                panic!("expected an array, got {result:?}")
+            };
+            assert_eq!(rows.len(), 200);
+            assert_eq!(
+                rows[1],
+                jv(r#"[{"a": 1, "b": "a"}, {"a": 2, "b": "b"}, {"a": 0, "b": "c"}]"#)
+            );
+        }
+
+        #[test]
+        fn constructor_in_an_inline_function_compiles_once_per_expression() {
+            // `$map` runs an inline function's body from the expression's own
+            // AST, so its step stays compiled across evaluations. Before #197
+            // it compiled once per call: 200 times per evaluation.
+            let data = big(200);
+            let ast =
+                parser::parse(r#"$map(big, function($v){ $v.items.{"a": x, "b": y} })"#).unwrap();
+            let before = step_compiles();
+            for _ in 0..3 {
+                assert_map_rows(&Evaluator::new().evaluate(&ast, &data).unwrap());
+            }
+            assert_eq!(step_compiles() - before, 1);
+        }
+
+        #[test]
+        fn constructor_in_a_stored_function_compiles_once_per_function_value() {
+            // A function value carries a clone of its body, made when the
+            // function is defined: its steps compile once per value.
+            let data = big(200);
+            let ast = parser::parse(
+                r#"( $f := function($v){ $v.items.{"a": x, "b": y} }; $map(big, $f) )"#,
+            )
+            .unwrap();
+            for _ in 0..2 {
+                let before = step_compiles();
+                assert_map_rows(&Evaluator::new().evaluate(&ast, &data).unwrap());
+                assert_eq!(step_compiles() - before, 1);
+            }
+        }
+
+        #[test]
+        fn top_level_step_compiles_once_per_expression() {
+            let data =
+                jv(r#"{"products": [{"name": "a", "price": 1}, {"name": "b", "price": 2}]}"#);
+            let ast = parser::parse(r#"products.{"n": name, "p": price}"#).unwrap();
+            let before = step_compiles();
+            for _ in 0..3 {
+                assert_eq!(
+                    Evaluator::new().evaluate(&ast, &data).unwrap(),
+                    jv(r#"[{"n": "a", "p": 1}, {"n": "b", "p": 2}]"#)
+                );
+            }
+            assert_eq!(step_compiles() - before, 1);
+        }
+
+        #[test]
+        fn step_that_does_not_compile_is_tried_once() {
+            // `$f` is neither a parameter nor compilable, so the step runs on
+            // the tree-walker; the failed compile is remembered too.
+            let data = big(50);
+            let ast = parser::parse(
+                r#"( $f := function($x){ $x & "!" }; $map(big, function($v){ $v.items.{"a": $f(y)} }) )"#,
+            )
+            .unwrap();
+            let before = step_compiles();
+            let result = Evaluator::new().evaluate(&ast, &data).unwrap();
+            assert_eq!(step_compiles() - before, 1);
+            let JValue::Array(rows) = &result else {
+                panic!("expected an array, got {result:?}")
+            };
+            assert_eq!(rows[0], jv(r#"[{"a": "a!"}, {"a": "b!"}, {"a": "c!"}]"#));
+        }
+
+        #[test]
+        fn shadowing_is_checked_on_every_use_of_the_cached_step() {
+            // The same cached step runs with `$string` the builtin, then bound
+            // to a function in the call's own block, then the builtin again
+            // (values from jsonata-js 2.x). Compiled once all the same.
+            let data = jv(r#"{"d": {"items": [{"x": 1}, {"x": 2}, {"x": 3}]}}"#);
+            for (body, constructs) in [
+                (r#"$v.items.{"s": $string(x)}"#, true),
+                (r#"$v.items.($string(x))"#, false),
+            ] {
+                for order in [[false, true, false], [true, false, true]] {
+                    let calls: Vec<String> = order.iter().map(|s| format!("$f(d, {s})")).collect();
+                    let src = format!(
+                        r#"( $f := function($v, $s){{ ( $s ? $string := function($x){{ "z" }} : 0; {body} ) }}; [{}] )"#,
+                        calls.join(", ")
+                    );
+                    let ast = parser::parse(&src).unwrap();
+                    let before = step_compiles();
+                    let result = Evaluator::new().evaluate(&ast, &data).unwrap();
+                    assert_eq!(step_compiles() - before, 1, "{src}");
+                    let expected: Vec<JValue> = order
+                        .iter()
+                        .flat_map(|&shadowed| {
+                            ["1", "2", "3"].map(|x| if shadowed { "z" } else { x })
+                        })
+                        .map(|s| {
+                            if constructs {
+                                jv(&format!(r#"{{"s": "{s}"}}"#))
+                            } else {
+                                JValue::from(s)
+                            }
+                        })
+                        .collect();
+                    assert_eq!(result, JValue::array(expected), "{src}");
+                }
+            }
+        }
     }
 }

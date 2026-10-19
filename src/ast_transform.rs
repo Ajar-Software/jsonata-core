@@ -519,6 +519,8 @@ fn substitute_labels_impl(
                                 })
                             })
                             .collect::<Result<Vec<_>, _>>()?,
+                        // `node` changed: whatever was compiled is stale.
+                        compiled: crate::ast::StepCompileCache::default(),
                         ..s
                     })
                 })
