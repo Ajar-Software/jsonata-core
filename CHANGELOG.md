@@ -65,6 +65,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`@` on a block, `*` or `$` outside a path binds nothing**
+  ([#213](https://github.com/txjmb/jsonata-core/issues/213)). jsonata-js only applies a
+  binding to a path step, so `(acct.Order.P)@$v` is the three products (it was the input,
+  three times), `*@$v[0]` is the first child and `(acct.Order.P){N: N}@$v` groups the
+  products. A `.`, sort or `#` after it still makes it a path. `$[]#$i` drops the `[]`, as
+  the path `#` builds keeps no singleton array.
+- **A `%` filter on a block or `*` outside a path raises S0217**
+  ([#211](https://github.com/txjmb/jsonata-core/issues/211)). jsonata-js reports
+  `(acct.Order.P)[%.id = "o1"]` and `*[%.id = "o1"]`, which were accepted here. Inside a
+  path, as in `(acct.Order.P)[%.id = "o1"].N`, they still work.
 - **A sort over a block's tuple stream unwraps a single or empty result**
   ([#207](https://github.com/txjmb/jsonata-core/issues/207)). `(acct.Order.P[N="C"])^(%.id)`
   is `{"N":"C"}` (it was `[{"N":"C"}]`), and `(acct.Order.P)[N = "Z"]^(>%.id)` is undefined

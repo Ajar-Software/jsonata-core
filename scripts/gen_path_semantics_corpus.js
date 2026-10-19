@@ -209,6 +209,14 @@ const EXTRA = [
   '(true ? acct.Order.P^(>%.id) : 0)[N = "C"]', '{"a": acct.Order.P^(>%.id)}.a[N = "C"]',
   '(acct.Order.P^(>%.id)){N: N}', '($x := acct.Order.P^(>%.id); $x{N: N})', '(acct.Order.P^(>%.id))^(N)',
   '$string(acct.Order.P^(>%.id))', 'acct.Order.P^(>%.id) ~> $sort(function($a, $b) { $a.N < $b.N })',
+  // Outside a path, `@` on a block, `*` or `$` binds nothing, and a `%` filter on one raises
+  // S0217 (#211, #213). A sort or `#` makes it a path, and `#` keeps no `[]` before it.
+  '(acct.Order.P)@$v^($v.N)', '(acct.Order.P)@$v.$v.N', '(acct.Order.P)[%.id = "o1"].N',
+  '(acct.Order.P)[%.id = "o1"]^(N)', '(acct.Order.P)[%.id = "o1"]#$i', '[(acct.Order.P)[%.id = "o1"]]',
+  '{"a": (acct.Order.P)[%.id = "o1"]}', '$x := (acct.Order.P)[%.id = "o1"]', 'acct.*[%.id = "o1"]',
+  '(acct.Order.P)[]#$i', '(o.t)[]#$i', '(o.t)#$i[]', '(acct.Order.P)@$v#$i', '(acct.Order.P)#$i@$v',
+  '(acct.Order.P)@$v#$i.$v.N', '(acct.Order.P)#$i.{"i": $i}',
+  '*@$v[0]', '($x := objs; $x{"k": p}@$v)', '(objs){"k": p}[]#$i', '(objs){"k": p}#$i', '$x{"k": 1}@$v',
   // `$match` returns every match as a sequence (#194).
   '$match("aba", /a/)', '$match("aba", /a/, 1)', '$match("aba", /a/, 0)', '$match("aba", /z/)',
   '$match("xay", /a/)', '$match("ab", /(a)(c)?/)', '$match("abc", /x*/)', '$match("abc", /x*/, 1)',
