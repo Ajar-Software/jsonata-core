@@ -2927,8 +2927,9 @@ fn duplicate_key_error(key: &str) -> EvaluatorError {
 }
 
 /// The variable a higher-order function's evaluated callback is bound to
-/// (see `evaluate_builtin_call`), a name expressions have no reason to use.
-const HOF_CALLBACK: &str = "__hof_callback";
+/// (see `evaluate_builtin_call`). It holds a space, so no expression can
+/// name it.
+const HOF_CALLBACK: &str = "hof callback";
 
 /// Which of a higher-order function's `arg_count` source arguments is its
 /// callback, for the ones that apply it from its source argument.
@@ -2942,8 +2943,9 @@ fn hof_callback_index(name: &str, arg_count: usize) -> Option<usize> {
 }
 
 /// The builtin name a regex match's `next` calls (see `Evaluator::call_regex`).
-/// It is only ever bound inside `next`.
-const REGEX_NEXT: &str = "__regex_next";
+/// It is only ever bound inside `next`, and holds a space, so no expression
+/// can name it.
+const REGEX_NEXT: &str = "regex next";
 
 /// The text a regex function value matches against, as JavaScript's
 /// `RegExp.prototype.exec` converts its argument with `String()`. `None`
@@ -7904,12 +7906,13 @@ impl Evaluator {
             JValue::Object(result) => result,
             other => return Ok(other),
         };
-        // `next` is `λ() { __regex_next(regex, text, end) }`, its arguments
+        // `next` is `λ() { REGEX_NEXT(regex, text, end) }`, its arguments
         // captured like a composition's functions (see `compose_functions`).
-        const NEXT: &str = "__regex_next";
-        const RE: &str = "__regex_re";
-        const TEXT: &str = "__regex_text";
-        const END: &str = "__regex_end";
+        // The names hold spaces, so expressions can't see them.
+        const NEXT: &str = REGEX_NEXT;
+        const RE: &str = "regex re";
+        const TEXT: &str = "regex text";
+        const END: &str = "regex end";
         let next = JValue::Lambda(Rc::new(StoredLambda {
             params: Vec::new(),
             body: AstNode::Function {

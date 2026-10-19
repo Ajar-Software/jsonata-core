@@ -381,6 +381,9 @@ const EXTRA = [
   '$reduce([1,2], (function($a){$a}))', '$reduce([1,2], ($f := $string))', '$reduce([1,2], $string)',
   '$reduce([1,2], $sum)', '$reduce(nope, $string)', '$reduce([1,2,3], ($f := function($a,$b){$a+$b}))',
   '$replace("abc", /b/, ($f := function($m){"X"}))', '$map(["xa"], $match(?, /a/))',
+  // The evaluated callback is held where no expression can name it.
+  '$map([1,2,3], ($k := 1; function($v){ $exists($__hof_callback) }))',
+  '($g := function(){ $__hof_callback }; $map([1], ($g)))', '$reduce([1,2], $random)',
   // A regex literal is a function: called with a string, it gives the first
   // match, with `groups` and a `next` that gives the one after (#205).
   '($f := /a/; $f("xa"))', '"xa" ~> /a/', '$keys("xa" ~> /a/)', '"xa" ~> /a/ ~> $keys',

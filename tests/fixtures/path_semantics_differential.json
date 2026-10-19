@@ -10336,6 +10336,26 @@
    ]
   },
   {
+   "expression": "$map([1,2,3], ($k := 1; function($v){ $exists($__hof_callback) }))",
+   "result": [
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "expression": "($g := function(){ $__hof_callback }; $map([1], ($g)))",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "$reduce([1,2], $random)",
+   "result": {
+    "$error": "D3050"
+   }
+  },
+  {
    "expression": "($f := /a/; $f(\"xa\"))",
    "result": {
     "match": "a",

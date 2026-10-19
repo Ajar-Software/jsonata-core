@@ -89,8 +89,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   one after `:=`, `(`, `:`, `=`, `?` and the other operators that were read as division
   before (`$string(/a/)` was S0211), `m.next()` calls a field holding a function, and `~>`
   binds at 40 as in jsonata-js, so `"é" & "a" ~> /a/` matches `"éa"`. Deliberate
-  divergence: an undefined subject gives undefined (jsonata-js matches the text
-  `"undefined"`).
+  divergences: an undefined subject gives undefined (jsonata-js matches the text
+  `"undefined"`), and each match's `next()` continues from where that match ended, while
+  jsonata-js's continues from wherever the regex last stopped, shared by every match it
+  gave: `($m := /a/("xaya"); [$m.next().start, $m.next().start])` is `[3, 3]` here and `[3]`
+  in jsonata-js.
 - **`$replace` drives a regex or a matcher function as jsonata-js does**
   ([#198](https://github.com/txjmb/jsonata-core/issues/198)). A replacement function's
   `$m.start` and `$m.end` count UTF-16 code units, so `$replace("éab", /a/, function($m)

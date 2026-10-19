@@ -43,7 +43,7 @@ const FUNCTIONS_JS_ARITY_NAMES = [
   'lowercase', 'max', 'merge', 'min', 'not', 'number', 'pad', 'power',
   'reverse', 'round', 'shuffle', 'split', 'spread', 'sqrt', 'string',
   'substring', 'substringAfter', 'substringBefore', 'sum', 'trim', 'type',
-  'uppercase', 'zip',
+  'uppercase', 'zip', 'random',
   // The higher-order functions are callbacks too: `$map([[3,1]], $sort)`
   // hands $sort two arguments (#204).
   'map', 'filter', 'single', 'sift', 'each', 'sort', 'match', 'replace',
