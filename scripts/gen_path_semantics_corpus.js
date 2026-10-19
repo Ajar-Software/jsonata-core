@@ -295,6 +295,13 @@ const EXTRA = [
   'n.([3]^(0)[true]^(0)[true]#$k.{"v":$})',
   // A field term on an array item is its items' fields.
   '[[{"p":2},{"p":1}],[{"p":3}]]^(p)[[0]]^(>$)', '[[{"p":2},{"p":1}],[{"p":3}]]^(p)',
+  '[[{"p":null}],[{"p":1}]]^(p)', '[{"p":null},{"p":1}]^(p)', '[[{"p":1}],[{"q":1}]]^(p)', '[[{"p":2}],[{"p":1}]]^(p)',
+  '[[{"p":null},{"p":2}],[{"p":1}]]^(p)',
+  // An object constructor binds `$` only where it is read.
+  '[1].($map($$.objs, function($x){ {"id": $x.id} }))', '[1].($$.objs@$i.{"a": $i.id, "b": $i.p})',
+  '[1].($reduce($$.objs, function($acc, $x){ $acc + {"v": $x.p}.v }, 0))', '[1].($$.objs.{"a": id, "s": $string()})',
+  '[1].($$.objs.{"a": id, "s": $})', '[1].($$.objs{$string(p): $})', '[1].($$.objs{id: p})',
+  '[1].($$.objs{"k": function(){$}()})',
   // After a sort, a tuple's `#$i` or `@$v` binding reads as a field named `i` or `v`.
   'acct.Order.P#$i^(>$i){"k": $keys($)}', 'acct.Order.P#$i^(>$i)[i = 1]', 'acct.Order.P#$i^(>$i)[$.i = 0]',
   'acct.Order.P#$i^(>$i){"x": $sum(i)}', 'acct.Order.P#$i^(>$i)^(i).N', 'acct.Order.P@$p^(>$p.N){"k": $keys($)}',
@@ -486,6 +493,9 @@ const ROOT_EXPRESSIONS = [
   '(a[0])^($)', '(a[-1])^($)', '[a[0]]^($)', '$sum(a[0])^($)', '$count(a[0])^($)', '$string(a[0])^($)',
   '(a[0])^($)#$i.$i', '(a[0])[]^($)', '[a[0]][]^($)', '"x"^($)', '(a)^($)', '[a]^($)', '$^($)', '($)^($)',
   '(a[0])^($)[0]', '(b.c)^($)', '$map(a, function($v) { $v })^($)',
+  // A focus or index binding on a first step over the top-level array
+  // keeps that array whole as the tuple's `@`.
+  '[3]@$w.($)', '[3]@$w.({"v": $})', '[3]@$w.{"v": $}', '[3]@$w.$count($)', '[3]#$i.($)', '[3]#$i.{"v": $}',
 ];
 
 // Operator combinations (#212). The reference suite tries each operator on

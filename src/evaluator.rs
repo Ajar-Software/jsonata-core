@@ -5240,33 +5240,46 @@ impl Evaluator {
                 return Err(duplicate_key_error(key));
             }
             let context = object_context(data);
-            let mut result = IndexMap::with_capacity(pairs.len());
-            for (key, value) in pairs {
-                let AstNode::String(key) = key else {
-                    unreachable!("all keys are literals")
-                };
-                // `$` is the group's context, also under an outer `$`
-                // binding (a step inside a block).
-                let value =
-                    self.with_dollar_bound(&context, |ev| ev.evaluate_internal(value, &context))?;
-                if !value.is_undefined() {
-                    result.insert(key.to_string(), value);
+            let build = |ev: &mut Self| -> Result<JValue, EvaluatorError> {
+                let mut result = IndexMap::with_capacity(pairs.len());
+                for (key, value) in pairs {
+                    let AstNode::String(key) = key else {
+                        unreachable!("all keys are literals")
+                    };
+                    let value = ev.evaluate_internal(value, &context)?;
+                    if !value.is_undefined() {
+                        result.insert(key.to_string(), value);
+                    }
                 }
-            }
-            return Ok(JValue::object(result));
+                Ok(JValue::object(result))
+            };
+            // `$` is the group's context, also under an outer `$` binding (a
+            // step inside a block), bound once for the object and only when
+            // a value can read it.
+            return if pairs.iter().any(|(_, value)| Self::may_read_dollar(value)) {
+                self.with_dollar_bound(&context, build)
+            } else {
+                build(self)
+            };
         }
+        let keys_read_dollar = pairs.iter().any(|(key, _)| Self::may_read_dollar(key));
+        let values_read_dollar = pairs.iter().any(|(_, value)| Self::may_read_dollar(value));
 
         let items = group_items(data);
         // Each key's pair and the items grouped under it, in first-seen order.
         let mut groups: IndexMap<String, (usize, Vec<JValue>)> = IndexMap::new();
         for item in items.iter() {
             for (pair_index, (key, _)) in pairs.iter().enumerate() {
-                let key =
-                    match self.with_dollar_bound(item, |ev| ev.evaluate_internal(key, item))? {
-                        JValue::String(key) => key,
-                        JValue::Undefined => continue,
-                        other => return Err(key_type_error(&other)),
-                    };
+                let key = if keys_read_dollar {
+                    self.with_dollar_bound(item, |ev| ev.evaluate_internal(key, item))?
+                } else {
+                    self.evaluate_internal(key, item)?
+                };
+                let key = match key {
+                    JValue::String(key) => key,
+                    JValue::Undefined => continue,
+                    other => return Err(key_type_error(&other)),
+                };
                 match groups.get_mut(&*key) {
                     Some((index, _)) if *index != pair_index => {
                         return Err(duplicate_key_error(&key));
@@ -5281,14 +5294,68 @@ impl Evaluator {
         let mut result = IndexMap::with_capacity(groups.len());
         for (key, (pair_index, group)) in groups {
             let context = group_context(&group);
-            let value = self.with_dollar_bound(&context, |ev| {
-                ev.evaluate_internal(&pairs[pair_index].1, &context)
-            })?;
+            let value = &pairs[pair_index].1;
+            let value = if values_read_dollar {
+                self.with_dollar_bound(&context, |ev| ev.evaluate_internal(value, &context))?
+            } else {
+                self.evaluate_internal(value, &context)?
+            };
             if !value.is_undefined() {
                 result.insert(key, value);
             }
         }
         Ok(JValue::object(result))
+    }
+
+    /// False when evaluating `node` cannot read the `$` binding, so an
+    /// object constructor need not rebind it: no `$` in it, and no lambda or
+    /// call without arguments that could take the context. Unknown kinds of
+    /// node count as reading it.
+    fn may_read_dollar(node: &AstNode) -> bool {
+        match node {
+            AstNode::String(_)
+            | AstNode::Name(_)
+            | AstNode::Number(_)
+            | AstNode::Boolean(_)
+            | AstNode::Null
+            | AstNode::Undefined
+            | AstNode::Regex { .. }
+            | AstNode::ParentVariable(_)
+            | AstNode::Parent(_)
+            | AstNode::Wildcard
+            | AstNode::Descendant => false,
+            AstNode::Variable(name) => name.is_empty(),
+            AstNode::Path { steps } => steps.iter().any(|step| {
+                Self::may_read_dollar(&step.node)
+                    || step.stages.iter().any(|stage| match stage {
+                        Stage::Filter(expr) => Self::may_read_dollar(expr),
+                        _ => false,
+                    })
+            }),
+            AstNode::Binary { lhs, rhs, .. } => {
+                Self::may_read_dollar(lhs) || Self::may_read_dollar(rhs)
+            }
+            AstNode::Unary { operand, .. } => Self::may_read_dollar(operand),
+            AstNode::Function { args, .. } => {
+                args.is_empty() || args.iter().any(Self::may_read_dollar)
+            }
+            AstNode::Array(items) | AstNode::ArrayGroup(items) | AstNode::Block(items) => {
+                items.iter().any(Self::may_read_dollar)
+            }
+            AstNode::Object(pairs) => pairs
+                .iter()
+                .any(|(key, value)| Self::may_read_dollar(key) || Self::may_read_dollar(value)),
+            AstNode::Conditional {
+                condition,
+                then_branch,
+                else_branch,
+            } => {
+                Self::may_read_dollar(condition)
+                    || Self::may_read_dollar(then_branch)
+                    || else_branch.as_deref().is_some_and(Self::may_read_dollar)
+            }
+            _ => true,
+        }
     }
 
     /// Evaluate a path step's node against one input item. `$` is the item,
@@ -5920,6 +5987,16 @@ impl Evaluator {
             }
         } else {
             let items: Vec<JValue> = match input {
+                // The top-level array's wrapper holds one item, the bare
+                // array, which a first step that is not a variable maps over
+                // as a whole (jsonata-js `outerWrapper`).
+                JValue::Array(arr)
+                    if arr.outer_wrapper
+                        && is_first_path_step
+                        && !matches!(&step.node, AstNode::Variable(_)) =>
+                {
+                    vec![input.bare()]
+                }
                 // Mirrors jsonata-js evaluatePath's inputSequence rule
                 // (`if (Array.isArray(input) && expr.steps[0].type !== 'variable')`):
                 // when the path's FIRST step is a variable reference (`$`/`$$`) the
@@ -9008,9 +9085,12 @@ impl Evaluator {
                         JValue::LazyPyDict(lazy) => {
                             return Ok(lazy.get_field(field_name)?);
                         }
-                        // A field of an array is its items' fields, which the
-                        // general evaluation below gathers.
-                        JValue::Array(_) => {}
+                        // A field of an array is its items' fields, gathered
+                        // as for any path; an explicit null among them stays
+                        // null, which raises T2008 as in jsonata-js.
+                        JValue::Array(_) => {
+                            return self.evaluate_internal(term_expr, &actual_element);
+                        }
                         _ => return Ok(JValue::Undefined),
                     }
                 }

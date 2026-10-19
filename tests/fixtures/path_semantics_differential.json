@@ -9149,6 +9149,130 @@
    }
   },
   {
+   "expression": "[[{\"p\":null}],[{\"p\":1}]]^(p)",
+   "result": {
+    "$error": "T2008"
+   }
+  },
+  {
+   "expression": "[{\"p\":null},{\"p\":1}]^(p)",
+   "result": {
+    "$error": "T2008"
+   }
+  },
+  {
+   "expression": "[[{\"p\":1}],[{\"q\":1}]]^(p)",
+   "result": [
+    [
+     {
+      "p": 1
+     }
+    ],
+    [
+     {
+      "q": 1
+     }
+    ]
+   ]
+  },
+  {
+   "expression": "[[{\"p\":2}],[{\"p\":1}]]^(p)",
+   "result": [
+    [
+     {
+      "p": 1
+     }
+    ],
+    [
+     {
+      "p": 2
+     }
+    ]
+   ]
+  },
+  {
+   "expression": "[[{\"p\":null},{\"p\":2}],[{\"p\":1}]]^(p)",
+   "result": {
+    "$error": "T2008"
+   }
+  },
+  {
+   "expression": "[1].($map($$.objs, function($x){ {\"id\": $x.id} }))",
+   "result": [
+    {},
+    {}
+   ]
+  },
+  {
+   "expression": "[1].($$.objs@$i.{\"a\": $i.id, \"b\": $i.p})",
+   "result": [
+    {
+     "b": 1
+    },
+    {
+     "b": 2
+    }
+   ]
+  },
+  {
+   "expression": "[1].($reduce($$.objs, function($acc, $x){ $acc + {\"v\": $x.p}.v }, 0))",
+   "result": 3
+  },
+  {
+   "expression": "[1].($$.objs.{\"a\": id, \"s\": $string()})",
+   "result": [
+    {
+     "s": "{\"p\":1}"
+    },
+    {
+     "s": "{\"p\":2}"
+    }
+   ]
+  },
+  {
+   "expression": "[1].($$.objs.{\"a\": id, \"s\": $})",
+   "result": [
+    {
+     "s": {
+      "p": 1
+     }
+    },
+    {
+     "s": {
+      "p": 2
+     }
+    }
+   ]
+  },
+  {
+   "expression": "[1].($$.objs{$string(p): $})",
+   "result": {
+    "1": {
+     "p": 1
+    },
+    "2": {
+     "p": 2
+    }
+   }
+  },
+  {
+   "expression": "[1].($$.objs{id: p})",
+   "result": {}
+  },
+  {
+   "expression": "[1].($$.objs{\"k\": function(){$}()})",
+   "result": {
+    "k": [
+     {
+      "p": 1
+     },
+     {
+      "p": 2
+     }
+    ]
+   }
+  },
+  {
    "expression": "acct.Order.P#$i^(>$i){\"k\": $keys($)}",
    "result": {
     "k": [
@@ -12893,6 +13017,135 @@
    "root": true,
    "result": {
     "$error": "T2008"
+   }
+  },
+  {
+   "expression": "[3]@$w.($)",
+   "root": true,
+   "result": [
+    {
+     "a": [
+      1,
+      2
+     ],
+     "b": {
+      "c": [
+       [
+        1
+       ]
+      ]
+     }
+    },
+    {
+     "a": [
+      3
+     ]
+    },
+    {
+     "a": [
+      [
+       4
+      ]
+     ],
+     "b": {
+      "c": [
+       2
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "expression": "[3]@$w.({\"v\": $})",
+   "root": true,
+   "result": {
+    "v": [
+     {
+      "a": [
+       1,
+       2
+      ],
+      "b": {
+       "c": [
+        [
+         1
+        ]
+       ]
+      }
+     },
+     {
+      "a": [
+       3
+      ]
+     },
+     {
+      "a": [
+       [
+        4
+       ]
+      ],
+      "b": {
+       "c": [
+        2
+       ]
+      }
+     }
+    ]
+   }
+  },
+  {
+   "expression": "[3]@$w.{\"v\": $}",
+   "root": true,
+   "result": {
+    "v": [
+     {
+      "a": [
+       1,
+       2
+      ],
+      "b": {
+       "c": [
+        [
+         1
+        ]
+       ]
+      }
+     },
+     {
+      "a": [
+       3
+      ]
+     },
+     {
+      "a": [
+       [
+        4
+       ]
+      ],
+      "b": {
+       "c": [
+        2
+       ]
+      }
+     }
+    ]
+   }
+  },
+  {
+   "expression": "[3]@$w.$count($)",
+   "root": true,
+   "result": 3
+  },
+  {
+   "expression": "[3]#$i.($)",
+   "root": true,
+   "result": 3
+  },
+  {
+   "expression": "[3]#$i.{\"v\": $}",
+   "root": true,
+   "result": {
+    "v": 3
    }
   }
  ]
