@@ -51,18 +51,17 @@ fn invalid_call_message(args: &[AstNode]) -> String {
     }
 }
 
-/// Running out of input while expecting something is S0203; finding the wrong
-/// thing is S0202. A missing *parameter name* is its own code, S0208.
 /// Whether `node` is a path node in jsonata-js, so that a group-by on it is
 /// the path's `group` rather than a step's. A name or a `.` makes a path, and
 /// so do `^` and `#` on anything; `[` and `@` keep their operand's kind. A
-/// one-step `Path` whose step isn't a name came from `[` on a non-path
-/// (`$x[0]`, `*[0]`, `(e)[0]`).
+/// one-step `Path` came from `[` on its step, so it is a path when the step
+/// is: `acct[0]` and `x^(y)[0]` are, `$x[0]`, `*[0]` and `(e)[0]` aren't.
 fn is_group_path(node: &AstNode) -> bool {
     match node {
-        AstNode::Path { steps } => {
-            steps.len() > 1 || matches!(steps.first().map(|s| &s.node), Some(AstNode::Name(_)))
-        }
+        AstNode::Path { steps } => match steps.as_slice() {
+            [step] => matches!(step.node, AstNode::Name(_)) || is_group_path(&step.node),
+            _ => true,
+        },
         AstNode::Sort { .. } => true,
         AstNode::Binary {
             op: BinaryOp::IndexBind,
@@ -77,6 +76,8 @@ fn is_group_path(node: &AstNode) -> bool {
     }
 }
 
+/// Running out of input while expecting something is S0203; finding the wrong
+/// thing is S0202. A missing *parameter name* is its own code, S0208.
 fn expected_message(expected: &str, found: &str) -> String {
     if expected == "parameter name" {
         return "S0208: Parameter of function definition must be a variable name (start with $)"
@@ -1407,12 +1408,14 @@ impl Parser {
             }
 
             // A group-by on a path belongs to the whole path, as in jsonata-js,
-            // where `{` sets `group` on the path node and later `.`, `[`, `^`,
-            // `#` and `@` keep extending that same path. So `a.b{k: v}.c`
-            // groups `a.b.c`, and `a.b{k: v}[0]` filters step `b` (#208). The
+            // where `{` sets `group` on the path node and every later postfix
+            // operator keeps extending that same path. So `a.b{k: v}.c`
+            // groups `a.b.c`, `a.b{k: v}[0]` filters step `b`, and in
+            // `a{k: v}.$f(x)` the call is a step of the path (#208). The
             // group is taken off here, the operator applies to the path, and
-            // the group goes back on around the result. A group on anything
-            // else (a block, `$x`, `*`) stays a step of its own.
+            // the group goes back on around the result. That covers each
+            // postfix operator but `{`, whose second group is S0210. A group
+            // on anything else (a block, `$x`, `*`) stays a step of its own.
             let path_group = match &lhs {
                 AstNode::ObjectTransform { input, .. }
                     if is_group_path(input)
@@ -1420,6 +1423,7 @@ impl Parser {
                             self.current_token,
                             Token::Dot
                                 | Token::LeftBracket
+                                | Token::LeftParen
                                 | Token::Caret
                                 | Token::Hash
                                 | Token::At
