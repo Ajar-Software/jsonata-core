@@ -649,7 +649,7 @@ fn substitute_labels_impl(
 /// be migrated into `PathStep.focus`/`PathStep.index_var` + `is_tuple`.
 /// Shared between the "marker nested inside an existing `PathStep`" case
 /// (`migrate_binding_markers`) and the "marker is the top-level/raw node
-/// itself" case (`wrap_marker_as_path`), so the stamping logic itself lives
+/// itself" case (`transform_marker`), so the stamping logic itself lives
 /// in exactly one place: `apply_marker_to_step`.
 enum BindingMarker {
     Focus(String),
@@ -712,6 +712,17 @@ fn check_focus_bind_target(
             "A context variable binding must precede any predicates on a step",
         ));
     }
+    // A group-by keeps its operand's kind, so `@` lands on the operand's
+    // step (`X[p]{...}@$v` is S0215 in jsonata-js).
+    if let AstNode::ObjectTransform { input, .. } = target_node {
+        return match &**input {
+            AstNode::Path { steps } => match steps.last() {
+                Some(last) => check_focus_bind_target(marker, &last.stages, &last.node),
+                None => Ok(()),
+            },
+            other => check_focus_bind_target(marker, &[], other),
+        };
+    }
     if matches!(target_node, AstNode::Sort { .. }) {
         return Err(coded(
             "S0216",
@@ -770,16 +781,111 @@ fn splice_marker_steps(
 /// any preceding `.` steps into a `Path` (or, for a single bare name, left a
 /// non-Path leaf) *before* wrapping the whole thing in the marker node. At
 /// this (top-level) call site there's no outer steps list to splice into, so
-/// the spliced steps become the whole resulting `Path`.
-fn wrap_marker_as_path(
-    transformed: Transformed,
-    marker: BindingMarker,
+/// the spliced steps become the whole resulting `Path`. `as_value` is false
+/// where something around the result makes it a path (see `finish_value_path`).
+fn transform_marker(
+    op: BinaryOp,
+    lhs: AstNode,
+    rhs: AstNode,
+    as_value: bool,
+    state: &mut AncestryState,
+    depth: usize,
 ) -> Result<Transformed, AstTransformError> {
-    let (steps, pending) = splice_marker_steps(transformed, marker)?;
+    let marker = binding_marker(op, rhs);
+    let transformed_lhs = transform_marker_lhs(lhs, &marker, state, depth)?;
+    let (mut steps, pending) = splice_marker_steps(transformed_lhs, marker)?;
+    if as_value {
+        finish_value_path(&mut steps);
+    }
     Ok(Transformed {
         node: AstNode::Path { steps },
         pending,
     })
+}
+
+fn binding_marker(op: BinaryOp, rhs: AstNode) -> BindingMarker {
+    let var_name = match rhs {
+        AstNode::Variable(name) => name,
+        _ => unreachable!("parser guarantees a binding marker's rhs is always Variable"),
+    };
+    match op {
+        BinaryOp::FocusBind => BindingMarker::Focus(var_name),
+        _ => BindingMarker::Index(var_name),
+    }
+}
+
+/// Transform a binding marker's operand. `#` wraps its operand in a path in
+/// jsonata-js, so the operand is transformed as one; `@` keeps its
+/// operand's kind.
+fn transform_marker_lhs(
+    lhs: AstNode,
+    marker: &BindingMarker,
+    state: &mut AncestryState,
+    depth: usize,
+) -> Result<Transformed, AstTransformError> {
+    match marker {
+        BindingMarker::Index(_) => transform_as_path(lhs, state, depth),
+        BindingMarker::Focus(_) => transform_node(lhs, state, depth),
+    }
+}
+
+/// Rebuild a group-by around its transformed input.
+fn transform_group(
+    input_t: Transformed,
+    pattern: Vec<(AstNode, AstNode)>,
+    state: &mut AncestryState,
+    depth: usize,
+) -> Result<Transformed, AstTransformError> {
+    // A `%` slot still pending when it leaves a group-by's key or value is
+    // dropped: jsonata-js's `{` case processes the pairs without
+    // `pushAncestry`, so the slot is neither resolved nor raised as S0217.
+    // Its label is never bound, and `%` evaluates to undefined there (#192).
+    // A seek that fails inside a pair, as in `{"k": (1).%}`, still raises
+    // S0217.
+    let mut transformed_pattern = Vec::with_capacity(pattern.len());
+    for (k, v) in pattern {
+        let k_t = transform_node(k, state, depth)?;
+        let v_t = transform_node(v, state, depth)?;
+        transformed_pattern.push((k_t.node, v_t.node));
+    }
+    Ok(Transformed {
+        node: AstNode::ObjectTransform {
+            input: Box::new(input_t.node),
+            pattern: transformed_pattern,
+        },
+        pending: input_t.pending,
+    })
+}
+
+/// Transform a node that something around it makes a path in jsonata-js
+/// (a sort's input, `#`'s operand), so a one-step path keeps the bindings
+/// and predicate slots that a node evaluated by itself would drop.
+fn transform_as_path(
+    node: AstNode,
+    state: &mut AncestryState,
+    depth: usize,
+) -> Result<Transformed, AstTransformError> {
+    match node {
+        AstNode::Path { steps } => {
+            let (steps, pending) = transform_path_steps(steps, false, state, depth)?;
+            Ok(Transformed {
+                node: AstNode::Path { steps },
+                pending,
+            })
+        }
+        AstNode::Binary {
+            op: op @ (BinaryOp::FocusBind | BinaryOp::IndexBind),
+            lhs,
+            rhs,
+        } => transform_marker(op, *lhs, *rhs, false, state, depth),
+        // A group-by keeps its operand's kind, so a path around it makes
+        // its operand a path.
+        AstNode::ObjectTransform { input, pattern } => {
+            let input_t = transform_as_path(*input, state, depth)?;
+            transform_group(input_t, pattern, state, depth)
+        }
+        other => transform_node(other, state, depth),
+    }
 }
 
 /// Recursively rebuild `node`, resolving any `%`/`@`/`#` found within.
@@ -815,7 +921,7 @@ fn transform_node_impl(
     let depth = depth + 1;
     match node {
         AstNode::Path { steps } => {
-            let (transformed_steps, pending) = transform_path_steps(steps, state, depth)?;
+            let (transformed_steps, pending) = transform_path_steps(steps, true, state, depth)?;
             Ok(Transformed {
                 node: AstNode::Path {
                     steps: transformed_steps,
@@ -850,38 +956,16 @@ fn transform_node_impl(
                 pending: vec![PendingAncestor { label, level: 1 }],
             })
         }
-        // `@$var` reaching transform_node as the raw top-level node itself
-        // (not nested inside an existing PathStep) -- e.g. `Order@$o` or
-        // `Account.Order@$o`, where the parser's flat infix loop applies `@`
-        // to the already-built lhs (a Path, or a bare leaf if there was no
-        // `.` at all) rather than to a single step. See `wrap_marker_as_path`.
+        // `@$var` or `#$var` reaching transform_node as the raw top-level
+        // node itself (not nested inside an existing PathStep) -- e.g.
+        // `Order@$o` or `Account.Order@$o`, where the parser's flat infix
+        // loop applies the marker to the already-built lhs (a Path, or a
+        // bare leaf if there was no `.` at all) rather than to a single step.
         AstNode::Binary {
-            op: BinaryOp::FocusBind,
+            op: op @ (BinaryOp::FocusBind | BinaryOp::IndexBind),
             lhs,
             rhs,
-        } => {
-            let var_name = match *rhs {
-                AstNode::Variable(name) => name,
-                _ => unreachable!("parser guarantees FocusBind's rhs is always Variable"),
-            };
-            let transformed_lhs = transform_node(*lhs, state, depth)?;
-            wrap_marker_as_path(transformed_lhs, BindingMarker::Focus(var_name))
-        }
-        // Same story as FocusBind above, but for bare top-level `#$var`
-        // (now represented the same generic way as FocusBind -- see
-        // BinaryOp::IndexBind's doc comment in ast.rs).
-        AstNode::Binary {
-            op: BinaryOp::IndexBind,
-            lhs,
-            rhs,
-        } => {
-            let var_name = match *rhs {
-                AstNode::Variable(name) => name,
-                _ => unreachable!("parser guarantees IndexBind's rhs is always Variable"),
-            };
-            let transformed_lhs = transform_node(*lhs, state, depth)?;
-            wrap_marker_as_path(transformed_lhs, BindingMarker::Index(var_name))
-        }
+        } => transform_marker(op, *lhs, *rhs, true, state, depth),
         // Recurse into every other node's children unchanged (no ancestor
         // resolution needed for nodes that aren't paths/blocks/parent refs).
         other => transform_children(other, state, depth),
@@ -940,8 +1024,14 @@ fn transform_children_impl(
         AstNode::Binary { op, lhs, rhs } => {
             let lhs_t = transform_node(*lhs, state, depth)?;
             let rhs_t = transform_node(*rhs, state, depth)?;
-            let mut pending = lhs_t.pending;
-            pending.extend(rhs_t.pending);
+            // jsonata-js's `~>` case never calls `pushAncestry`, so a `%`
+            // still seeking on either side is dropped rather than raised as
+            // S0217: `%.id ~> $count` is 0.
+            let mut pending = Vec::new();
+            if op != BinaryOp::ChainPipe {
+                pending = lhs_t.pending;
+                pending.extend(rhs_t.pending);
+            }
             Ok(Transformed {
                 node: AstNode::Binary {
                     op,
@@ -1047,25 +1137,7 @@ fn transform_children_impl(
         }
         AstNode::ObjectTransform { input, pattern } => {
             let input_t = transform_node(*input, state, depth)?;
-            // A `%` slot still pending when it leaves a group-by's key or
-            // value is dropped: jsonata-js's `{` case processes the pairs
-            // without `pushAncestry`, so the slot is neither resolved nor
-            // raised as S0217. Its label is never bound, and `%` evaluates
-            // to undefined there (#192). A seek that fails inside a pair,
-            // as in `{"k": (1).%}`, still raises S0217.
-            let mut transformed_pattern = Vec::with_capacity(pattern.len());
-            for (k, v) in pattern {
-                let k_t = transform_node(k, state, depth)?;
-                let v_t = transform_node(v, state, depth)?;
-                transformed_pattern.push((k_t.node, v_t.node));
-            }
-            Ok(Transformed {
-                node: AstNode::ObjectTransform {
-                    input: Box::new(input_t.node),
-                    pattern: transformed_pattern,
-                },
-                pending: input_t.pending,
-            })
+            transform_group(input_t, pattern, state, depth)
         }
         AstNode::Conditional {
             condition,
@@ -1103,7 +1175,9 @@ fn transform_children_impl(
             // term slot resolves against the last input step (no predicate-
             // style "resolve against the step itself" special case is needed;
             // it's a plain uniform backward walk over the input steps).
-            let input_t = transform_node(*input, state, depth)?;
+            // A sort makes its input a path in jsonata-js, so a one-step
+            // input keeps its `@` binding (see `finish_value_path`).
+            let input_t = transform_as_path(*input, state, depth)?;
             let was_path = matches!(input_t.node, AstNode::Path { .. });
             // jsonata wraps a non-path input into a single-step path so the
             // sort step has something to walk back through. We do the same for
@@ -1222,6 +1296,7 @@ fn transform_children_impl(
 /// `walk_backward` calls it makes), so it checks depth itself.
 fn transform_path_steps(
     steps: Vec<PathStep>,
+    as_value: bool,
     state: &mut AncestryState,
     depth: usize,
 ) -> Result<(Vec<PathStep>, Vec<PendingAncestor>), AstTransformError> {
@@ -1235,12 +1310,13 @@ fn transform_path_steps(
     stacker::maybe_grow(
         AST_TRANSFORM_RED_ZONE,
         AST_TRANSFORM_GROW_STACK_SIZE,
-        || transform_path_steps_impl(steps, state, depth),
+        || transform_path_steps_impl(steps, as_value, state, depth),
     )
 }
 
 fn transform_path_steps_impl(
     steps: Vec<PathStep>,
+    as_value: bool,
     state: &mut AncestryState,
     depth: usize,
 ) -> Result<(Vec<PathStep>, Vec<PendingAncestor>), AstTransformError> {
@@ -1304,6 +1380,7 @@ fn transform_path_steps_impl(
     // Both resolve_predicate_slot and walk_backward here are cycle-3 entry
     // points nesting ON TOP of this still-live transform_path_steps frame --
     // `depth + 1` from the SAME shared counter, not a fresh one.
+    let not_a_path = as_value && matches!(resolved.as_slice(), [step] if !is_js_path_step(step));
     let mut path_pending: Vec<PendingAncestor> = Vec::new();
     for i in 0..resolved.len() {
         for pending in std::mem::take(&mut pred_pending[i]) {
@@ -1315,7 +1392,11 @@ fn transform_path_steps_impl(
                 state,
                 depth + 1,
             )?;
-            if remaining > 0 {
+            if remaining > 0 || not_a_path {
+                // jsonata-js keeps a predicate's slots on a node that isn't
+                // a path even once they resolve; only an enclosing path
+                // drops them, and at the top they raise S0217 (#211). A
+                // level-0 slot carries that.
                 path_pending.push(PendingAncestor {
                     label: pending.label,
                     level: remaining,
@@ -1331,7 +1412,7 @@ fn transform_path_steps_impl(
                 state,
                 depth + 1,
             )?;
-            if remaining > 0 {
+            if remaining > 0 || not_a_path {
                 path_pending.push(PendingAncestor {
                     label: pending.label,
                     level: remaining,
@@ -1340,7 +1421,69 @@ fn transform_path_steps_impl(
         }
     }
 
+    if as_value {
+        finish_value_path(&mut resolved);
+    }
     Ok((resolved, path_pending))
+}
+
+/// Whether a one-step path's step is a path in jsonata-js. A name is, and
+/// so is a sort or a step `#` binds an index on, since `#` wraps its operand
+/// in a path. A block, `*`, `$` or literal is not, nor is a group-by on one.
+fn is_js_path_step(step: &PathStep) -> bool {
+    step.index_var.is_some()
+        || step
+            .stages
+            .iter()
+            .any(|stage| matches!(stage, Stage::Index(_)))
+        || is_js_path_node(&step.node)
+}
+
+fn is_js_path_node(node: &AstNode) -> bool {
+    match node {
+        AstNode::Name(_) | AstNode::Sort { .. } => true,
+        AstNode::Path { steps } => match steps.as_slice() {
+            [step] => is_js_path_step(step),
+            _ => true,
+        },
+        AstNode::ObjectTransform { input, .. } => is_js_path_node(input),
+        _ => false,
+    }
+}
+
+/// Settle a one-step path whose node isn't a path in jsonata-js, once
+/// nothing around it can make it one (#213). Without a `#`, jsonata-js
+/// evaluates the node by itself, which never applies an `@$v` binding. With
+/// one, `#` wraps the node in a path that has no `keepSingletonArray`, so a
+/// `[]` before the `#` (the node's own `keepArray`) keeps nothing.
+fn finish_value_path(steps: &mut [PathStep]) {
+    let [step] = steps else {
+        return;
+    };
+    if is_js_path_node(&step.node) {
+        return;
+    }
+    // A step's group-by operand was transformed as a path (see
+    // migrate_binding_markers); nothing makes it one here.
+    if let AstNode::ObjectTransform { input, .. } = &mut step.node {
+        if let AstNode::Path { steps } = &mut **input {
+            finish_value_path(steps);
+        }
+    }
+    if step
+        .stages
+        .iter()
+        .any(|stage| matches!(stage, Stage::Index(_)))
+    {
+        let mut before_index = true;
+        step.stages.retain(|stage| {
+            before_index &= !matches!(stage, Stage::Index(_));
+            !(before_index && matches!(stage, Stage::KeepArray))
+        });
+    } else if step.index_var.is_none() {
+        step.focus = None;
+        step.is_tuple = step.ancestor_label.is_some() || step.inner_tuple;
+    }
 }
 
 /// Resolve one seeking `%` slot that bubbled up out of a filter predicate
@@ -1372,7 +1515,11 @@ fn resolve_predicate_slot(
     // Split so the attached step (`rest[0]`) and the steps before it
     // (`prefix`) can be borrowed mutably at the same time.
     let (prefix, rest) = resolved.split_at_mut(i);
-    let remaining = if level == 1 {
+    let remaining = if level == 0 {
+        // Already resolved inside a node that isn't a path (see
+        // transform_path_steps_impl).
+        return Ok(0);
+    } else if level == 1 {
         seek_parent_step(&mut rest[0], label, 1, state, depth + 1)?
     } else {
         level - 1
@@ -1650,51 +1797,32 @@ fn migrate_binding_markers(
 ) -> Result<(Vec<PathStep>, Vec<PendingAncestor>), AstTransformError> {
     match step.node {
         AstNode::Binary {
-            op: BinaryOp::FocusBind,
+            op: op @ (BinaryOp::FocusBind | BinaryOp::IndexBind),
             lhs,
             rhs,
         } => {
-            let var_name = match *rhs {
-                AstNode::Variable(name) => name,
-                _ => unreachable!("parser guarantees FocusBind's rhs is always Variable"),
-            };
-            match transform_node(*lhs, state, depth + 1) {
-                Ok(transformed_lhs) => {
-                    splice_marker_steps(transformed_lhs, BindingMarker::Focus(var_name))
-                        .map(|spliced| carry_stages(spliced, step.stages))
-                }
-                // `step.node` (the `Binary{FocusBind, lhs, rhs}`) was already
-                // consumed by the match above, but `step.stages` (this
-                // step's own predicate expressions, untouched so far) is
-                // still owned here -- see push_ast_node_children's doc
-                // comment for why it can't just be allowed to drop normally.
+            let marker = binding_marker(op, *rhs);
+            match transform_marker_lhs(*lhs, &marker, state, depth + 1) {
+                Ok(transformed_lhs) => splice_marker_steps(transformed_lhs, marker)
+                    .map(|spliced| carry_stages(spliced, step.stages)),
+                // `step.node` (the marker's `Binary`) was already consumed by
+                // the match above, but `step.stages` (this step's own
+                // predicate expressions, untouched so far) is still owned
+                // here -- see push_ast_node_children's doc comment for why it
+                // can't just be allowed to drop normally.
                 Err(e) => {
                     drop_stages_iteratively(std::mem::take(&mut step.stages));
                     Err(e)
                 }
             }
         }
-        AstNode::Binary {
-            op: BinaryOp::IndexBind,
-            lhs,
-            rhs,
-        } => {
-            let var_name = match *rhs {
-                AstNode::Variable(name) => name,
-                _ => unreachable!("parser guarantees IndexBind's rhs is always Variable"),
-            };
-            match transform_node(*lhs, state, depth + 1) {
-                Ok(transformed_lhs) => {
-                    splice_marker_steps(transformed_lhs, BindingMarker::Index(var_name))
-                        .map(|spliced| carry_stages(spliced, step.stages))
-                }
-                Err(e) => {
-                    drop_stages_iteratively(std::mem::take(&mut step.stages));
-                    Err(e)
-                }
-            }
-        }
-        other => match transform_node(other, state, depth + 1) {
+        // A group-by as a step: the path makes its operand a path, so a
+        // block's `@$v` binds as on main.
+        other => match if matches!(other, AstNode::ObjectTransform { .. }) {
+            transform_as_path(other, state, depth + 1)
+        } else {
+            transform_node(other, state, depth + 1)
+        } {
             Ok(t) => {
                 step.node = t.node;
                 Ok((vec![step], t.pending))
