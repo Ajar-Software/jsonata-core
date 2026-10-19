@@ -4110,7 +4110,13 @@ impl Evaluator {
                     other => vec![other],
                 };
 
-                // If array is empty, add undefined to enable literal JSON object generation
+                // If array is empty, add undefined to enable literal JSON object
+                // generation. An empty tuple stream gets no such item: jsonata-js
+                // reduces it tuple by tuple, so it makes no group and gives `{}`
+                // (#215).
+                if items.is_empty() && Self::groups_tuple_stream(input) {
+                    return Ok(JValue::object(IndexMap::new()));
+                }
                 let items = if items.is_empty() {
                     vec![JValue::Undefined]
                 } else {
@@ -5170,6 +5176,20 @@ impl Evaluator {
     /// block holding such a path, it sees values.
     fn is_tuple_path_node(node: &AstNode) -> bool {
         matches!(node, AstNode::Path { steps } if steps.iter().any(|step| step.is_tuple))
+    }
+
+    /// True when a group-by over `node` reduces a tuple stream, as jsonata-js
+    /// does over a tuple path, or a sort of one. A bind on an expression
+    /// jsonata-js doesn't treat as a path (`$x@$y`) leaves it a plain value.
+    fn groups_tuple_stream(node: &AstNode) -> bool {
+        match node {
+            AstNode::Path { steps } if Self::is_non_path(steps) => {
+                let step = &steps[0];
+                step.index_var.is_some() || step.ancestor_label.is_some() || step.inner_tuple
+            }
+            AstNode::Sort { input, .. } => Self::groups_tuple_stream(input),
+            _ => Self::is_tuple_path_node(node),
+        }
     }
 
     /// True for a one-step path whose step is an expression jsonata-js does

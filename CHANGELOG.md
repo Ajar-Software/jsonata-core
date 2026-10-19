@@ -11,6 +11,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **A group-by on a path groups the whole path**
+  ([#208](https://github.com/txjmb/jsonata-core/issues/208)). In jsonata-js the `{...}` is
+  the path's group, and later `.` steps, calls, filters, sorts and binds extend that same path
+  before it is grouped. So `acct.Order.P{N: N}.A` groups `acct.Order.P.A` and gives `{}` (it
+  was `"A"`), `acct.Order.P{N: N}[0]` filters step `P` (it was S0209), and a second group-by
+  on the same path, as in `acct.Order{id: id}.P{N: N}`, is S0210. A group-by on a block, `$x`
+  or `*` still applies to that step alone, and `[]` after it keeps the array instead of
+  raising S0209.
 - **Rust API: `JValue::Array` holds a `JArray`** instead of an `Rc<Vec<JValue>>` (#184). `JArray`
   dereferences to `Vec<JValue>`, so code that reads arrays is unaffected. Code that builds them
   calls `JValue::array(vec)`, and `JArray::make_mut`, `into_vec` and `ptr_eq` replace
@@ -49,6 +57,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A `%` looks back through a group-by on a bare `*` or `%`**
+  ([#209](https://github.com/txjmb/jsonata-core/issues/209)). `*{N: N}.%` is the whole
+  input and `acct.Order.P.(%{"x": id}).%` reaches `acct`, as in jsonata-js, where both raised
+  S0217. Inside a block, as in `acct.(*{"k": 1}).%` or `acct.(*).%`, the `%` is undefined.
+- **A group-by over an empty tuple stream is `{}`**
+  ([#215](https://github.com/txjmb/jsonata-core/issues/215)). `acct.Order.P[%.id = "zz"]{"k": 1}`
+  gave `{"k": 1}`. A group-by over an empty plain value still evaluates its pairs once, so
+  `nope{"k": $count($)}` stays `{"k": 0}`.
 - **`%` inside a group-by no longer raises S0217**
   ([#192](https://github.com/txjmb/jsonata-core/issues/192)). As in jsonata-js, a `%` in a
   group-by's key or value is never resolved and evaluates to undefined, so

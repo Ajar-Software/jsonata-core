@@ -51,6 +51,68 @@ fn invalid_call_message(args: &[AstNode]) -> String {
     }
 }
 
+/// Whether `node` is a path node in jsonata-js, so that a group-by on it is
+/// the path's `group` rather than a step's. A name or a `.` makes a path, and
+/// so do `^` and `#` on anything; `[` and `@` keep their operand's kind. A
+/// one-step `Path` came from `[` on its step, so it is a path when the step
+/// is: `acct[0]` and `x^(y)[0]` are, `$x[0]`, `*[0]` and `(e)[0]` aren't.
+fn is_group_path(node: &AstNode) -> bool {
+    match node {
+        AstNode::Path { steps } => match steps.as_slice() {
+            [step] => matches!(step.node, AstNode::Name(_)) || is_group_path(&step.node),
+            _ => true,
+        },
+        AstNode::Sort { .. } => true,
+        AstNode::Binary {
+            op: BinaryOp::IndexBind,
+            ..
+        } => true,
+        AstNode::Binary {
+            op: BinaryOp::FocusBind,
+            lhs,
+            ..
+        } => is_group_path(lhs),
+        _ => false,
+    }
+}
+
+/// Whether jsonata-js's `[` would find a group on the step a predicate
+/// after `node` attaches to (S0209): the node itself when it isn't a path,
+/// or a path's last step. `#` and `@` bind that same step, and `[]` keeps it.
+fn step_has_group(node: &AstNode) -> bool {
+    match node {
+        AstNode::ObjectTransform { .. } => true,
+        AstNode::Path { steps } => matches!(
+            steps.last().map(|s| &s.node),
+            Some(AstNode::ObjectTransform { .. })
+        ),
+        AstNode::Binary {
+            op: BinaryOp::FocusBind | BinaryOp::IndexBind,
+            lhs,
+            ..
+        } => step_has_group(lhs),
+        _ => false,
+    }
+}
+
+/// Whether jsonata-js's `{` would find a group already on `node` (S0210). A
+/// group on a path's step doesn't count, so `#`, which makes a path, ends the
+/// check, while `[]` and `@` leave a grouped non-path as it is.
+fn node_has_group(node: &AstNode) -> bool {
+    match node {
+        AstNode::ObjectTransform { .. } => true,
+        AstNode::Path { steps } if !is_group_path(node) => {
+            matches!(steps[0].node, AstNode::ObjectTransform { .. })
+        }
+        AstNode::Binary {
+            op: BinaryOp::FocusBind,
+            lhs,
+            ..
+        } => node_has_group(lhs),
+        _ => false,
+    }
+}
+
 /// Running out of input while expecting something is S0203; finding the wrong
 /// thing is S0202. A missing *parameter name* is its own code, S0208.
 fn expected_message(expected: &str, found: &str) -> String {
@@ -1382,6 +1444,39 @@ impl Parser {
                 break;
             }
 
+            // A group-by on a path belongs to the whole path, as in jsonata-js,
+            // where `{` sets `group` on the path node and every later postfix
+            // operator keeps extending that same path. So `a.b{k: v}.c`
+            // groups `a.b.c`, `a.b{k: v}[0]` filters step `b`, and in
+            // `a{k: v}.$f(x)` the call is a step of the path (#208). The
+            // group is taken off here, the operator applies to the path, and
+            // the group goes back on around the result. That covers each
+            // postfix operator but `{`, whose second group is S0210. A group
+            // on anything else (a block, `$x`, `*`) stays a step of its own.
+            let path_group = match &lhs {
+                AstNode::ObjectTransform { input, .. }
+                    if is_group_path(input)
+                        && matches!(
+                            self.current_token,
+                            Token::Dot
+                                | Token::LeftBracket
+                                | Token::LeftParen
+                                | Token::Caret
+                                | Token::Hash
+                                | Token::At
+                        ) =>
+                {
+                    match std::mem::replace(&mut lhs, AstNode::Undefined) {
+                        AstNode::ObjectTransform { input, pattern } => {
+                            lhs = *input;
+                            Some(pattern)
+                        }
+                        _ => unreachable!(),
+                    }
+                }
+                _ => None,
+            };
+
             // Handle infix operators
             match &self.current_token {
                 Token::Dot => {
@@ -1435,38 +1530,37 @@ impl Parser {
                             ))));
                             self.bump_parse_depth()?;
                             lhs = AstNode::Path { steps };
-                            continue;
-                        }
+                        } else {
+                            // Parse the expression(s) to apply - may be block with semicolons
+                            let mut expressions = vec![self.parse_expression(0)?];
 
-                        // Parse the expression(s) to apply - may be block with semicolons
-                        let mut expressions = vec![self.parse_expression(0)?];
-
-                        while self.current_token == Token::Semicolon {
-                            self.advance()?;
-                            if self.current_token == Token::RightParen {
-                                break;
+                            while self.current_token == Token::Semicolon {
+                                self.advance()?;
+                                if self.current_token == Token::RightParen {
+                                    break;
+                                }
+                                expressions.push(self.parse_expression(0)?);
                             }
-                            expressions.push(self.parse_expression(0)?);
+
+                            self.expect(Token::RightParen)?;
+
+                            // Always a Block, even with one expression: a `.(...)` step
+                            // is a jsonata-js block, which gets a frame of its own, and
+                            // the Block is what tells it apart from a `.$fn(...)` step,
+                            // whose FunctionApplication holds the call itself. (The
+                            // `.function(){...}(...)` desugaring is a Block too.)
+                            let expr = AstNode::Block(expressions);
+
+                            // Create FunctionApplication node as a path step
+                            let mut steps = match lhs {
+                                AstNode::Path { steps } => steps,
+                                _ => vec![PathStep::new(lhs)],
+                            };
+
+                            steps.push(PathStep::new(AstNode::FunctionApplication(Box::new(expr))));
+                            self.bump_parse_depth()?;
+                            lhs = AstNode::Path { steps };
                         }
-
-                        self.expect(Token::RightParen)?;
-
-                        // Always a Block, even with one expression: a `.(...)` step
-                        // is a jsonata-js block, which gets a frame of its own, and
-                        // the Block is what tells it apart from a `.$fn(...)` step,
-                        // whose FunctionApplication holds the call itself. (The
-                        // `.function(){...}(...)` desugaring is a Block too.)
-                        let expr = AstNode::Block(expressions);
-
-                        // Create FunctionApplication node as a path step
-                        let mut steps = match lhs {
-                            AstNode::Path { steps } => steps,
-                            _ => vec![PathStep::new(lhs)],
-                        };
-
-                        steps.push(PathStep::new(AstNode::FunctionApplication(Box::new(expr))));
-                        self.bump_parse_depth()?;
-                        lhs = AstNode::Path { steps };
                     } else {
                         // Normal dot path
                         let rhs = self.parse_expression(right_bp)?;
@@ -1544,16 +1638,18 @@ impl Parser {
                     }
                 }
                 Token::LeftBracket => {
-                    // S0209: A predicate cannot follow a grouping expression in a step
-                    // Check if lhs is an ObjectTransform (grouping expression)
-                    if matches!(lhs, AstNode::ObjectTransform { .. }) {
+                    self.advance()?;
+
+                    // S0209: A predicate cannot follow a grouping expression in a step.
+                    // `[]` is not a predicate: jsonata-js sets keepArray on the
+                    // grouped node instead, so `$x{k: v}[]` is the one-step path
+                    // checked here when a predicate follows it.
+                    if step_has_group(&lhs) && self.current_token != Token::RightBracket {
                         return Err(ParserError::InvalidSyntax(
                             "S0209: A predicate cannot follow a grouping expression in a step"
                                 .to_string(),
                         ));
                     }
-
-                    self.advance()?;
 
                     // A postfix predicate or `[]` attaches to the last step of
                     // the path as a stage, as jsonata-js does: on a path it
@@ -1767,8 +1863,7 @@ impl Parser {
                 }
                 Token::LeftBrace => {
                     // S0210: Each step can only have one grouping expression
-                    // Check if lhs is already an ObjectTransform
-                    if matches!(lhs, AstNode::ObjectTransform { .. }) {
+                    if node_has_group(&lhs) {
                         return Err(ParserError::InvalidSyntax(
                             "S0210: Each step can only have one grouping expression".to_string(),
                         ));
@@ -1951,6 +2046,13 @@ impl Parser {
                         rhs: Box::new(rhs),
                     };
                 }
+            }
+
+            if let Some(pattern) = path_group {
+                lhs = AstNode::ObjectTransform {
+                    input: Box::new(lhs),
+                    pattern,
+                };
             }
         }
 

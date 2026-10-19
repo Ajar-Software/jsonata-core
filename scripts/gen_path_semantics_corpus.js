@@ -147,6 +147,32 @@ const EXTRA = [
   '(acct.Order.P{N: N}).%', 'acct.Order.(P{N: N}).%.id', '(acct.Order.P{N: N}).%.Order',
   '(acct.Order{id: P}).%', 'acct.(Order{id: P}).%', '(acct.Order.P{N: %.id}).%',
   'acct.Order.P{N: (1).%}', '(acct.Order.P{N: N})^(%.id).A', 'acct.(Order.P{N: N}).%.Order',
+  // A group-by on a path groups the whole path: later steps, filters, sorts
+  // and binds extend the path first (#208). On a block, `$x` or `*` the
+  // group stays on that step, and `[]` after it isn't a predicate.
+  'acct.Order.P{N: N}.A', 'acct.Order.P{N: N}.Z', 'acct.Order.P{N: nope}.A', 'acct.Order.P{N: N}.%',
+  'acct.Order.P{N: N}[%.id="o1"]', 'acct.Order.P{N: N}[0]', 'acct.Order.P{N: N}[0].N',
+  'acct{"a": 1}.Order', 'acct.Order{"a": 1}[0]', 'acct.Order{id: id}.P{N: N}', 'acct.Order{"k": id}@$o.P',
+  'acct.Order{"k": id}#$i.P', 'acct.Order@$o.P{N: $o.id}.N', '(acct.Order.P{N: N}).A',
+  '(objs){"k": p}.k', '(objs){"k": p}[].k', '(objs){"k": p}[]', '(objs){"k": p}[][0]', '(objs){"k": p}[0]',
+  '(objs)[0]{"k": p}[]', '[(objs){"k": p}[]]', '$x{"k": 1}[].k', '$x{"a": 1}[0]', '[1, 2, 3]{"num": $}[true]',
+  'acct.Order.P{N: N}.$uppercase(N)', 'acct.Order{"k": id}.P.$string()', 'acct.Order{"k": id}.$count(P)',
+  'acct.Order.P{N: N}.function($x) { $x }(1)', 'acct{"a": 1}(1)', 'acct^(x)[0]{"k": 1}[0]',
+  '(acct.Order)#$i[0]{"k": id}[0]', 'acct^(id)[0]{"k": 1}.Order', 'acct.Order@$o[id = "zz"]{"k": 1}.id',
+  'acct.Order^(id)[0]{"k": id}.P', '(objs){"k": p}[]{"j": 1}', '*{"a": 1}[]{"b": 1}',
+  '(objs){"k": p}[][]{"j": 1}', '($x := objs; $x{"k": p}#$i[0])', '($x := objs; $x{"k": p}@$v[0])',
+  '($x := objs; $x{"k": p}#$i{"j": 1})', '($x := objs; $x{"k": p}@$v{"j": 1})',
+  // A `%` seeks through a group-by on a bare `*` or `%` (#209). As a step
+  // the `*` is the ancestor; inside a block nothing binds it.
+  'acct.(*{"k": 1}).%', 'acct.Order.(*{"k": N}).%', 'acct.Order.P.(%{"x": id}).%', '*{N: N}.%',
+  '*{N: N}.%.id', 'acct.*{"k": 1}.%', 'acct.Order.P.%{"x": id}.%', 'acct.(*).%', 'acct.Order.P.(%).%',
+  'acct.Order.P.(%).%.id', 'acct.Order.(*).%.%', '(acct.Order.P.(%{"x": id})).%',
+  // A group-by over an empty tuple stream makes no group (#215).
+  'acct.Order[%.id = "o1"]{"k": 1}', 'acct.Order.P[%.id = "zz"]{"k": 1}',
+  'acct.Order[id = "zz"]{"k": $count($)}', 'nope{"k": $count($)}', 'objs#$i[$i > 5]{"k": 1}',
+  '(acct.Order.P[%.id = "zz"]){"k": 1}', '$x@$y{"k": 1}', '[1, 2]@$y[$y > 5]{"k": 1}', '$x#$y{"k": 1}',
+  'acct.Order@$o[id = "zz"]^(id){"k": 1}', 'acct.Order#$i[$i > 5]^(id){"k": 1}',
+  'acct.Order[%.id = "zz"]^(id){"k": 1}', 'acct.Order[id = "zz"]^(id){"k": 1}',
   // `$match` returns every match as a sequence (#194).
   '$match("aba", /a/)', '$match("aba", /a/, 1)', '$match("aba", /a/, 0)', '$match("aba", /z/)',
   '$match("xay", /a/)', '$match("ab", /(a)(c)?/)', '$match("abc", /x*/)', '$match("abc", /x*/, 1)',
