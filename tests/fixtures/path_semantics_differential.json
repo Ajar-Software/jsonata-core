@@ -8431,6 +8431,188 @@
    ]
   },
   {
+   "expression": "n.(([3,1].$^($))^($))",
+   "result": [
+    1,
+    3,
+    1,
+    3
+   ]
+  },
+  {
+   "expression": "n.(([3,1].$^($)).$)",
+   "result": [
+    1,
+    3,
+    1,
+    3
+   ]
+  },
+  {
+   "expression": "n.(([$[0], 9].$^($)).$)",
+   "result": [
+    1,
+    9,
+    3,
+    9
+   ]
+  },
+  {
+   "expression": "n.((([3,1].$)^($)).$)",
+   "result": [
+    1,
+    3,
+    1,
+    3
+   ]
+  },
+  {
+   "expression": "([3].$^($)).$",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "objs.(([p].$^($)).$)",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "n.(([3,1]^($))^($))",
+   "result": [
+    1,
+    1,
+    3,
+    3,
+    1,
+    3
+   ]
+  },
+  {
+   "expression": "n.([3,1]^($))",
+   "result": [
+    1,
+    1,
+    3,
+    3,
+    1,
+    3
+   ]
+  },
+  {
+   "expression": "n.([3,1]^($).$)",
+   "result": [
+    1,
+    3,
+    1,
+    3
+   ]
+  },
+  {
+   "expression": "n.(([3,1]^($).$).$)",
+   "result": [
+    1,
+    3,
+    1,
+    3
+   ]
+  },
+  {
+   "expression": "n.([3,1]^($)^(-$).$)",
+   "result": [
+    3,
+    1,
+    3,
+    1
+   ]
+  },
+  {
+   "expression": "n.([3,1][0]^($).$)",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "n.([$[0], 9]^($).$)",
+   "result": [
+    1,
+    9,
+    3,
+    9
+   ]
+  },
+  {
+   "expression": "n.([[3],[1]]^($).$)",
+   "result": {
+    "$error": "T2008"
+   }
+  },
+  {
+   "expression": "[3,1]^($).$",
+   "result": [
+    1,
+    3
+   ]
+  },
+  {
+   "expression": "[3][0]^($).$",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "n.([3][0]^($)^($).$)",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "n.([3]^($).$)",
+   "result": [
+    3,
+    3
+   ]
+  },
+  {
+   "expression": "([1,2].$)[0].$",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "([3].$)[$=3].$",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "([{\"a\":7}].$)[0].a",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "objs.(([$].$)[0].p)",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "([1,2].$)[].$",
+   "result": [
+    1,
+    2
+   ]
+  },
+  {
+   "expression": "([1,2].$)[$>0].$",
+   "result": [
+    1,
+    2
+   ]
+  },
+  {
    "expression": "acct.Order.P#$i^(>$i){\"k\": $keys($)}",
    "result": {
     "k": [

@@ -3390,6 +3390,13 @@ pub struct Evaluator {
     /// wrapper). Mirrors jsonata-js keeping `path.tuple` for such a path instead
     /// of projecting each tuple's `@`.
     keep_tuple_stream: bool,
+    /// Set by a path whose first step is a sort, for that sort to read: in
+    /// jsonata-js the sort's input is then the first step of a dotted path,
+    /// where an array constructor is `consarray` and evaluated once.
+    sort_input_dotted: bool,
+    /// Set by such a sort when its consarray first step gave a single value,
+    /// not an array, for the path to read (see `evaluate_path`).
+    sort_input_cons_single: bool,
     options: EvaluatorOptions,
     /// Set in `evaluate()` (only when `options.timeout_ms` is configured) and
     /// checked in `evaluate_internal`'s per-node checkpoint for D1012.
@@ -3410,6 +3417,8 @@ impl Evaluator {
             max_recursion_depth: 302,
             tuple_stream_created: false,
             keep_tuple_stream: false,
+            sort_input_dotted: false,
+            sort_input_cons_single: false,
             options: EvaluatorOptions::default(),
             start_time: None,
             host_fns: HashMap::new(),
@@ -3423,6 +3432,8 @@ impl Evaluator {
             max_recursion_depth: 302,
             tuple_stream_created: false,
             keep_tuple_stream: false,
+            sort_input_dotted: false,
+            sort_input_cons_single: false,
             options: EvaluatorOptions::default(),
             start_time: None,
             host_fns: HashMap::new(),
@@ -3438,6 +3449,8 @@ impl Evaluator {
             max_recursion_depth: 302,
             tuple_stream_created: false,
             keep_tuple_stream: false,
+            sort_input_dotted: false,
+            sort_input_cons_single: false,
             options,
             start_time: None,
             host_fns: HashMap::new(),
@@ -4539,6 +4552,7 @@ impl Evaluator {
             AstNode::Sort { input, terms } => {
                 // Keep the input path's tuple wrappers so the sort terms can read
                 // the carried `%`/`$focus`/`$index` bindings per element.
+                let dotted = std::mem::take(&mut self.sort_input_dotted);
                 let saved = self.keep_tuple_stream;
                 let tuple_input = Self::is_tuple_path_node(input) || Self::sorts_tuples(input);
                 self.keep_tuple_stream = tuple_input;
@@ -4553,8 +4567,10 @@ impl Evaluator {
                     // (the last-step rule, a constructor, a block) or a
                     // sequence, becomes a fresh sequence here, without any
                     // `[]` mark of its own.
-                    self.evaluate_sort_input(input, data)
+                    self.evaluate_sort_input(input, data, dotted)
                 };
+                // Kept from the sort terms' own paths until the sort is done.
+                let cons_single = std::mem::take(&mut self.sort_input_cons_single);
                 // The sort terms are expressions of their own, which keep no
                 // tuple stream.
                 self.keep_tuple_stream = false;
@@ -4594,6 +4610,7 @@ impl Evaluator {
                 if Self::sort_input_keeps_singleton(input) {
                     sorted.mark_keep_singleton();
                 }
+                self.sort_input_cons_single = cons_single;
                 Ok(sorted)
             }
 
@@ -4966,7 +4983,16 @@ impl Evaluator {
                 if let JValue::Array(arr) = &mut value {
                     arr.cons = true;
                 }
-                let value = self.apply_filter_stages(value, &step.stages)?;
+                let mut value = self.apply_filter_stages(value, &step.stages)?;
+                // A predicate on the block leaves one value bare, as the
+                // generic unwrap of jsonata-js's predicate result does.
+                if !step.stages.is_empty() && Self::is_cons_block(&step.node) {
+                    if let JValue::Array(arr) = &value {
+                        if arr.sequence && !arr.keep_singleton && arr.len() == 1 {
+                            value = arr[0].clone();
+                        }
+                    }
+                }
                 // jsonata-js takes the value as the next step's input sequence
                 // as is, so a block's single value gives that step no items,
                 // and the path no result; a sort still orders it.
@@ -4986,11 +5012,25 @@ impl Evaluator {
                 let saved = self.keep_tuple_stream;
                 if matches!(step.node, AstNode::Sort { .. }) {
                     self.keep_tuple_stream = true;
+                    self.sort_input_dotted = index == 0 && steps.len() > 1;
                 }
                 let value =
                     self.evaluate_step(step, items, previous.as_ref(), index + 1 == steps.len());
                 self.keep_tuple_stream = saved;
-                value?
+                self.sort_input_dotted = false;
+                let value = value?;
+                // A sort of a consarray first step's single value gives it
+                // back as is, which the next step reads as no items, as for
+                // the consarray step itself above.
+                let cons_single = std::mem::take(&mut self.sort_input_cons_single);
+                let next_reads_items = steps
+                    .get(index + 1)
+                    .is_some_and(|next| !matches!(next.node, AstNode::Sort { .. }));
+                if cons_single && next_reads_items {
+                    JValue::Undefined
+                } else {
+                    value
+                }
             };
 
             if result.is_undefined() || matches!(&result, JValue::Array(arr) if arr.is_empty()) {
@@ -5444,13 +5484,23 @@ impl Evaluator {
         let AstNode::Block(exprs) = node else {
             return false;
         };
-        exprs.iter().any(|expr| match expr {
-            AstNode::Block(_) => Self::is_cons_block(expr),
+        exprs.iter().any(|expr| Self::starts_cons(expr, false))
+    }
+
+    /// True when `node` starts with a `consarray` first step: an array
+    /// constructor that begins a dotted path (`dotted`), or a consarray
+    /// block. A sort is a step of the path it ends in jsonata-js, so
+    /// `[3,1].$^($)` and `[3,1]^($).$` start with one too.
+    fn starts_cons(node: &AstNode, dotted: bool) -> bool {
+        match node {
+            AstNode::Array(_) => dotted,
+            AstNode::Block(_) => Self::is_cons_block(node),
+            AstNode::Sort { input, .. } => Self::starts_cons(input, dotted),
             AstNode::Path { steps } if !Self::is_non_path(steps) => {
-                matches!(steps[0].node, AstNode::Array(_)) || Self::is_cons_block(&steps[0].node)
+                Self::starts_cons(&steps[0].node, dotted || steps.len() > 1)
             }
             _ => false,
-        })
+        }
     }
 
     /// Evaluate a non-tuple sort input as the first step of the path
@@ -5465,6 +5515,7 @@ impl Evaluator {
         &mut self,
         input: &AstNode,
         data: &JValue,
+        dotted: bool,
     ) -> Result<JValue, EvaluatorError> {
         let first = match input {
             AstNode::Path { steps } if !Self::is_non_path(steps) => None,
@@ -5477,9 +5528,12 @@ impl Evaluator {
                 matches!(
                     node,
                     AstNode::Variable(_) | AstNode::ParentVariable(_) | AstNode::Sort { .. }
-                ) || Self::is_cons_block(node)
+                ) || Self::starts_cons(node, dotted)
             }
         };
+        // A sort of a sort is one path: the inner sort's input is its first
+        // step too.
+        let pass_dotted = dotted && matches!(input, AstNode::Sort { .. });
         let uncons = |value: JValue| match value {
             JValue::Array(mut arr) if first.is_some() && arr.cons => {
                 arr.cons = false;
@@ -5497,7 +5551,25 @@ impl Evaluator {
                 _ => data.clone(),
             };
             let value = if whole {
-                self.evaluate_unwrapped_later(input, &item)?
+                self.sort_input_dotted = pass_dotted;
+                let value = self.evaluate_unwrapped_later(input, &item);
+                self.sort_input_dotted = false;
+                let value = value?;
+                if dotted && first.is_some_and(|node| Self::starts_cons(node, true)) {
+                    let stages = match input {
+                        AstNode::Path { steps } => !steps[0].stages.is_empty(),
+                        _ => false,
+                    };
+                    let single = match &value {
+                        JValue::Array(arr) => {
+                            stages && arr.sequence && !arr.keep_singleton && arr.len() == 1
+                        }
+                        JValue::Undefined => false,
+                        _ => true,
+                    };
+                    self.sort_input_cons_single |= single;
+                }
+                value
             } else {
                 self.with_dollar_bound(&item, |ev| ev.evaluate_unwrapped_later(input, &item))?
             };
