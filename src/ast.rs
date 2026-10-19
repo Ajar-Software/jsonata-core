@@ -177,7 +177,9 @@ pub enum AstNode {
     /// ast_transform -- looked up at runtime via the same tuple/scope
     /// mechanism as $-variables. The parser produces `Parent(String::new())`
     /// (an empty placeholder never observed by the evaluator); ast_transform
-    /// fills every occurrence with a real label or raises S0217.
+    /// fills every occurrence with a real label or raises S0217. A `%` in a
+    /// group-by's key or value gets a label nothing binds, so it evaluates
+    /// to undefined, as in jsonata-js (#192).
     Parent(String),
 
     /// Array grouping in path expression `.[expr]`

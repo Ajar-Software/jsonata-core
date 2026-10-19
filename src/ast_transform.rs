@@ -1047,7 +1047,6 @@ fn transform_children_impl(
         }
         AstNode::ObjectTransform { input, pattern } => {
             let input_t = transform_node(*input, state, depth)?;
-            let pending = input_t.pending;
             // A `%` slot still pending when it leaves a group-by's key or
             // value is dropped: jsonata-js's `{` case processes the pairs
             // without `pushAncestry`, so the slot is neither resolved nor
@@ -1065,7 +1064,7 @@ fn transform_children_impl(
                     input: Box::new(input_t.node),
                     pattern: transformed_pattern,
                 },
-                pending,
+                pending: input_t.pending,
             })
         }
         AstNode::Conditional {
@@ -1525,13 +1524,12 @@ fn seek_parent_step_impl(
             // resolve `%` against `Order` rather than raising S0217.
             None => Ok(level),
         },
-        // A group-by reached as a step (`(a.b{...}).%`). jsonata-js keeps the
-        // group on the path node, so seekParent walks the path's steps; here
-        // that path is the group-by's input.
-        AstNode::ObjectTransform { input, .. } => {
+        // A group-by reached as a step (`(a.b{...}).%`): seek through its
+        // input, as seek_parent_wrapped does.
+        AstNode::ObjectTransform { .. } => {
             step.is_tuple = true;
             step.inner_tuple = true;
-            seek_parent_wrapped(input.as_mut(), label, level, state, depth)
+            seek_parent_wrapped(&mut step.node, label, level, state, depth)
         }
         _ => Err(coded("S0217", S0217_MESSAGE)),
     }
@@ -1580,7 +1578,9 @@ fn seek_parent_wrapped_impl(
             Some(last) => seek_parent_wrapped(last, label, level, state, depth),
             None => Ok(level),
         },
-        // A group-by: seek through its input path, as above.
+        // A group-by. jsonata-js keeps the group on the path node, so
+        // seekParent walks the grouped path's steps; here that path is the
+        // group-by's input.
         AstNode::ObjectTransform { input, .. } => {
             seek_parent_wrapped(input.as_mut(), label, level, state, depth)
         }
@@ -2544,8 +2544,22 @@ mod tests {
             .unwrap()
             .parse()
             .unwrap();
-        let resolved = format!("{:?}", resolve_ancestry(ast).unwrap());
-        assert!(resolved.contains("ancestor_label: Some("), "{resolved}");
+        let steps = match resolve_ancestry(ast).unwrap() {
+            AstNode::Path { steps } => steps,
+            other => panic!("expected Path, got {:?}", other),
+        };
+        assert!(steps[0].is_tuple && steps[0].inner_tuple);
+        let AstNode::Block(exprs) = &steps[0].node else {
+            panic!("expected Block, got {:?}", steps[0].node);
+        };
+        let AstNode::ObjectTransform { input, .. } = &exprs[0] else {
+            panic!("expected ObjectTransform, got {:?}", exprs[0]);
+        };
+        let AstNode::Path { steps: inner } = input.as_ref() else {
+            panic!("expected Path, got {:?}", input);
+        };
+        assert!(inner[0].ancestor_label.is_none());
+        assert!(inner[1].ancestor_label.is_some() && inner[1].is_tuple);
     }
 
     #[test]
