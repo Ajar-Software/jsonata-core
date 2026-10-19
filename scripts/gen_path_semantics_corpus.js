@@ -430,6 +430,35 @@ const EXTRA = [
   '($loop := function($n, $acc) { $n = 0 ? $map($acc, function($f) { $f() }) : ($mk := function() { function() { $n } }; $loop($n - 1, $append($acc, [$mk()]))) }; $loop(4, []))',
   '($other := function($a) { ($f := $a[0]; $f()) }; $outer := function($m) { ($mk := function() { ($z := 2; function() { $m + $z }) }; $other([$mk()])) }; $outer(5))',
   '($other := function($o) { ($f := $o.h; $f()) }; $outer := function($m) { ($mk := function() { function() { $m } }; $other({"h": $mk()})) }; $outer(5))',
+  // A function that sees the loop's frame keeps it while it lives, also
+  // when only a composition, partial or closure that holds it is passed on.
+  '($f := function($n, $prev, $x, $acc) { $n = 0 ? $acc : $f($n - 1, $c := function() { $late } ~> $string, $late := $n, $append($acc, $prev())) }; $f(3, function() { "none" }, 0, []))',
+  '($h := function($k) { function() { $k() } }; $f := function($n, $prev, $x, $acc) { $n = 0 ? $acc : $f($n - 1, $c := $h(function() { $late }), $late := $n, $append($acc, $prev())) }; $f(3, function() { "none" }, 0, []))',
+  '($f := function($n, $prev, $x, $acc) { $n = 0 ? $acc : $f($n - 1, $c := (function() { $late } ~> $string) ~> $string, $late := $n, $append($acc, $prev())) }; $f(3, function() { "none" }, 0, []))',
+  '($f := function($n, $prev, $x, $acc) { $n = 0 ? $acc : $f($n - 1, $c := $string ~> function($x) { $string($late) }, $late := $n, $append($acc, $prev(1))) }; $f(3, function($v) { "none" }, 0, []))',
+  '($f := function($n, $prev, $x, $acc) { $n = 0 ? $acc : $f($n - 1, $c := function($a, $b) { $string($late) }(?, 1), $late := $n, $append($acc, $prev(0))) }; $f(3, function($v) { "none" }, 0, []))',
+  '($f := function($n, $prev, $x, $acc) { $n = 0 ? $acc : $f($n - 1, $c := $map([1], function($v) { function() { $late } })[0] ~> $string, $late := $n, $append($acc, $prev())) }; $f(3, function() { "none" }, 0, []))',
+  '($f := function($n, $prev, $x, $acc) { $n = 0 ? $acc : $f($n - 1, $c := $reduce([1, 2], function($a, $v) { function() { $late } }, 0) ~> $string, $late := $n, $append($acc, $prev())) }; $f(3, function() { "none" }, 0, []))',
+  '($f := function($n, $prev, $x, $acc) { $n = 0 ? $acc : $f($n - 1, $c := function() { $eval("$late") } ~> $string, $late := $n, $append($acc, $prev())) }; $f(3, function() { "none" }, 0, []))',
+  '($f := function($n, $prev) { $n = 0 ? "done" : $f($n - 1, function() { $prev() + 1 }) }; $f(300, function() { 0 }))',
+  '($f := function($n, $prev) { $n = 0 ? $prev() : $f($n - 1, function() { $prev() + 1 }) }; $f(50, function() { 0 }))',
+  // Functions kept in arrays, objects or by other functions' frames, and
+  // dropped with the pass.
+  '($f := function($n, $acc) { ($a := [function() { $n }]; $n = 0 ? $acc : $f($n - 1, $acc + 1)) }; $f(3000, 0))',
+  '($f := function($n, $acc) { ($o := {"k": function() { $n }}; $n = 0 ? $acc : $f($n - 1, $acc + 1)) }; $f(3000, 0))',
+  '($f := function($n, $acc) { ($q := $map([1, 2], function($v) { function() { $v } }); $n = 0 ? $acc : $f($n - 1, $acc + 1)) }; $f(3000, 0))',
+  '($f := function($n, $acc) { ($g := function() { $n }; $l := [$g]; $n = 0 ? $acc : $f($n - 1, $acc + 1)) }; $f(3000, 0))',
+  '($f := function($n, $acc) { ($mk := function($k) { $k = 0 ? function() { $n } : $mk($k - 1) }; $q := $mk(1); $n = 0 ? $acc : $f($n - 1, $acc + 1)) }; $f(3000, 0))',
+  // A composition's first function runs in a call frame of its own below
+  // the defining scope, its second in the caller's (jsonata-js `chainAST`).
+  '($c := $eval ~> $string; $c("$z := 5"); $z)', '("$x := 4" ~> ($eval ~> $string); $x)',
+  '($c := $eval ~> $string; $map(["$z := 5"], $c); $z)', '($p := $eval(?); $c := $p ~> $string; $c("$w := 1"); $w)',
+  '($c := ($eval ~> $string) ~> $string; $c("$z := 5"); $z)',
+  '($n := "outer"; $c := ($n := "def"; $eval ~> $uppercase); ($n := "call"; $c("$n")))',
+  '($n := "outer"; $c := $eval ~> $uppercase; ($n := "call"; $c("$n")))',
+  '($n := "top"; $c := $eval ~> $string; $f := function($n) { ($r := $c("$n"); $r) }; $f("arg"))',
+  '($c := $string ~> $eval; $c("$z := 5"); $z)',
+  '($c := $eval ~> $string; $c("[$exists($__chain_x), $exists($__chain_f), $exists($__temp_arg_0)]"))',
   // `$eval` binds in its caller's scope, through temporaries too.
   '($eval("$y := 5"); $y)', '($eval("$q := function() { 42 }"); $q())', '(($eval("$y := 5")); $y)',
   '($eval("$y := 5"); $eval("$y + 1"))', '($m := $map; $m(["$w := 3"], $eval); $w)',

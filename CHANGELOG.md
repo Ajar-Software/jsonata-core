@@ -87,9 +87,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   builtin. Deep recursion no longer slows down with depth when its body calls a builtin, since a
   lookup skips the caller frames. `$eval` runs in its caller's scope without seeing the
   evaluator's temporaries, and a binding it makes lands there, even when it is reached through
-  `$map` or a composition: `($m := $map; $m(["$w := 3"], $eval); $w)` is 3. A composition such
-  as `$string ~> $eval` runs in the scope it is called from, as in jsonata-js, so
-  `($x := 7; ($string ~> $eval)("$x"))` is 7 (both were undefined).
+  `$map`: `($m := $map; $m(["$w := 3"], $eval); $w)` is 3. A composition `f ~> g` calls g in
+  the scope it is called from and f in a call frame of its own below the scope where `~>` was,
+  as jsonata-js's `chainAST` does, so `($x := 7; ($string ~> $eval)("$x"))` is 7 (it was
+  undefined) and `($c := $eval ~> $string; $c("$z := 5"); $z)` stays undefined. A tail-call
+  loop reuses its frame for the next pass unless a function that can see the frame outlives
+  the pass; functions the pass makes and drops, including ones kept in local arrays, objects or
+  other functions, do not count, so such loops run in constant memory. A function that does
+  live on, such as one passed to the next pass, keeps its frame, so a loop that passes a new
+  closure on each pass still grows with the number of passes.
 - **`$replace` drives a regex or a matcher function as jsonata-js does**
   ([#198](https://github.com/txjmb/jsonata-core/issues/198)). A replacement function's
   `$m.start` and `$m.end` count UTF-16 code units, so `$replace("éab", /a/, function($m)

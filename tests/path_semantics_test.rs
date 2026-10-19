@@ -49,6 +49,20 @@ const KNOWN_DIVERGENCES: &[(&str, &str)] = &[
         "tree",
         "($m := \"root\"; $other := function($f) { $f() }; $outer := function() { ($k := function() { $m }; $m := 1; $other($k)) }; $outer())",
     ),
+    // Deliberate (#191, the documented late-binding gap): the composition's
+    // `$eval` runs in its defining block, which has finished by the call.
+    // jsonata-js keeps that block alive and sees its `$n`; here, as for any
+    // function outliving its defining scope, it is gone, and only what the
+    // function captured remains. `$eval`'s text names nothing to capture,
+    // so it sees the enclosing scope's `$n`.
+    (
+        "compiled",
+        "($n := \"outer\"; $c := ($n := \"def\"; $eval ~> $uppercase); ($n := \"call\"; $c(\"$n\")))",
+    ),
+    (
+        "tree",
+        "($n := \"outer\"; $c := ($n := \"def\"; $eval ~> $uppercase); ($n := \"call\"; $c(\"$n\")))",
+    ),
 ];
 
 /// Mirror of `encode` in scripts/gen_path_semantics_corpus.js.

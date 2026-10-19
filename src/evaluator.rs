@@ -2791,6 +2791,162 @@ struct Scope {
     /// An evaluator-internal frame (argument temporaries, a composition's
     /// parts), which `$eval` does not see.
     internal: bool,
+    /// An internal frame standing for a jsonata-js call frame of its own (a
+    /// composition's first function runs in one): `$eval` reached through it
+    /// keeps its bindings to itself instead of passing them to the frame
+    /// below.
+    opaque: bool,
+}
+
+/// How many references `Scope::seen_from_outside` follows per tail call.
+const OWNERSHIP_WALK_BUDGET: usize = 512;
+
+/// A value with a reference count, as `OwnershipWalk` sees it.
+#[derive(Clone, Copy)]
+enum Owned<'a> {
+    Lambda(&'a Rc<StoredLambda>),
+    Partial(&'a Rc<PartialApplication>),
+    Items(&'a Rc<Vec<JValue>>),
+    Map(&'a Rc<IndexMap<String, JValue>>),
+    Token(&'a Rc<FrameToken>),
+}
+
+impl Owned<'_> {
+    fn key(self) -> usize {
+        match self {
+            Owned::Lambda(rc) => Rc::as_ptr(rc) as *const u8 as usize,
+            Owned::Partial(rc) => Rc::as_ptr(rc) as *const u8 as usize,
+            Owned::Items(rc) => Rc::as_ptr(rc) as *const u8 as usize,
+            Owned::Map(rc) => Rc::as_ptr(rc) as *const u8 as usize,
+            Owned::Token(rc) => Rc::as_ptr(rc) as *const u8 as usize,
+        }
+    }
+
+    fn strong_count(self) -> usize {
+        match self {
+            Owned::Lambda(rc) => Rc::strong_count(rc),
+            Owned::Partial(rc) => Rc::strong_count(rc),
+            Owned::Items(rc) => Rc::strong_count(rc),
+            Owned::Map(rc) => Rc::strong_count(rc),
+            Owned::Token(rc) => Rc::strong_count(rc),
+        }
+    }
+}
+
+/// Counts the references to a frame's token that come from values its
+/// bindings own (see `Scope::seen_from_outside`). A walk step answers
+/// `Break(false)` once those account for every holder, `Break(true)` when
+/// out of budget.
+struct OwnershipWalk<'a> {
+    token: &'a Rc<FrameToken>,
+    holders: usize,
+    inside: usize,
+    /// References found so far to each value, from owned values only.
+    refs: HashMap<usize, usize>,
+    /// Owned values not yet looked into: functions and tokens first, as
+    /// they are where holders are.
+    functions: Vec<Owned<'a>>,
+    containers: Vec<Owned<'a>>,
+    budget: usize,
+}
+
+impl<'a> OwnershipWalk<'a> {
+    fn run(&mut self, bindings: impl Iterator<Item = &'a JValue>) -> std::ops::ControlFlow<bool> {
+        for value in bindings {
+            self.value(value)?;
+        }
+        loop {
+            let next = match self.functions.pop() {
+                Some(node) => node,
+                None => match self.containers.pop() {
+                    Some(node) => node,
+                    None => return std::ops::ControlFlow::Break(true),
+                },
+            };
+            self.expand(next)?;
+        }
+    }
+
+    /// One reference to `node` from an owned value.
+    fn reference(&mut self, node: Owned<'a>) -> std::ops::ControlFlow<bool> {
+        if self.budget == 0 {
+            return std::ops::ControlFlow::Break(true);
+        }
+        self.budget -= 1;
+        if let Owned::Token(token) = node {
+            if Rc::ptr_eq(token, self.token) {
+                self.inside += 1;
+                if self.inside == self.holders {
+                    return std::ops::ControlFlow::Break(false);
+                }
+                return std::ops::ControlFlow::Continue(());
+            }
+        }
+        let refs = self.refs.entry(node.key()).or_insert(0);
+        *refs += 1;
+        if *refs == node.strong_count() {
+            // Every reference is from owned values: owned too.
+            match node {
+                Owned::Items(_) | Owned::Map(_) => self.containers.push(node),
+                _ => self.functions.push(node),
+            }
+        }
+        std::ops::ControlFlow::Continue(())
+    }
+
+    fn value(&mut self, value: &'a JValue) -> std::ops::ControlFlow<bool> {
+        match value {
+            JValue::Lambda(rc) => self.reference(Owned::Lambda(rc)),
+            JValue::Array(items) => self.reference(Owned::Items(items.items_rc())),
+            JValue::Object(map) => self.reference(Owned::Map(map)),
+            _ => std::ops::ControlFlow::Continue(()),
+        }
+    }
+
+    fn expand(&mut self, node: Owned<'a>) -> std::ops::ControlFlow<bool> {
+        match node {
+            Owned::Lambda(rc) => {
+                for value in rc.captured_env.values() {
+                    self.value(value)?;
+                }
+                if let Some(data) = &rc.captured_data {
+                    self.value(data)?;
+                }
+                if let Some(partial) = &rc.partial {
+                    self.reference(Owned::Partial(partial))?;
+                }
+                if let Some(token) = &rc.def_scope.keep {
+                    self.reference(Owned::Token(token))?;
+                }
+            }
+            Owned::Partial(partial) => {
+                if let PartialTarget::Lambda(target) = &partial.target {
+                    self.reference(Owned::Lambda(target))?;
+                }
+                for (_, value) in &partial.bound_args {
+                    self.value(value)?;
+                }
+            }
+            Owned::Items(items) => {
+                for value in items.iter() {
+                    self.budget = self.budget.saturating_sub(1);
+                    self.value(value)?;
+                }
+            }
+            Owned::Map(map) => {
+                for value in map.values() {
+                    self.budget = self.budget.saturating_sub(1);
+                    self.value(value)?;
+                }
+            }
+            Owned::Token(token) => {
+                if let Some(outer) = &token.outer {
+                    self.reference(Owned::Token(outer))?;
+                }
+            }
+        }
+        std::ops::ControlFlow::Continue(())
+    }
 }
 
 /// A trampoline frame's token (`Scope::token`). It holds the token of the
@@ -2798,16 +2954,20 @@ struct Scope {
 /// only its innermost one and still keeps every frame it sees.
 #[derive(Debug)]
 pub(crate) struct FrameToken {
-    _outer: Option<Rc<FrameToken>>,
+    outer: Option<Rc<FrameToken>>,
 }
 
 impl Scope {
-    /// Whether a function that can see this frame is reachable other than
-    /// through the frame's own bindings. Each such function holds one
-    /// clone of the token; the ones reachable only from the bindings (bound
-    /// there, or captured by one that is) go when the frame is cleared.
-    /// Functions inside arrays or objects are not looked for, so they count
-    /// as outside, which only costs a frame.
+    /// Whether a function that can see this frame may outlive the frame's
+    /// bindings. Each such function holds the frame's token, directly or
+    /// through the token of a trampoline frame further in; the frame's own
+    /// bindings keep some of them. A value is owned by the bindings when
+    /// every reference to it comes from the bindings or from values they
+    /// own; owned values go when the frame is cleared, so if they account
+    /// for every holder, nothing can see the frame afterwards. The walk
+    /// visits at most `OWNERSHIP_WALK_BUDGET` references, functions before
+    /// arrays and objects, and answers yes when it runs out, which only
+    /// costs a frame.
     fn seen_from_outside(&self) -> bool {
         let Some(token) = self.token.get() else {
             return false;
@@ -2816,39 +2976,16 @@ impl Scope {
         if holders == 0 {
             return false;
         }
-        // Every function reachable from the bindings through function
-        // values and their captures, with how many references to it come
-        // from there.
-        let mut found: HashMap<*const StoredLambda, (&Rc<StoredLambda>, usize)> = HashMap::new();
-        let mut pending: Vec<&JValue> = self.bindings.values().collect();
-        while let Some(value) = pending.pop() {
-            let JValue::Lambda(rc) = value else {
-                continue;
-            };
-            let entry = found.entry(Rc::as_ptr(rc)).or_insert((rc, 0));
-            entry.1 += 1;
-            if entry.1 == 1 {
-                pending.extend(rc.captured_env.values());
-                if let Some(partial) = &rc.partial {
-                    if let PartialTarget::Lambda(target) = &partial.target {
-                        found.entry(Rc::as_ptr(target)).or_insert((target, 0)).1 += 1;
-                    }
-                }
-            }
-        }
-        // Those referenced only from there die with the bindings.
-        let inside = found
-            .values()
-            .filter(|(rc, refs)| {
-                Rc::strong_count(rc) == *refs
-                    && rc
-                        .def_scope
-                        .keep
-                        .as_ref()
-                        .is_some_and(|t| Rc::ptr_eq(t, token))
-            })
-            .count();
-        holders > inside
+        let mut walk = OwnershipWalk {
+            token,
+            holders,
+            inside: 0,
+            refs: HashMap::new(),
+            functions: Vec::new(),
+            containers: Vec::new(),
+            budget: OWNERSHIP_WALK_BUDGET,
+        };
+        walk.run(self.bindings.values()) != std::ops::ControlFlow::Break(false)
     }
 
     fn new(id: u64, barrier: Option<usize>) -> Self {
@@ -2859,6 +2996,7 @@ impl Scope {
             tco: false,
             token: std::cell::OnceCell::new(),
             internal: false,
+            opaque: false,
         }
     }
 }
@@ -2877,9 +3015,14 @@ pub(crate) struct DefScope {
     /// `(index, id)` of each visible frame above the root, innermost first.
     /// The root frame (index 0) is always visible and never listed.
     chain: DefChain,
-    /// The evaluator built this function (a composition); its frames are
-    /// internal.
+    /// The evaluator built this function (a composition, or the call of
+    /// its first function); its frames are internal.
     internal: bool,
+    /// Its frames continue at its caller's frame, not a defining one
+    /// (`DefScope::AT_CALLER`).
+    at_caller: bool,
+    /// Its frames are opaque (see `Scope::opaque`).
+    opaque: bool,
     /// The token of the innermost trampoline frame in `chain` (see
     /// `Scope::token`), which keeps the trampoline from reusing it, and
     /// through it the ones further out, while this function lives. None
@@ -2919,20 +3062,24 @@ impl DefScope {
             frames: [(0, 0); DEF_CHAIN_INLINE],
         },
         internal: false,
+        at_caller: false,
+        opaque: false,
         keep: None,
     };
 
-    /// A function the evaluator builds itself, such as a composition. Its
-    /// frames continue at its caller's frame and are hidden from `$eval`,
-    /// as jsonata-js's native compositions run in the calling environment:
-    /// `$eval` inside one sees, and binds in, the scope it is called from.
-    pub(crate) const INTERNAL: DefScope = DefScope {
+    /// A composition `f ~> g` (`Evaluator::compose_functions`). Its frame
+    /// continues at its caller's frame and is hidden from `$eval`: g is
+    /// jsonata-js's tail call, run in the caller's environment, so `$eval`
+    /// as g sees, and binds in, the scope the composition is called from.
+    pub(crate) const AT_CALLER: DefScope = DefScope {
         ctx: 0,
         chain: DefChain::Inline {
             len: 0,
             frames: [(0, 0); DEF_CHAIN_INLINE],
         },
         internal: true,
+        at_caller: true,
+        opaque: false,
         keep: None,
     };
 }
@@ -2995,6 +3142,7 @@ impl Context {
         let id = self.fresh_scope_id();
         let mut scope = Scope::new(id, Some(barrier));
         scope.internal = def.internal;
+        scope.opaque = def.opaque;
         self.push_frame(scope);
     }
 
@@ -3006,13 +3154,16 @@ impl Context {
         self.push_frame(scope);
     }
 
-    /// The innermost frame that is not internal, where `$eval` runs.
-    fn frame_below_internal(&self) -> usize {
+    /// The innermost frame that is not internal, where `$eval` runs, and
+    /// whether an opaque frame is on the way there.
+    fn frame_below_internal(&self) -> (usize, bool) {
         let mut i = self.scope_stack.len() - 1;
+        let mut opaque = false;
         while i > 0 && self.scope_stack[i].internal {
+            opaque |= self.scope_stack[i].opaque;
             i = self.scope_stack[i].barrier.unwrap_or(i - 1);
         }
-        i
+        (i, opaque)
     }
 
     /// Push a frame whose lookups continue at frame `at`.
@@ -3053,6 +3204,7 @@ impl Context {
             let scope = &mut self.scope_stack[top];
             scope.barrier = Some(barrier);
             scope.internal = def.internal;
+            scope.opaque = def.opaque;
             // Its lexical chain changes; a function defined from now on
             // takes a new token, holding the new chain's.
             scope.token = std::cell::OnceCell::new();
@@ -3068,8 +3220,7 @@ impl Context {
     /// function that outlived its block sees what is left of its scope, and
     /// never the frames of whoever called the function that made it).
     fn barrier_for(&self, def: &DefScope) -> usize {
-        if def.internal {
-            // `DefScope::INTERNAL`: the caller's frame.
+        if def.at_caller {
             return self.scope_stack.len() - 1;
         }
         if def.ctx != self.ctx_id {
@@ -3103,11 +3254,7 @@ impl Context {
                 break;
             }
         }
-        Rc::clone(
-            scope
-                .token
-                .get_or_init(|| Rc::new(FrameToken { _outer: outer })),
-        )
+        Rc::clone(scope.token.get_or_init(|| Rc::new(FrameToken { outer })))
     }
 
     /// The defining scope for a function created now.
@@ -3147,6 +3294,8 @@ impl Context {
             ctx: self.ctx_id,
             chain,
             internal: false,
+            at_caller: false,
+            opaque: false,
             keep,
         }
     }
@@ -5247,15 +5396,22 @@ impl Evaluator {
             ));
         }
         if lhs_value.is_function() {
-            return Ok(Self::compose_functions(lhs_value, func));
+            let def = self.context.def_scope();
+            return Ok(Self::compose_functions(lhs_value, func, def));
         }
         self.call_function_value(&func, &[lhs_value], data)
             .map(JValue::unwrap_sequence)
     }
 
-    /// `f ~> g` for two functions: the function `λ($x) { g(f($x)) }`, as
-    /// jsonata-js builds from its `chainAST`.
-    fn compose_functions(f: JValue, g: JValue) -> JValue {
+    /// `f ~> g` for two functions, made where `def` says: the function
+    /// `λ($x) { g(f($x)) }`, as jsonata-js builds from its `chainAST` in the
+    /// environment of the `~>`. There, `f($x)` runs in the composition's own
+    /// call frame, below the defining environment, and `g(...)` is a tail
+    /// call, run in the caller's. So f is called through a function defined
+    /// at `def` with an opaque frame, and the composition itself continues
+    /// at its caller's frame (`DefScope::AT_CALLER`); this matters only to
+    /// `$eval`, as every other function resolves names where it was made.
+    fn compose_functions(f: JValue, g: JValue, def: DefScope) -> JValue {
         // Names no expression binds: `$x` would be visible to f and g.
         const F: &str = "__chain_f";
         const G: &str = "__chain_g";
@@ -5265,20 +5421,36 @@ impl Evaluator {
             args: vec![arg],
             is_builtin: false,
         };
-        JValue::Lambda(Rc::new(StoredLambda {
-            params: vec![X.to_string()],
-            body: call(G, call(F, AstNode::Variable(X.to_string()))),
-            compiled_body: None,
-            signature: None,
-            captured_env: HashMap::from([(F.to_string(), f), (G.to_string(), g)]),
-            captured_data: None,
-            thunk: false,
-            self_name: None,
-            partial: None,
-            live_token: LiveLambdaToken::new(),
-            // Its body names only what it captured.
-            def_scope: DefScope::INTERNAL,
-        }))
+        let lambda = |body: AstNode, captured_env: HashMap<String, JValue>, def_scope| {
+            JValue::Lambda(Rc::new(StoredLambda {
+                params: vec![X.to_string()],
+                body,
+                compiled_body: None,
+                signature: None,
+                captured_env,
+                captured_data: None,
+                thunk: false,
+                self_name: None,
+                partial: None,
+                live_token: LiveLambdaToken::new(),
+                def_scope,
+            }))
+        };
+        let first = lambda(
+            call(F, AstNode::Variable(X.to_string())),
+            HashMap::from([(F.to_string(), f)]),
+            DefScope {
+                internal: true,
+                opaque: true,
+                ..def
+            },
+        );
+        // Its body names only what it captured.
+        lambda(
+            call(G, call(F, AstNode::Variable(X.to_string()))),
+            HashMap::from([(F.to_string(), first), (G.to_string(), g)]),
+            DefScope::AT_CALLER,
+        )
     }
 
     /// Finish a `~>` whose right side is a call with a filter or `[]`
@@ -9006,14 +9178,19 @@ impl Evaluator {
         // environment, so a `:=` there binds in it. When the evaluator's own
         // frames (argument temporaries, a composition) are on top, it runs
         // in a frame that looks past them, whose bindings then go to the
-        // caller's frame.
-        let at = self.context.frame_below_internal();
+        // caller's frame, or nowhere when one of those frames stands for a
+        // jsonata-js call frame of its own (a composition's first function).
+        let (at, opaque) = self.context.frame_below_internal();
         let evaluated = if at == self.context.scope_stack.len() - 1 {
             self.evaluate_internal(&parsed_ast, eval_context)
         } else {
             self.context.push_scope_at(at);
             let evaluated = self.evaluate_internal(&parsed_ast, eval_context);
-            self.context.pop_scope_into(at);
+            if opaque {
+                self.context.pop_scope();
+            } else {
+                self.context.pop_scope_into(at);
+            }
             evaluated
         };
         match evaluated {
@@ -10744,5 +10921,50 @@ mod tests {
         let expected: Vec<JValue> = (1..=50).rev().map(|n| JValue::from(n as f64)).collect();
         assert_eq!(result, JValue::array(expected));
         assert!(depth > 50, "scope stack reached only {depth} frames");
+    }
+
+    #[test]
+    fn tail_loop_dropping_functions_held_in_values_keeps_stack_bounded() {
+        // Functions held by arrays, objects, other functions' results and a
+        // local tail-recursive maker all go with the pass.
+        for body in [
+            "$a := [function(){ $n }]",
+            "$o := {\"k\": function(){ $n }}",
+            "$q := $map([1, 2], function($v){ function(){ $v } })",
+            "$g := function(){ $n }; $l := [$g]",
+            "$mk := function($k){ $k = 0 ? function(){ $n } : $mk($k - 1) }; $q := $mk(1)",
+        ] {
+            let src = format!(
+                "($f := function($n, $acc){{ ({body}; $n = 0 ? $acc : $f($n - 1, $acc + 1)) }}; \
+                 $f(5000, 0))"
+            );
+            let (result, depth) = peak_depth_of(&src);
+            assert_eq!(result, JValue::from(5000.0), "{body}");
+            assert!(depth < 16, "{body}: scope stack reached {depth} frames");
+        }
+    }
+
+    #[test]
+    fn tail_loop_passing_a_chain_of_closures_stays_linear() {
+        // Each pass's closure captures the previous one, so the frames stay
+        // (each closure may see its own); deciding that must not walk the
+        // chain, or the loop takes quadratic time.
+        // Dropping the chain of 20000 closures at the end recurses through
+        // it, which a test thread's default stack does not hold.
+        let elapsed = std::thread::Builder::new()
+            .stack_size(512 << 20)
+            .spawn(|| {
+                let start = std::time::Instant::now();
+                let (result, _) = peak_depth_of(
+                    "($f := function($n, $prev){ $n = 0 ? 'done' : $f($n - 1, function(){ $prev() + 1 }) }; \
+                     $f(20000, function(){ 0 }))",
+                );
+                assert_eq!(result, JValue::from("done"));
+                start.elapsed()
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+        assert!(elapsed.as_secs() < 5, "took {elapsed:?}");
     }
 }

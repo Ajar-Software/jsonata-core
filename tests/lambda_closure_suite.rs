@@ -683,6 +683,75 @@ fn eval_in_composition_sees_callers_scope() {
 }
 
 #[test]
+fn tail_loop_keeps_frame_seen_by_function_held_by_another() {
+    // `$prev` from the last pass is a function holding a closure that reads
+    // that pass's `$late`; the frame must stay for it, however it is held.
+    for c in [
+        "function(){ $late } ~> $string",
+        "$h(function(){ $string($late) })",
+        "(function(){ $late } ~> $string) ~> $string",
+        "$map([1], function($v){ function(){ $late } })[0] ~> $string",
+        "$reduce([1, 2], function($a, $v){ function(){ $late } }, 0) ~> $string",
+        "function(){ $eval(\"$late\") } ~> $string",
+    ] {
+        let src = format!(
+            "( $h := function($k){{ function(){{ $k() }} }}; \
+               $f := function($n, $prev, $x, $acc){{ $n = 0 ? $acc : \
+               $f($n - 1, $c := {c}, $late := $n, $append($acc, $prev())) }}; \
+               $f(3, function(){{ \"none\" }}, 0, []) )"
+        );
+        assert_eval(&src, "[\"none\",\"3\",\"2\"]");
+    }
+    assert_eval(
+        "( $f := function($n, $prev, $x, $acc){ $n = 0 ? $acc : \
+           $f($n - 1, $c := function($a, $b){ $string($late) }(?, 1), $late := $n, \
+           $append($acc, $prev(0))) }; $f(3, function($v){ \"none\" }, 0, []) )",
+        "[\"none\",\"3\",\"2\"]",
+    );
+}
+
+#[test]
+fn composition_runs_first_function_below_its_defining_scope() {
+    // jsonata-js: f runs in the composition's own frame (bindings dropped,
+    // names from where `~>` was), g in the caller's.
+    assert_eval(
+        "( $c := $eval ~> $string; $c(\"$z := 5\"); $exists($z) )",
+        "false",
+    );
+    assert_eval(
+        "( \"$x := 4\" ~> ($eval ~> $string); $exists($x) )",
+        "false",
+    );
+    assert_eval(
+        "( $c := $eval ~> $string; $map([\"$z := 5\"], $c); $exists($z) )",
+        "false",
+    );
+    assert_eval(
+        "( $p := $eval(?); $c := $p ~> $string; $c(\"$w := 1\"); $exists($w) )",
+        "false",
+    );
+    assert_eval(
+        "( $c := ($eval ~> $string) ~> $string; $c(\"$z := 5\"); $exists($z) )",
+        "false",
+    );
+    assert_eval(
+        "( $n := \"top\"; $c := $eval ~> $string; \
+           $f := function($n){ ($r := $c(\"$n\"); $r) }; $f(\"arg\") )",
+        "\"top\"",
+    );
+    assert_eval(
+        "( $n := \"outer\"; $c := $eval ~> $uppercase; ($n := \"call\"; $c(\"$n\")) )",
+        "\"OUTER\"",
+    );
+    assert_eval(
+        "( $c := $eval ~> $string; \
+           $c(\"[$exists($__chain_x), $exists($__chain_f), $exists($__temp_arg_0)]\") )",
+        "\"[false,false,false]\"",
+    );
+    assert_eval("( $c := $string ~> $eval; $c(\"$z := 5\"); $z )", "5");
+}
+
+#[test]
 fn tail_loop_making_closures_stays_fast_and_correct() {
     // Each pass makes a function; dropped ones must not pin their frames.
     assert_eval(
