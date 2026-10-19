@@ -166,3 +166,72 @@ def test_host_function_recursing_deep_inside_a_recursion(n, stack):
     )
     assert proc.returncode == 0, f"process crashed ({proc.returncode}): {proc.stderr[-2000:]}"
     assert proc.stdout.strip() == "RecursionError"
+
+
+_THREADS_RUNNER = textwrap.dedent("""
+    import sys, threading
+    import jsonatapy
+
+    sys.setswitchinterval(1e-6)
+    barrier = threading.Barrier(4)
+
+    def run():
+        expr = jsonatapy.compile(
+            "($f := function($n){$n <= 0 ? $h() : 1 + $f($n - 1)}; $f(3000))"
+        )
+        expr.register("h", lambda: 1)
+        barrier.wait()
+        expr.evaluate(None)
+
+    threads = [threading.Thread(target=run) for _ in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    print("done")
+    """)
+
+
+def test_deep_host_calls_from_several_threads_at_once():
+    # The first deep host call in a process looks up CPython's stack API by
+    # running Python code; threads arriving meanwhile must not deadlock.
+    for _ in range(5):
+        proc = subprocess.run(
+            [sys.executable, "-c", _THREADS_RUNNER],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        assert proc.returncode == 0, proc.stderr[-2000:]
+        assert proc.stdout.strip() == "done"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="needs resource.setrlimit")
+def test_deep_host_call_with_unlimited_stack_limit():
+    # With `ulimit -s unlimited` the stack left at entry is effectively
+    # unbounded; the segment a deep host call runs on must still be mappable.
+    import resource
+
+    def unlimited_stack():
+        resource.setrlimit(resource.RLIMIT_STACK, (resource.RLIM_INFINITY, resource.RLIM_INFINITY))
+
+    code = textwrap.dedent("""
+        import jsonatapy
+        expr = jsonatapy.compile(
+            "($f := function($n){$n <= 0 ? 0 : $g($n) + $f($n - 1)}; $f(3000))"
+        )
+        expr.register("g", lambda n: n)
+        print(expr.evaluate(None))
+        """)
+    _, hard = resource.getrlimit(resource.RLIMIT_STACK)
+    if hard != resource.RLIM_INFINITY:
+        pytest.skip("the hard stack limit cannot be raised to unlimited")
+    proc = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        preexec_fn=unlimited_stack,
+    )
+    assert proc.returncode == 0, proc.stderr[-2000:]
+    assert proc.stdout.strip() == "4501500"

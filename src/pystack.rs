@@ -18,17 +18,17 @@
 //! safe as Python code at the call site, and costs what it always did (on
 //! 3.13 a 1MB thread is too small for Python's own limit, with or without
 //! this library). Otherwise it runs
-//! on a fresh segment at least as large as the stack the caller had (and at
-//! least [`HOST_MIN_STACK`]), and on 3.14+ CPython is told that segment's
+//! on a fresh segment as large as the stack the caller had (between
+//! [`HOST_MIN_STACK`] and [`HOST_MAX_STACK`]), and on 3.14+ CPython is told that segment's
 //! bounds (`PyUnstable_ThreadState_SetStackProtection`) for the duration of
 //! the call, so its checks raise `RecursionError` before the segment runs out.
 
 use std::cell::RefCell;
 use std::ffi::{c_int, c_void};
-use std::sync::OnceLock;
 
 use pyo3::ffi;
 use pyo3::prelude::*;
+use pyo3::sync::PyOnceLock;
 
 /// How much stack an evaluation may have used since it was entered from
 /// Python for a host call to still run directly on that stack.
@@ -37,6 +37,11 @@ const HOST_DIRECT_BUDGET: usize = 256 * 1024;
 /// The least stack a host call made on a fresh segment is given. 3.13 can
 /// overflow a 1MB thread by itself (`json.dumps` of a deep list); 2MB holds.
 const HOST_MIN_STACK: usize = 2 * 1024 * 1024;
+
+/// The most stack a host call on a fresh segment is given, however much the
+/// caller had: with `ulimit -s unlimited` the stack left is effectively
+/// unbounded, and a segment that size cannot be mapped.
+const HOST_MAX_STACK: usize = 64 * 1024 * 1024;
 
 /// Where an evaluation was entered from Python: the stack pointer and the
 /// stack left there.
@@ -72,8 +77,11 @@ type ResetStackProtection = unsafe extern "C" fn(*mut ffi::PyThreadState);
 /// from early 3.14 releases and from older versions, and an extension that
 /// linked against it directly would fail to import there.
 fn stack_protection_api(py: Python<'_>) -> Option<(SetStackProtection, ResetStackProtection)> {
-    static API: OnceLock<Option<(usize, usize)>> = OnceLock::new();
-    let (set, reset) = (*API.get_or_init(|| {
+    // `PyOnceLock`, not `OnceLock`: the lookup runs Python code, which can
+    // release the GIL, and a thread blocked on a plain `OnceLock` while
+    // holding the GIL would never let it finish.
+    static API: PyOnceLock<Option<(usize, usize)>> = PyOnceLock::new();
+    let (set, reset) = (*API.get_or_init(py, || {
         let lookup = || -> PyResult<(usize, usize)> {
             let ctypes = py.import("ctypes")?;
             let api = ctypes.getattr("pythonapi")?;
@@ -126,7 +134,7 @@ pub(crate) fn with_python_stack<R>(
         // the stack they expect.
         return call();
     }
-    let size = entry.remaining.max(HOST_MIN_STACK);
+    let size = entry.remaining.clamp(HOST_MIN_STACK, HOST_MAX_STACK);
     let Some((set, reset)) = stack_protection_api(py) else {
         // Count-based CPython: as much stack as the caller had is as safe as
         // calling Python there.
