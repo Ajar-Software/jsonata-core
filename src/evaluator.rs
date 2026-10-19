@@ -4956,14 +4956,31 @@ impl Evaluator {
                 None => std::slice::from_ref(&single),
             };
 
-            result = if index == 0 && matches!(step.node, AstNode::Array(_)) {
+            result = if index == 0
+                && (matches!(step.node, AstNode::Array(_)) || Self::is_cons_block(&step.node))
+            {
                 // A leading array constructor builds one array from the whole
-                // input rather than one per item (jsonata-js `consarray`).
+                // input rather than one per item (jsonata-js `consarray`), as
+                // does a block holding a path that starts with one.
                 let mut value = self.evaluate_internal(&step.node, data)?;
                 if let JValue::Array(arr) = &mut value {
                     arr.cons = true;
                 }
-                self.apply_filter_stages(value, &step.stages)?
+                let value = self.apply_filter_stages(value, &step.stages)?;
+                // jsonata-js takes the value as the next step's input sequence
+                // as is, so a block's single value gives that step no items,
+                // and the path no result; a sort still orders it.
+                let next_reads_items = steps
+                    .get(index + 1)
+                    .is_some_and(|next| !matches!(next.node, AstNode::Sort { .. }));
+                if next_reads_items
+                    && !matches!(value, JValue::Array(_))
+                    && Self::is_cons_block(&step.node)
+                {
+                    JValue::Undefined
+                } else {
+                    value
+                }
             } else {
                 // A sort step gives its tuples, which the rest of the path reads.
                 let saved = self.keep_tuple_stream;
@@ -5419,6 +5436,23 @@ impl Evaluator {
         })
     }
 
+    /// True for a block jsonata-js marks `consarray` (parser.js `case
+    /// 'block'`): one of its expressions is such a block, or a path whose
+    /// first step is an array constructor or such a block. As a path's first
+    /// step it is evaluated once against the whole input, not per item.
+    fn is_cons_block(node: &AstNode) -> bool {
+        let AstNode::Block(exprs) = node else {
+            return false;
+        };
+        exprs.iter().any(|expr| match expr {
+            AstNode::Block(_) => Self::is_cons_block(expr),
+            AstNode::Path { steps } if !Self::is_non_path(steps) => {
+                matches!(steps[0].node, AstNode::Array(_)) || Self::is_cons_block(&steps[0].node)
+            }
+            _ => false,
+        })
+    }
+
     /// Evaluate a non-tuple sort input as the first step of the path
     /// jsonata-js makes of it, collected as a step that is not the last.
     /// A name path, a variable or a sort is evaluated once against the whole
@@ -5439,10 +5473,12 @@ impl Evaluator {
         };
         let whole = match first {
             None => true,
-            Some(node) => matches!(
-                node,
-                AstNode::Variable(_) | AstNode::ParentVariable(_) | AstNode::Sort { .. }
-            ),
+            Some(node) => {
+                matches!(
+                    node,
+                    AstNode::Variable(_) | AstNode::ParentVariable(_) | AstNode::Sort { .. }
+                ) || Self::is_cons_block(node)
+            }
         };
         let uncons = |value: JValue| match value {
             JValue::Array(mut arr) if first.is_some() && arr.cons => {
