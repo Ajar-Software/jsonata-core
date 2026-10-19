@@ -90,12 +90,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `$map`: `($m := $map; $m(["$w := 3"], $eval); $w)` is 3. A composition `f ~> g` calls g in
   the scope it is called from and f in a call frame of its own below the scope where `~>` was,
   as jsonata-js's `chainAST` does, so `($x := 7; ($string ~> $eval)("$x"))` is 7 (it was
-  undefined) and `($c := $eval ~> $string; $c("$z := 5"); $z)` stays undefined. A tail-call
-  loop reuses its frame for the next pass unless a function that can see the frame outlives
-  the pass; functions the pass makes and drops, including ones kept in local arrays, objects or
-  other functions, do not count, so such loops run in constant memory. A function that does
-  live on, such as one passed to the next pass, keeps its frame, so a loop that passes a new
-  closure on each pass still grows with the number of passes.
+  undefined) and `($c := $eval ~> $string; $c("$z := 5"); $z)` stays undefined. g's call is a
+  tail call, so `($inc ~> $loop)($n)` in tail position loops without growing the stack. `$eval`
+  as a lambda body's tail call runs where the chain of tail calls began, as jsonata-js applies
+  a tail call's thunk: `($v := "root"; $h := function(){ $eval("$v") }; ($v := "caller";
+  $h()))` is "caller", while `($r := $eval("$v"); $r)` in the body still reads the body's own
+  scope. A tail-call loop reuses its frame for the next pass unless a function that can see
+  the frame outlives the pass; functions the pass makes and drops, including ones kept in
+  local arrays, objects or other functions, or tail-called, do not count, so such loops run in
+  constant memory. A function that does live on, such as one passed to the next pass, keeps
+  its frame, so a loop that passes a new closure on each pass still grows with the number of
+  passes.
 - **`$replace` drives a regex or a matcher function as jsonata-js does**
   ([#198](https://github.com/txjmb/jsonata-core/issues/198)). A replacement function's
   `$m.start` and `$m.end` count UTF-16 code units, so `$replace("éab", /a/, function($m)

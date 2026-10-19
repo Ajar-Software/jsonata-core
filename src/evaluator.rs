@@ -2602,6 +2602,15 @@ mod evaluator_error_message_tests {
     }
 }
 
+/// The names a composition's parts are bound to
+/// (`Evaluator::compose_functions`), which no expression binds: `$x` would
+/// be visible to f and g.
+mod composition_names {
+    pub(super) const F: &str = "__chain_f";
+    pub(super) const G: &str = "__chain_g";
+    pub(super) const X: &str = "__chain_x";
+}
+
 /// Result of evaluating a lambda body that may be a tail call
 /// Used for trampoline-based tail call optimization
 enum LambdaResult {
@@ -2798,9 +2807,6 @@ struct Scope {
     opaque: bool,
 }
 
-/// How many references `Scope::seen_from_outside` follows per tail call.
-const OWNERSHIP_WALK_BUDGET: usize = 512;
-
 /// A value with a reference count, as `OwnershipWalk` sees it.
 #[derive(Clone, Copy)]
 enum Owned<'a> {
@@ -2835,8 +2841,7 @@ impl Owned<'_> {
 
 /// Counts the references to a frame's token that come from values its
 /// bindings own (see `Scope::seen_from_outside`). A walk step answers
-/// `Break(false)` once those account for every holder, `Break(true)` when
-/// out of budget.
+/// `Break(false)` once those account for every holder.
 struct OwnershipWalk<'a> {
     token: &'a Rc<FrameToken>,
     holders: usize,
@@ -2847,7 +2852,6 @@ struct OwnershipWalk<'a> {
     /// they are where holders are.
     functions: Vec<Owned<'a>>,
     containers: Vec<Owned<'a>>,
-    budget: usize,
 }
 
 impl<'a> OwnershipWalk<'a> {
@@ -2869,10 +2873,6 @@ impl<'a> OwnershipWalk<'a> {
 
     /// One reference to `node` from an owned value.
     fn reference(&mut self, node: Owned<'a>) -> std::ops::ControlFlow<bool> {
-        if self.budget == 0 {
-            return std::ops::ControlFlow::Break(true);
-        }
-        self.budget -= 1;
         if let Owned::Token(token) = node {
             if Rc::ptr_eq(token, self.token) {
                 self.inside += 1;
@@ -2929,13 +2929,11 @@ impl<'a> OwnershipWalk<'a> {
             }
             Owned::Items(items) => {
                 for value in items.iter() {
-                    self.budget = self.budget.saturating_sub(1);
                     self.value(value)?;
                 }
             }
             Owned::Map(map) => {
                 for value in map.values() {
-                    self.budget = self.budget.saturating_sub(1);
                     self.value(value)?;
                 }
             }
@@ -2965,9 +2963,12 @@ impl Scope {
     /// every reference to it comes from the bindings or from values they
     /// own; owned values go when the frame is cleared, so if they account
     /// for every holder, nothing can see the frame afterwards. The walk
-    /// visits at most `OWNERSHIP_WALK_BUDGET` references, functions before
-    /// arrays and objects, and answers yes when it runs out, which only
-    /// costs a frame.
+    /// looks into owned values only (functions first, as that is where
+    /// holders are, and it stops once all are found), never into a value
+    /// referenced from elsewhere. Owned values go when the frame is reused,
+    /// and a frame kept instead is never walked again, so each value is
+    /// walked at most once: the walks cost no more, in all, than making the
+    /// values did.
     fn seen_from_outside(&self) -> bool {
         let Some(token) = self.token.get() else {
             return false;
@@ -2983,7 +2984,6 @@ impl Scope {
             refs: HashMap::new(),
             functions: Vec::new(),
             containers: Vec::new(),
-            budget: OWNERSHIP_WALK_BUDGET,
         };
         walk.run(self.bindings.values()) != std::ops::ControlFlow::Break(false)
     }
@@ -3098,6 +3098,10 @@ pub struct Context {
     ctx_id: u64,
     /// The id the next pushed (or cleared) frame gets.
     next_scope_id: u64,
+    /// The frame the innermost running tail-call trampoline was entered
+    /// from: jsonata-js's environment of the `apply` that runs a chain of
+    /// tail calls, where it applies each one (`Evaluator::invoke_lambda_with_tco`).
+    tail_base: usize,
     /// The most frames the stack has held, for tests that bound it.
     #[cfg(test)]
     peak_depth: usize,
@@ -3110,6 +3114,7 @@ impl Context {
             parent_data: None,
             ctx_id: NEXT_CONTEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             next_scope_id: 1,
+            tail_base: 0,
             #[cfg(test)]
             peak_depth: 1,
         }
@@ -3154,10 +3159,11 @@ impl Context {
         self.push_frame(scope);
     }
 
-    /// The innermost frame that is not internal, where `$eval` runs, and
-    /// whether an opaque frame is on the way there.
-    fn frame_below_internal(&self) -> (usize, bool) {
-        let mut i = self.scope_stack.len() - 1;
+    /// The innermost frame that is not internal, from the top or from frame
+    /// `from`, where `$eval` runs, and whether an opaque frame is on the
+    /// way there.
+    fn frame_below_internal(&self, from: Option<usize>) -> (usize, bool) {
+        let mut i = from.unwrap_or(self.scope_stack.len() - 1);
         let mut opaque = false;
         while i > 0 && self.scope_stack[i].internal {
             opaque |= self.scope_stack[i].opaque;
@@ -3183,23 +3189,50 @@ impl Context {
     /// Push the trampoline's first frame, for a call to a function
     /// defined at `def`.
     fn push_tail_call_scope(&mut self, def: &DefScope) {
-        self.push_scope_defined_at(def);
+        if def.at_caller {
+            let id = self.fresh_scope_id();
+            let mut scope = Scope::new(id, Some(self.tail_base));
+            scope.internal = def.internal;
+            scope.opaque = def.opaque;
+            self.push_frame(scope);
+        } else {
+            self.push_scope_defined_at(def);
+        }
         self.scope_stack.last_mut().unwrap().tco = true;
     }
 
-    /// Give a tail call to a function defined at `def` its frame, returning
-    /// how many frames were pushed (0 or 1). The trampoline reuses the
-    /// previous call's frame, cleared, when nothing else can see it: the
-    /// callee was defined elsewhere, and no function defined to see the
-    /// frame lives on outside the frame's own bindings. Otherwise the frame
-    /// is someone's defining scope (the callee's, or a closure's that may
-    /// still be called), so it stays and the callee gets a frame above it.
-    /// Tail loops thus run in one frame, even ones that make a function on
-    /// each pass and drop it.
-    fn enter_tail_call(&mut self, def: &DefScope) -> usize {
-        let barrier = self.barrier_for(def);
-        let top = self.scope_stack.len() - 1;
-        if barrier < top && !self.scope_stack[top].seen_from_outside() {
+    /// Give a tail call to a function defined at `def` its frame, keeping
+    /// `frames`, the count of frames the trampoline has pushed, up to date.
+    /// The trampoline reuses the previous call's frame, cleared, when
+    /// nothing else can see it: the callee was defined elsewhere, and no
+    /// function defined to see the frame lives on outside the frame's own
+    /// bindings. Otherwise the frame is someone's defining scope (the
+    /// callee's, or a closure's that may still be called), so it stays and
+    /// the callee gets a frame above it. A frame kept that way and no longer
+    /// needed is dropped once it is under the top again, so tail loops run
+    /// in one frame, even ones that make a function on each pass and drop
+    /// it, or tail-call a function made in the pass.
+    fn enter_tail_call(&mut self, def: &DefScope, frames: &mut usize) {
+        // A composition continues at its caller's frame, which for a tail
+        // call is the trampoline's caller.
+        let barrier = if def.at_caller {
+            self.tail_base
+        } else {
+            self.barrier_for(def)
+        };
+        loop {
+            let top = self.scope_stack.len() - 1;
+            if barrier >= top || self.scope_stack[top].seen_from_outside() {
+                self.push_tail_call_scope(def);
+                *frames += 1;
+                return;
+            }
+            if *frames > 1 {
+                // The trampoline's frame below may be free now too.
+                self.scope_stack.pop();
+                *frames -= 1;
+                continue;
+            }
             self.clear_current_scope();
             let scope = &mut self.scope_stack[top];
             scope.barrier = Some(barrier);
@@ -3208,10 +3241,7 @@ impl Context {
             // Its lexical chain changes; a function defined from now on
             // takes a new token, holding the new chain's.
             scope.token = std::cell::OnceCell::new();
-            0
-        } else {
-            self.push_tail_call_scope(def);
-            1
+            return;
         }
     }
 
@@ -5403,6 +5433,61 @@ impl Evaluator {
             .map(JValue::unwrap_sequence)
     }
 
+    /// The `(f, g)` a composition calls: the function that runs f (in its
+    /// own frame) and g. `None` for any other function.
+    fn composition_parts(lambda: &StoredLambda) -> Option<(&JValue, &JValue)> {
+        if !lambda.def_scope.at_caller {
+            return None;
+        }
+        let f = lambda.captured_env.get(composition_names::F)?;
+        let g = lambda.captured_env.get(composition_names::G)?;
+        Some((f, g))
+    }
+
+    /// A tail call of a composition: f's call runs here, as jsonata-js runs
+    /// it in the composition's frame before the tail call, and g's is the
+    /// tail call itself. So the composition never becomes the trampoline's
+    /// function, which would keep the frame it was made in.
+    fn tail_call_composition(
+        &mut self,
+        mut composition: Rc<StoredLambda>,
+        args: Vec<JValue>,
+        data: &JValue,
+    ) -> Result<LambdaResult, EvaluatorError> {
+        let mut arg = args.into_iter().next().unwrap_or(JValue::Undefined);
+        loop {
+            let (f, g) = match Self::composition_parts(&composition) {
+                Some((f, g)) => (f.clone(), g.clone()),
+                None => unreachable!("tail_call_composition of a non-composition"),
+            };
+            let value = self.call_function_value(&f, &[arg], data)?;
+            match g {
+                JValue::Lambda(next) if Self::composition_parts(&next).is_some() => {
+                    composition = next;
+                    arg = value;
+                }
+                JValue::Lambda(lambda) if lambda.thunk => {
+                    return Ok(LambdaResult::TailCall {
+                        lambda,
+                        args: vec![value],
+                        data: data.clone(),
+                    });
+                }
+                JValue::Builtin { name }
+                    if &*name == "eval" && self.builtin_unshadowed("eval", None) =>
+                {
+                    let at = self.context.tail_base;
+                    let result = self.eval_from_values_at(&[value], data, Some(at))?;
+                    return Ok(LambdaResult::JValue(result));
+                }
+                g => {
+                    let result = self.call_function_value(&g, &[value], data)?;
+                    return Ok(LambdaResult::JValue(result));
+                }
+            }
+        }
+    }
+
     /// `f ~> g` for two functions, made where `def` says: the function
     /// `λ($x) { g(f($x)) }`, as jsonata-js builds from its `chainAST` in the
     /// environment of the `~>`. There, `f($x)` runs in the composition's own
@@ -5412,16 +5497,13 @@ impl Evaluator {
     /// at its caller's frame (`DefScope::AT_CALLER`); this matters only to
     /// `$eval`, as every other function resolves names where it was made.
     fn compose_functions(f: JValue, g: JValue, def: DefScope) -> JValue {
-        // Names no expression binds: `$x` would be visible to f and g.
-        const F: &str = "__chain_f";
-        const G: &str = "__chain_g";
-        const X: &str = "__chain_x";
+        use composition_names::{F, G, X};
         let call = |name: &str, arg: AstNode| AstNode::Function {
             name: name.to_string(),
             args: vec![arg],
             is_builtin: false,
         };
-        let lambda = |body: AstNode, captured_env: HashMap<String, JValue>, def_scope| {
+        let lambda = |body: AstNode, captured_env: HashMap<String, JValue>, def_scope, thunk| {
             JValue::Lambda(Rc::new(StoredLambda {
                 params: vec![X.to_string()],
                 body,
@@ -5429,7 +5511,7 @@ impl Evaluator {
                 signature: None,
                 captured_env,
                 captured_data: None,
-                thunk: false,
+                thunk,
                 self_name: None,
                 partial: None,
                 live_token: LiveLambdaToken::new(),
@@ -5444,12 +5526,15 @@ impl Evaluator {
                 opaque: true,
                 ..def
             },
+            false,
         );
         // Its body names only what it captured.
         lambda(
             call(G, call(F, AstNode::Variable(X.to_string()))),
             HashMap::from([(F.to_string(), first), (G.to_string(), g)]),
             DefScope::AT_CALLER,
+            // g's call is a tail call, as in jsonata-js.
+            true,
         )
     }
 
@@ -8210,6 +8295,20 @@ impl Evaluator {
         initial_args: &[JValue],
         data: &JValue,
     ) -> Result<JValue, EvaluatorError> {
+        let base = self.context.scope_stack.len() - 1;
+        let outer_base = std::mem::replace(&mut self.context.tail_base, base);
+        let result = self.run_tail_calls(stored_lambda, initial_args, data);
+        self.context.tail_base = outer_base;
+        result
+    }
+
+    /// The trampoline of `invoke_lambda_with_tco`.
+    fn run_tail_calls(
+        &mut self,
+        stored_lambda: &Rc<StoredLambda>,
+        initial_args: &[JValue],
+        data: &JValue,
+    ) -> Result<JValue, EvaluatorError> {
         let mut current_lambda = Rc::clone(stored_lambda);
         let mut current_args = initial_args.to_vec();
         let mut current_data = data.clone();
@@ -8257,7 +8356,8 @@ impl Evaluator {
                 return Err(e);
             }
             if iterations > 1 {
-                frames += self.context.enter_tail_call(&current_lambda.def_scope);
+                self.context
+                    .enter_tail_call(&current_lambda.def_scope, &mut frames);
             }
 
             // Evaluate the lambda body within the trampoline's frame
@@ -8427,24 +8527,42 @@ impl Evaluator {
                 // A `?` argument makes a partial application, not a call: the
                 // non-TCO path builds it.
                 let has_placeholder = args.iter().any(|a| matches!(a, AstNode::Placeholder));
-                // Check if this is a call to a lambda value (user function)
-                if let Some(stored_lambda) = self
-                    .context
-                    .lookup_lambda_value(name)
-                    .filter(|_| !has_placeholder)
-                    .cloned()
-                {
-                    if stored_lambda.thunk {
-                        let mut evaluated_args = Vec::with_capacity(args.len());
-                        for arg in args {
-                            evaluated_args.push(self.evaluate_internal(arg, data)?);
-                        }
-                        return Ok(LambdaResult::TailCall {
-                            lambda: stored_lambda,
-                            args: evaluated_args,
-                            data: data.clone(),
-                        });
+                // A call to a lambda value (user function), or `$eval` as a
+                // tail call: jsonata-js makes that a thunk too, which its
+                // trampoline applies in the environment it was entered from,
+                // so it reads and binds there, not in this body's scope.
+                let (tail_lambda, tail_eval) = if has_placeholder {
+                    (None, false)
+                } else {
+                    match self.context.lookup(name) {
+                        Some(JValue::Lambda(rc)) if rc.thunk => (Some(Rc::clone(rc)), false),
+                        Some(JValue::Builtin { name: b }) => (None, &**b == "eval"),
+                        None => (None, name == "eval"),
+                        Some(_) => (None, false),
                     }
+                };
+                if let Some(stored_lambda) = tail_lambda {
+                    let mut evaluated_args = Vec::with_capacity(args.len());
+                    for arg in args {
+                        evaluated_args.push(self.evaluate_internal(arg, data)?);
+                    }
+                    if Self::composition_parts(&stored_lambda).is_some() {
+                        return self.tail_call_composition(stored_lambda, evaluated_args, data);
+                    }
+                    return Ok(LambdaResult::TailCall {
+                        lambda: stored_lambda,
+                        args: evaluated_args,
+                        data: data.clone(),
+                    });
+                }
+                if tail_eval && self.builtin_unshadowed("eval", None) {
+                    let mut evaluated_args = Vec::with_capacity(args.len());
+                    for arg in args {
+                        evaluated_args.push(self.evaluate_internal(arg, data)?);
+                    }
+                    let at = self.context.tail_base;
+                    let result = self.eval_from_values_at(&evaluated_args, data, Some(at))?;
+                    return Ok(LambdaResult::JValue(result));
                 }
                 // Not a thunk lambda - evaluate normally
                 let result = self.evaluate_internal(node, data)?;
@@ -8469,6 +8587,9 @@ impl Evaluator {
                         let mut evaluated_args = Vec::with_capacity(args.len());
                         for arg in args {
                             evaluated_args.push(self.evaluate_internal(arg, data)?);
+                        }
+                        if Self::composition_parts(&stored_lambda).is_some() {
+                            return self.tail_call_composition(stored_lambda, evaluated_args, data);
                         }
                         return Ok(LambdaResult::TailCall {
                             lambda: stored_lambda,
@@ -9124,6 +9245,17 @@ impl Evaluator {
         args: &[JValue],
         data: &JValue,
     ) -> Result<JValue, EvaluatorError> {
+        self.eval_from_values_at(args, data, None)
+    }
+
+    /// `$eval`, run in the caller's scope, or in frame `from` (as a tail
+    /// call: see `evaluate_for_tco`).
+    fn eval_from_values_at(
+        &mut self,
+        args: &[JValue],
+        data: &JValue,
+        from: Option<usize>,
+    ) -> Result<JValue, EvaluatorError> {
         // $eval(expression [, context]) - parse and evaluate a JSONata expression at runtime
         if args.is_empty() || args.len() > 2 {
             return Err(EvaluatorError::EvaluationError(
@@ -9180,7 +9312,7 @@ impl Evaluator {
         // in a frame that looks past them, whose bindings then go to the
         // caller's frame, or nowhere when one of those frames stands for a
         // jsonata-js call frame of its own (a composition's first function).
-        let (at, opaque) = self.context.frame_below_internal();
+        let (at, opaque) = self.context.frame_below_internal(from);
         let evaluated = if at == self.context.scope_stack.len() - 1 {
             self.evaluate_internal(&parsed_ast, eval_context)
         } else {
@@ -10941,6 +11073,39 @@ mod tests {
             let (result, depth) = peak_depth_of(&src);
             assert_eq!(result, JValue::from(5000.0), "{body}");
             assert!(depth < 16, "{body}: scope stack reached {depth} frames");
+        }
+    }
+
+    #[test]
+    fn tail_loop_dropping_many_functions_keeps_stack_bounded() {
+        // Far more functions per pass than any fixed walk budget.
+        for body in [
+            "$fs := $map([1..1000], function($i){ function(){ $i } })",
+            "$u := [{'x': [function(){ 1 }]}, [1..2000].{'a': $}]",
+        ] {
+            let src = format!(
+                "($f := function($n, $acc){{ ({body}; $n = 0 ? $acc : $f($n - 1, $acc + 1)) }}; \
+                 $f(100, 0))"
+            );
+            let (result, depth) = peak_depth_of(&src);
+            assert_eq!(result, JValue::from(100.0), "{body}");
+            assert!(depth < 16, "{body}: scope stack reached {depth} frames");
+        }
+    }
+
+    #[test]
+    fn tail_called_composition_or_local_function_keeps_stack_bounded() {
+        for src in [
+            "($inc := function($x){ $x + 1 }; \
+             $loop := function($n){ $n >= 20000 ? $n : ($inc ~> $loop)($n) }; $loop(0))",
+            "($loop := function($n){ $n >= 20000 ? $n : \
+             ($string ~> function($s){ $loop($number($s) + 1) })($n) }; $loop(0))",
+            "($loop := function($n){ $n >= 20000 ? $n : (function($s){ $loop($s + 1) })($n) }; \
+             $loop(0))",
+        ] {
+            let (result, depth) = peak_depth_of(src);
+            assert_eq!(result, JValue::from(20000.0), "{src}");
+            assert!(depth < 16, "{src}: scope stack reached {depth} frames");
         }
     }
 

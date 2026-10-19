@@ -752,6 +752,71 @@ fn composition_runs_first_function_below_its_defining_scope() {
 }
 
 #[test]
+fn composition_in_tail_position_is_a_tail_call() {
+    assert_eval(
+        "( $inc := function($x){ $x + 1 }; \
+           $loop := function($n){ $n >= 10000 ? $n : ($inc ~> $loop)($n) }; $loop(0) )",
+        "10000",
+    );
+    assert_eval(
+        "( $loop := function($n){ $n >= 10000 ? $n : \
+           ($string ~> function($s){ $loop($number($s) + 1) })($n) }; $loop(0) )",
+        "10000",
+    );
+    assert_eval(
+        "( $inc := function($x){ $x + 1 }; \
+           $loop := function($n){ ($c := $inc ~> $loop; $n >= 10000 ? $n : $c($n)) }; $loop(0) )",
+        "10000",
+    );
+}
+
+#[test]
+fn tail_eval_runs_where_the_call_chain_began() {
+    // jsonata-js applies a tail call's thunk in the environment its
+    // trampoline was entered from; `$eval` reads and binds there.
+    assert_eval(
+        "( $v := \"root\"; $h := function(){ $eval(\"$v\") }; ($v := \"caller\"; $h()) )",
+        "\"caller\"",
+    );
+    assert_eval(
+        "( $v := \"def\"; $c := $string ~> function($s){ $eval($s) }; \
+           ($v := \"call\"; $c(\"$v\")) )",
+        "\"call\"",
+    );
+    assert_eval(
+        "( $v := \"root\"; $h := function(){ $eval(\"$v := 9\") }; \
+           $w := ($v := \"caller\"; $h(); $v); [$w, $v] )",
+        "[9,\"root\"]",
+    );
+    assert_eval(
+        "( $v := \"root\"; $h := function(){ $eval(\"$v\") }; $g := function(){ $h() }; \
+           ($v := \"caller\"; $g()) )",
+        "\"caller\"",
+    );
+    assert_eval(
+        "( $v := \"root\"; $e := $eval; $h := function(){ $e(\"$v\") }; ($v := \"caller\"; $h()) )",
+        "\"caller\"",
+    );
+    assert_eval(
+        "( $f := function($a){ $exists($eval(\"$a\")) }; $f(21) )",
+        "true",
+    );
+    assert_eval(
+        "( $f := function($a){ [$eval(\"$a * 2\")] }; $f(21) )",
+        "[42]",
+    );
+    // Not a tail call: the body's own scope, as in jsonata-js.
+    assert_eval(
+        "( $v := \"root\"; $h := function(){ ($r := $eval(\"$v\"); $r) }; ($v := \"caller\"; $h()) )",
+        "\"root\"",
+    );
+    assert_eval(
+        "( $f := function($a){ ($r := $eval(\"$a * 2\"); $r) }; $f(21) )",
+        "42",
+    );
+}
+
+#[test]
 fn tail_loop_making_closures_stays_fast_and_correct() {
     // Each pass makes a function; dropped ones must not pin their frames.
     assert_eval(

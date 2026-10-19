@@ -10302,6 +10302,103 @@
    "result": 3000
   },
   {
+   "expression": "($f := function($n, $acc) { ($fs := $map([1..1000], function($i) { function() { $i } }); $n = 0 ? $acc : $f($n - 1, $acc + 1)) }; $f(50, 0))",
+   "result": 50
+  },
+  {
+   "expression": "($f := function($n, $acc) { ($u := [{\"x\": [function() { 1 }]}, [1..2000].{\"a\": $}]; $n = 0 ? $acc : $f($n - 1, $acc + 1)) }; $f(50, 0))",
+   "result": 50
+  },
+  {
+   "expression": "($inc := function($x) { $x + 1 }; $loop := function($n) { $n >= 3000 ? $n : ($inc ~> $loop)($n) }; $loop(0))",
+   "result": 3000
+  },
+  {
+   "expression": "($loop := function($n) { $n >= 3000 ? $n : ($string ~> function($s) { $loop($number($s) + 1) })($n) }; $loop(0))",
+   "result": 3000
+  },
+  {
+   "expression": "($inc := function($x) { $x + 1 }; $loop := function($n) { ($c := $inc ~> $loop; $n >= 3000 ? $n : $c($n)) }; $loop(0))",
+   "result": 3000
+  },
+  {
+   "expression": "($loop := function($n) { $n >= 3000 ? $n : (function($s) { $loop($s + 1) })($n) }; $loop(0))",
+   "result": 3000
+  },
+  {
+   "expression": "($inc := function($x) { $x + 1 }; $c := $inc ~> $inc; $c(1))",
+   "result": 3
+  },
+  {
+   "expression": "($v := \"root\"; $h := function() { $eval(\"$v\") }; ($v := \"caller\"; $h()))",
+   "result": "caller"
+  },
+  {
+   "expression": "($v := \"def\"; $c := $string ~> function($s) { $eval($s) }; ($v := \"call\"; $c(\"$v\")))",
+   "result": "call"
+  },
+  {
+   "expression": "($v := \"root\"; $h := function() { $eval(\"$v := 9\") }; $w := ($v := \"caller\"; $h(); $v); [$w, $v])",
+   "result": [
+    9,
+    "root"
+   ]
+  },
+  {
+   "expression": "($v := \"root\"; $h := function() { ($r := $eval(\"$v\"); $r) }; ($v := \"caller\"; $h()))",
+   "result": "root"
+  },
+  {
+   "expression": "($v := \"root\"; $h := function() { $v = \"x\" ? 1 : $eval(\"$v\") }; ($v := \"caller\"; $h()))",
+   "result": "caller"
+  },
+  {
+   "expression": "($v := \"root\"; $e := $eval; $h := function() { $e(\"$v\") }; ($v := \"caller\"; $h()))",
+   "result": "caller"
+  },
+  {
+   "expression": "($v := \"root\"; $h := function() { $eval(\"$v\") }; $g := function() { $h() }; ($v := \"caller\"; $g()))",
+   "result": "caller"
+  },
+  {
+   "expression": "($v := \"root\"; $h := function() { $eval(\"$v\") }; $g := function() { ($r := $h(); $r) }; ($v := \"caller\"; $g()))",
+   "result": "root"
+  },
+  {
+   "expression": "($f := function($a) { $exists($eval(\"$a\")) }; $f(21))",
+   "result": true
+  },
+  {
+   "expression": "($f := function($a) { [$eval(\"$a * 2\")] }; $f(21))",
+   "result": [
+    42
+   ]
+  },
+  {
+   "expression": "($f := function($a) { $eval(\"$a * 2\") }; $f(21))",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "($f := function($a) { ($r := $eval(\"$a * 2\"); $r) }; $f(21))",
+   "result": 42
+  },
+  {
+   "expression": "($v := \"root\"; ($v := \"caller\"; $map([\"$v\"], function($s) { $eval($s) })))",
+   "result": "caller"
+  },
+  {
+   "expression": "($x := 1; $f := function() { $eval(\"$x\") }; ($x := 2; $f()))",
+   "result": 2
+  },
+  {
+   "expression": "($c := $string ~> $eval; $g := function($a) { $c(\"$a\") }; $g(3))",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
    "expression": "($c := $eval ~> $string; $c(\"$z := 5\"); $z)",
    "result": {
     "$undefined": true

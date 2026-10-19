@@ -449,6 +449,29 @@ const EXTRA = [
   '($f := function($n, $acc) { ($q := $map([1, 2], function($v) { function() { $v } }); $n = 0 ? $acc : $f($n - 1, $acc + 1)) }; $f(3000, 0))',
   '($f := function($n, $acc) { ($g := function() { $n }; $l := [$g]; $n = 0 ? $acc : $f($n - 1, $acc + 1)) }; $f(3000, 0))',
   '($f := function($n, $acc) { ($mk := function($k) { $k = 0 ? function() { $n } : $mk($k - 1) }; $q := $mk(1); $n = 0 ? $acc : $f($n - 1, $acc + 1)) }; $f(3000, 0))',
+  '($f := function($n, $acc) { ($fs := $map([1..1000], function($i) { function() { $i } }); $n = 0 ? $acc : $f($n - 1, $acc + 1)) }; $f(50, 0))',
+  '($f := function($n, $acc) { ($u := [{"x": [function() { 1 }]}, [1..2000].{"a": $}]; $n = 0 ? $acc : $f($n - 1, $acc + 1)) }; $f(50, 0))',
+  // A composition or a function made in the pass, tail-called.
+  '($inc := function($x) { $x + 1 }; $loop := function($n) { $n >= 3000 ? $n : ($inc ~> $loop)($n) }; $loop(0))',
+  '($loop := function($n) { $n >= 3000 ? $n : ($string ~> function($s) { $loop($number($s) + 1) })($n) }; $loop(0))',
+  '($inc := function($x) { $x + 1 }; $loop := function($n) { ($c := $inc ~> $loop; $n >= 3000 ? $n : $c($n)) }; $loop(0))',
+  '($loop := function($n) { $n >= 3000 ? $n : (function($s) { $loop($s + 1) })($n) }; $loop(0))',
+  '($inc := function($x) { $x + 1 }; $c := $inc ~> $inc; $c(1))',
+  // `$eval` as a tail call runs where the trampoline was entered, as
+  // jsonata-js applies a thunk; elsewhere in a body, in the body's scope.
+  '($v := "root"; $h := function() { $eval("$v") }; ($v := "caller"; $h()))',
+  '($v := "def"; $c := $string ~> function($s) { $eval($s) }; ($v := "call"; $c("$v")))',
+  '($v := "root"; $h := function() { $eval("$v := 9") }; $w := ($v := "caller"; $h(); $v); [$w, $v])',
+  '($v := "root"; $h := function() { ($r := $eval("$v"); $r) }; ($v := "caller"; $h()))',
+  '($v := "root"; $h := function() { $v = "x" ? 1 : $eval("$v") }; ($v := "caller"; $h()))',
+  '($v := "root"; $e := $eval; $h := function() { $e("$v") }; ($v := "caller"; $h()))',
+  '($v := "root"; $h := function() { $eval("$v") }; $g := function() { $h() }; ($v := "caller"; $g()))',
+  '($v := "root"; $h := function() { $eval("$v") }; $g := function() { ($r := $h(); $r) }; ($v := "caller"; $g()))',
+  '($f := function($a) { $exists($eval("$a")) }; $f(21))', '($f := function($a) { [$eval("$a * 2")] }; $f(21))',
+  '($f := function($a) { $eval("$a * 2") }; $f(21))','($f := function($a) { ($r := $eval("$a * 2"); $r) }; $f(21))',
+  '($v := "root"; ($v := "caller"; $map(["$v"], function($s) { $eval($s) })))',
+  '($x := 1; $f := function() { $eval("$x") }; ($x := 2; $f()))',
+  '($c := $string ~> $eval; $g := function($a) { $c("$a") }; $g(3))',
   // A composition's first function runs in a call frame of its own below
   // the defining scope, its second in the caller's (jsonata-js `chainAST`).
   '($c := $eval ~> $string; $c("$z := 5"); $z)', '("$x := 4" ~> ($eval ~> $string); $x)',
