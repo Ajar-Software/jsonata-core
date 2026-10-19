@@ -3019,6 +3019,22 @@ fn is_tuple_object(obj: &IndexMap<String, JValue>) -> bool {
         && obj.get("__tuple__") == Some(&JValue::Bool(true))
 }
 
+/// The items of an array of tuples a sort of a tuple stream returned, as
+/// jsonata-js's filters, sorts and group-bys see them: each tuple is a plain
+/// object, not its `@` value (see `JArray::sorted_tuples`).
+fn sorted_tuple_items(arr: &JArray) -> Vec<JValue> {
+    arr.iter()
+        .map(|item| match item {
+            JValue::Object(obj) if is_tuple_object(obj) => {
+                let mut plain = (**obj).clone();
+                plain.shift_remove("__tuple__");
+                JValue::object(plain)
+            }
+            other => other.clone(),
+        })
+        .collect()
+}
+
 /// The value a tuple-stream wrapper carries for its step (`@`).
 fn tuple_focus_value(tuple: &JValue) -> JValue {
     match tuple {
@@ -4105,6 +4121,7 @@ impl Evaluator {
                 // undotted form disagree with the dotted `nul.{"a": $}`, which
                 // takes a different route and was already right.
                 let items: Vec<JValue> = match input_value {
+                    JValue::Array(ref arr) if arr.sorted_tuples => sorted_tuple_items(arr),
                     JValue::Array(ref arr) => arr.to_vec(),
                     JValue::Undefined => Vec::new(),
                     other => vec![other],
@@ -4418,11 +4435,18 @@ impl Evaluator {
                 let value = self.evaluate_internal(input, data);
                 self.keep_tuple_stream = saved;
                 let mut sorted = self.evaluate_sort(&value?, terms)?;
+                // Sorting tuples gives a plain array of them in jsonata-js,
+                // which is no longer marked as a tuple stream (#214).
+                if let JValue::Array(arr) = &mut sorted {
+                    arr.sorted_tuples = arr
+                        .first()
+                        .is_some_and(|f| matches!(f, JValue::Object(o) if is_tuple_object(o)));
+                }
                 // jsonata-js sorts as a step of the path, so the path's own
                 // result rules apply after the sort: a tuple-stream path
                 // re-collects into a fresh sequence, and `[]` keeps it.
                 if let AstNode::Path { steps } = &**input {
-                    if Self::is_tuple_path(steps) {
+                    if Self::is_tuple_path_node(input) {
                         sorted.mark_sequence();
                     }
                     if Self::path_keeps_singleton_array(steps) {
@@ -5131,20 +5155,34 @@ impl Evaluator {
                 &single
             }
         };
+        // Sorted tuples are filtered as plain objects, and stay sorted tuples
+        // (jsonata-js marks a filter's result only when its input is marked).
+        let sorted_tuples = matches!(&input, JValue::Array(arr) if arr.sorted_tuples);
+        let sequence = |items: Vec<JValue>| {
+            let mut arr = JArray::new(items);
+            arr.sequence = true;
+            arr.sorted_tuples = sorted_tuples;
+            JValue::Array(arr)
+        };
 
         if let Some(position) = numeric_literal(predicate) {
             return Ok(match item_at(items, position) {
                 Some(JValue::Array(arr)) => JValue::Array(arr.clone()),
-                Some(item) => JValue::sequence(vec![item.clone()]),
-                None => JValue::sequence(Vec::new()),
+                Some(item) => sequence(vec![item.clone()]),
+                None => sequence(Vec::new()),
             });
         }
 
+        let plain = match &input {
+            JValue::Array(arr) if sorted_tuples => Some(sorted_tuple_items(arr)),
+            _ => None,
+        };
         let len = items.len();
         let mut results = Vec::new();
         for (index, item) in items.iter().enumerate() {
+            let context = plain.as_ref().map_or(item, |plain| &plain[index]);
             let selector =
-                self.with_dollar_bound(item, |ev| ev.evaluate_internal(predicate, item))?;
+                self.with_dollar_bound(context, |ev| ev.evaluate_internal(predicate, context))?;
             let repeats = match predicate_index_match(&selector, index, len) {
                 Some(n) => n,
                 None => usize::from(self.is_truthy(&selector)),
@@ -5153,7 +5191,7 @@ impl Evaluator {
                 results.push(item.clone());
             }
         }
-        Ok(JValue::sequence(results))
+        Ok(sequence(results))
     }
 
     /// True when a path step carries a tuple-binding flag (`@$var` focus,
@@ -8290,6 +8328,9 @@ impl Evaluator {
             JValue::Array(arr) => arr.clone(),
             other => return Ok(other.clone()),
         };
+        // A sort of sorted tuples orders them as plain objects, as
+        // jsonata-js does; the result keeps the tuples themselves.
+        let plain = array.sorted_tuples.then(|| sorted_tuple_items(&array));
 
         // jsonata-js `fn.sort` returns an input of length 0 or 1 as is (still a
         // sequence, if it was one), and builds a new plain array otherwise.
@@ -8302,6 +8343,10 @@ impl Evaluator {
 
         for (idx, element) in array.iter().enumerate() {
             let mut sort_keys = Vec::new();
+            let element = match &plain {
+                Some(plain) => &plain[idx],
+                None => element,
+            };
 
             // When sorting a tuple stream (the input path had a `%`/`@`/`#`
             // step, so each element is a `{@, !label, $var, __tuple__}`
