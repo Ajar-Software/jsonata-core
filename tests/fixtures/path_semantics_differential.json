@@ -9197,6 +9197,247 @@
    }
   },
   {
+   "expression": "[[{\"p\":null}],[{\"q\":1}]]^(p)",
+   "result": [
+    [
+     {
+      "p": null
+     }
+    ],
+    [
+     {
+      "q": 1
+     }
+    ]
+   ]
+  },
+  {
+   "expression": "[[{\"p\":2},{\"p\":1}],[{\"q\":1}]]^(p)",
+   "result": [
+    [
+     {
+      "p": 2
+     },
+     {
+      "p": 1
+     }
+    ],
+    [
+     {
+      "q": 1
+     }
+    ]
+   ]
+  },
+  {
+   "expression": "[[{\"p\":true}],[{\"q\":1}]]^(p)",
+   "result": [
+    [
+     {
+      "p": true
+     }
+    ],
+    [
+     {
+      "q": 1
+     }
+    ]
+   ]
+  },
+  {
+   "expression": "[[{\"p\":true}],[{\"q\":1}]]^(>p)",
+   "result": [
+    [
+     {
+      "p": true
+     }
+    ],
+    [
+     {
+      "q": 1
+     }
+    ]
+   ]
+  },
+  {
+   "expression": "[[{\"p\":true}],[{\"q\":1}]]^(p, $count($))",
+   "result": [
+    [
+     {
+      "p": true
+     }
+    ],
+    [
+     {
+      "q": 1
+     }
+    ]
+   ]
+  },
+  {
+   "expression": "{\"x\": [[{\"p\":true}],[{\"q\":1}]]}.(x#$i^(p))",
+   "result": [
+    [
+     {
+      "p": true
+     }
+    ],
+    [
+     {
+      "q": 1
+     }
+    ]
+   ]
+  },
+  {
+   "expression": "{\"x\": [{\"p\":null},{\"q\":1}]}.(x^(p))",
+   "result": [
+    {
+     "p": null
+    },
+    {
+     "q": 1
+    }
+   ]
+  },
+  {
+   "expression": "[{\"p\":null},{\"q\":1},{\"q\":2}]^(p)",
+   "result": [
+    {
+     "p": null
+    },
+    {
+     "q": 1
+    },
+    {
+     "q": 2
+    }
+   ]
+  },
+  {
+   "expression": "[{\"p\":null},{\"q\":1},{\"p\":2}]^(p)",
+   "result": {
+    "$error": "T2008"
+   }
+  },
+  {
+   "expression": "[[{\"p\":1}],[{\"q\":1}]]^(>p)",
+   "result": [
+    [
+     {
+      "p": 1
+     }
+    ],
+    [
+     {
+      "q": 1
+     }
+    ]
+   ]
+  },
+  {
+   "expression": "[[{\"p\":2}],[{\"q\":1}],[{\"p\":1}]]^(>p)",
+   "result": [
+    [
+     {
+      "p": 2
+     }
+    ],
+    [
+     {
+      "p": 1
+     }
+    ],
+    [
+     {
+      "q": 1
+     }
+    ]
+   ]
+  },
+  {
+   "expression": "[{\"p\":1},{\"q\":1}]^(>p)",
+   "result": [
+    {
+     "p": 1
+    },
+    {
+     "q": 1
+    }
+   ]
+  },
+  {
+   "expression": "[{\"p\":1},{\"q\":1},{\"p\":3},{\"p\":2}]^(>p)",
+   "result": [
+    {
+     "p": 3
+    },
+    {
+     "p": 2
+    },
+    {
+     "p": 1
+    },
+    {
+     "q": 1
+    }
+   ]
+  },
+  {
+   "expression": "[{\"p\":1},{\"q\":1},{\"p\":3},{\"p\":2}]^(>p, q)",
+   "result": [
+    {
+     "p": 3
+    },
+    {
+     "p": 2
+    },
+    {
+     "p": 1
+    },
+    {
+     "q": 1
+    }
+   ]
+  },
+  {
+   "expression": "[{\"p\":1},{\"q\":1},{\"p\":\"a\"}]^(p)",
+   "result": {
+    "$error": "T2007"
+   }
+  },
+  {
+   "expression": "[{\"p\":1,\"r\":1},{\"p\":1,\"r\":\"a\"},{\"p\":2}]^(p, r)",
+   "result": {
+    "$error": "T2007"
+   }
+  },
+  {
+   "expression": "[{\"p\":1,\"r\":1},{\"p\":2,\"r\":\"a\"}]^(p, r)",
+   "result": [
+    {
+     "p": 1,
+     "r": 1
+    },
+    {
+     "p": 2,
+     "r": "a"
+    }
+   ]
+  },
+  {
+   "expression": "[{\"p\":1},{\"p\":[1]}]^(p)",
+   "result": {
+    "$error": "T2008"
+   }
+  },
+  {
+   "expression": "[{\"p\":\"a\"},{\"p\":{}}]^(>p)",
+   "result": {
+    "$error": "T2008"
+   }
+  },
+  {
    "expression": "[1].($map($$.objs, function($x){ {\"id\": $x.id} }))",
    "result": [
     {},
@@ -13147,6 +13388,469 @@
    "result": {
     "v": 3
    }
+  },
+  {
+   "expression": "[$]@$w.($)",
+   "root": true,
+   "result": [
+    {
+     "a": [
+      1,
+      2
+     ],
+     "b": {
+      "c": [
+       [
+        1
+       ]
+      ]
+     }
+    },
+    {
+     "a": [
+      3
+     ]
+    },
+    {
+     "a": [
+      [
+       4
+      ]
+     ],
+     "b": {
+      "c": [
+       2
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "expression": "[$]@$w.{\"v\": $}.v",
+   "root": true,
+   "result": [
+    {
+     "a": [
+      1,
+      2
+     ],
+     "b": {
+      "c": [
+       [
+        1
+       ]
+      ]
+     }
+    },
+    {
+     "a": [
+      3
+     ]
+    },
+    {
+     "a": [
+      [
+       4
+      ]
+     ],
+     "b": {
+      "c": [
+       2
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "expression": "[$]@$w#$i.[$]",
+   "root": true,
+   "result": [
+    {
+     "a": [
+      1,
+      2
+     ],
+     "b": {
+      "c": [
+       [
+        1
+       ]
+      ]
+     }
+    },
+    {
+     "a": [
+      3
+     ]
+    },
+    {
+     "a": [
+      [
+       4
+      ]
+     ],
+     "b": {
+      "c": [
+       2
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "expression": "[a]@$w.{\"v\": $}",
+   "root": true,
+   "result": {
+    "v": [
+     {
+      "a": [
+       1,
+       2
+      ],
+      "b": {
+       "c": [
+        [
+         1
+        ]
+       ]
+      }
+     },
+     {
+      "a": [
+       3
+      ]
+     },
+     {
+      "a": [
+       [
+        4
+       ]
+      ],
+      "b": {
+       "c": [
+        2
+       ]
+      }
+     }
+    ]
+   }
+  },
+  {
+   "expression": "[a]@$w.($w)",
+   "root": true,
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "[$]#$i.($i)",
+   "root": true,
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "[1,2]@$w.$w",
+   "root": true,
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "[1,2]@$w.($)",
+   "root": true,
+   "result": [
+    {
+     "a": [
+      1,
+      2
+     ],
+     "b": {
+      "c": [
+       [
+        1
+       ]
+      ]
+     }
+    },
+    {
+     "a": [
+      3
+     ]
+    },
+    {
+     "a": [
+      [
+       4
+      ]
+     ],
+     "b": {
+      "c": [
+       2
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "expression": "[a]#$i.($)",
+   "root": true,
+   "result": [
+    1,
+    2,
+    3,
+    4
+   ]
+  },
+  {
+   "expression": "[a]#$i.{\"v\": $, \"i\": $i}",
+   "root": true,
+   "result": [
+    {
+     "v": 1
+    },
+    {
+     "v": 2
+    },
+    {
+     "v": 3
+    },
+    {
+     "v": 4
+    }
+   ]
+  },
+  {
+   "expression": "a@$w.($)",
+   "root": true,
+   "result": [
+    {
+     "a": [
+      1,
+      2
+     ],
+     "b": {
+      "c": [
+       [
+        1
+       ]
+      ]
+     }
+    },
+    {
+     "a": [
+      3
+     ]
+    },
+    {
+     "a": [
+      [
+       4
+      ]
+     ],
+     "b": {
+      "c": [
+       2
+      ]
+     }
+    },
+    {
+     "a": [
+      1,
+      2
+     ],
+     "b": {
+      "c": [
+       [
+        1
+       ]
+      ]
+     }
+    },
+    {
+     "a": [
+      3
+     ]
+    },
+    {
+     "a": [
+      [
+       4
+      ]
+     ],
+     "b": {
+      "c": [
+       2
+      ]
+     }
+    },
+    {
+     "a": [
+      1,
+      2
+     ],
+     "b": {
+      "c": [
+       [
+        1
+       ]
+      ]
+     }
+    },
+    {
+     "a": [
+      3
+     ]
+    },
+    {
+     "a": [
+      [
+       4
+      ]
+     ],
+     "b": {
+      "c": [
+       2
+      ]
+     }
+    },
+    {
+     "a": [
+      1,
+      2
+     ],
+     "b": {
+      "c": [
+       [
+        1
+       ]
+      ]
+     }
+    },
+    {
+     "a": [
+      3
+     ]
+    },
+    {
+     "a": [
+      [
+       4
+      ]
+     ],
+     "b": {
+      "c": [
+       2
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "expression": "a@$w.$w",
+   "root": true,
+   "result": [
+    1,
+    2,
+    3,
+    4
+   ]
+  },
+  {
+   "expression": "a#$i.$i",
+   "root": true,
+   "result": [
+    0,
+    1,
+    2,
+    3
+   ]
+  },
+  {
+   "expression": "\"q\"#$i.($)",
+   "root": "empty",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "\"q\"@$w.($)",
+   "root": "empty",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "[1,2]@$w.$w",
+   "root": "empty",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "[1,2]@$w.($)",
+   "root": "empty",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "[$]@$w.($)",
+   "root": "empty",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "[1,2]#$i.($)",
+   "root": "empty",
+   "result": [
+    1,
+    2
+   ]
+  },
+  {
+   "expression": "[$]#$i.$i",
+   "root": "empty",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "a@$w.($)",
+   "root": "empty",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "$@$w.($)",
+   "root": "empty",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "[1]@$w.$count($)",
+   "root": "empty",
+   "result": 0
+  },
+  {
+   "expression": "[1].($)",
+   "root": "empty",
+   "result": 1
+  },
+  {
+   "expression": "$^($)",
+   "root": "empty",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "[]",
+   "root": "empty",
+   "result": []
   }
  ]
 }

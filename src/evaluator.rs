@@ -4958,6 +4958,40 @@ impl Evaluator {
                         break;
                     }
                 }
+                // A leading array constructor is evaluated once against the
+                // whole input, its focus or index binding ignored (jsonata-js
+                // evaluatePath's `ii === 0 && step.consarray`). The stream
+                // starts from its items, or with a focus, which keeps the
+                // step's input as the next one's, from the path's input.
+                if index == 0 && matches!(step.node, AstNode::Array(_)) {
+                    self.tuple_stream_created = true;
+                    let value = self.evaluate_internal(&step.node, data)?;
+                    let value = self.apply_filter_stages(value, &step.stages)?;
+                    let items = match (step.focus.is_some(), value) {
+                        // The top-level array's wrapper holds the bare array.
+                        (true, _) => match data {
+                            JValue::Array(arr) if arr.outer_wrapper => vec![data.bare()],
+                            JValue::Array(arr) => arr.iter().cloned().collect(),
+                            JValue::Undefined => Vec::new(),
+                            other => vec![other.clone()],
+                        },
+                        (false, JValue::Undefined) => Vec::new(),
+                        (false, JValue::Array(arr)) => arr.iter().cloned().collect(),
+                        (false, other) => vec![other],
+                    };
+                    let stream = items
+                        .into_iter()
+                        .map(|item| {
+                            let mut wrapper = IndexMap::new();
+                            wrapper.insert("@".to_string(), item);
+                            wrapper.insert("__tuple__".to_string(), JValue::Bool(true));
+                            JValue::object(wrapper)
+                        })
+                        .collect();
+                    tuples = Some(stream);
+                    sorted_tuples = false;
+                    continue;
+                }
                 let source = match tuples.take() {
                     Some(stream) => JValue::array(stream),
                     None if index == 0 => data.clone(),
@@ -5989,9 +6023,12 @@ impl Evaluator {
             let items: Vec<JValue> = match input {
                 // The top-level array's wrapper holds one item, the bare
                 // array, which a first step that is not a variable maps over
-                // as a whole (jsonata-js `outerWrapper`).
+                // as a whole (jsonata-js `outerWrapper`). An empty one keeps
+                // giving no items: a literal step, which jsonata-js reads as
+                // a field name, must not yield itself.
                 JValue::Array(arr)
                     if arr.outer_wrapper
+                        && !arr.is_empty()
                         && is_first_path_step
                         && !matches!(&step.node, AstNode::Variable(_)) =>
                 {
@@ -9210,162 +9247,108 @@ impl Evaluator {
             indexed_array.push((idx, sort_keys));
         }
 
-        // Validate that all sort keys are comparable (same type, or undefined)
-        // Undefined values (missing fields) are allowed and sort to the end
-        // Null values (explicit null in data) are NOT allowed (typeof null === 'object' in JS, triggers T2008)
-        for term_idx in 0..terms.len() {
-            let mut first_valid_type: Option<&str> = None;
+        // Order the keyed items with jsonata-js's merge sort and comparator,
+        // so the type checks (T2008, T2007) apply only to the pairs it
+        // compares, after its check for undefined terms.
+        let mut order: Vec<usize> = (0..indexed_array.len()).collect();
+        let mut buffer = Vec::with_capacity(order.len());
+        Self::merge_sort_keyed(&mut order, &mut buffer, &indexed_array, terms)?;
 
-            for (_idx, sort_keys) in &indexed_array {
-                let sort_value = &sort_keys[term_idx];
-
-                // Skip undefined markers (missing fields) - these are allowed and sort to end
-                if sort_value.is_undefined() {
-                    continue;
-                }
-
-                // Get the type name for this value
-                // Note: explicit null is NOT allowed - typeof null === 'object' in JS
-                let value_type = match sort_value {
-                    JValue::Number(_) => "number",
-                    JValue::String(_) => "string",
-                    JValue::Bool(_) => "boolean",
-                    JValue::Array(_) => "array",
-                    JValue::Object(_) => "object", // This catches non-undefined objects
-                    JValue::Null => "null",        // Explicit null from data
-                    #[cfg(feature = "python")]
-                    JValue::LazyPyDict(_) => "object",
-                    _ => "unknown",
-                };
-
-                // Check that sort keys are only numbers or strings
-                // Null, boolean, array, and object types are not valid for sorting
-                if value_type != "number" && value_type != "string" {
-                    return Err(EvaluatorError::TypeError("T2008: The expressions within an order-by clause must evaluate to numeric or string values".to_string()));
-                }
-
-                // Check if this matches the first valid type we saw
-                if let Some(first_type) = first_valid_type {
-                    if first_type != value_type {
-                        return Err(EvaluatorError::TypeError(format!(
-                            "T2007: Type mismatch when comparing values in order-by clause: {} and {}",
-                            first_type, value_type
-                        )));
-                    }
-                } else {
-                    first_valid_type = Some(value_type);
-                }
-            }
-        }
-
-        // Sort the indexed array
-        indexed_array.sort_by(|a, b| {
-            // Compare sort keys in order
-            for (i, (_term_expr, ascending)) in terms.iter().enumerate() {
-                let left = &a.1[i];
-                let right = &b.1[i];
-
-                let cmp = self.compare_values(left, right);
-
-                if cmp != std::cmp::Ordering::Equal {
-                    return if *ascending { cmp } else { cmp.reverse() };
-                }
-            }
-
-            // If all keys are equal, maintain original order (stable sort)
-            a.0.cmp(&b.0)
-        });
-
-        // Extract sorted elements
-        let sorted: Vec<JValue> = indexed_array
-            .iter()
-            .map(|(idx, _)| array[*idx].clone())
-            .collect();
+        let sorted: Vec<JValue> = order.iter().map(|&idx| array[idx].clone()).collect();
 
         Ok(JValue::array(sorted))
     }
 
-    /// Compare two values for sorting (JSONata semantics)
-    fn compare_values(&self, left: &JValue, right: &JValue) -> Ordering {
-        // Handle undefined markers first - they sort to the end
-        let left_undef = left.is_undefined();
-        let right_undef = right.is_undefined();
-
-        if left_undef && right_undef {
-            return Ordering::Equal;
+    /// jsonata-js `fn.sort`'s merge sort over item indices: split at the
+    /// middle, sort each half, and merge taking the right item only when the
+    /// comparator says the left one goes after it.
+    fn merge_sort_keyed(
+        order: &mut [usize],
+        buffer: &mut Vec<usize>,
+        keys: &[(usize, Vec<JValue>)],
+        terms: &[(AstNode, bool)],
+    ) -> Result<(), EvaluatorError> {
+        if order.len() <= 1 {
+            return Ok(());
         }
-        if left_undef {
-            return Ordering::Greater; // Undefined sorts last
-        }
-        if right_undef {
-            return Ordering::Less;
-        }
-
-        match (left, right) {
-            // Nulls also sort last (explicit null in data)
-            (JValue::Null, JValue::Null) => Ordering::Equal,
-            (JValue::Null, _) => Ordering::Greater,
-            (_, JValue::Null) => Ordering::Less,
-
-            // Numbers
-            (JValue::Number(a), JValue::Number(b)) => {
-                let a_f64 = *a;
-                let b_f64 = *b;
-                a_f64.partial_cmp(&b_f64).unwrap_or(Ordering::Equal)
+        let middle = order.len() / 2;
+        Self::merge_sort_keyed(&mut order[..middle], buffer, keys, terms)?;
+        Self::merge_sort_keyed(&mut order[middle..], buffer, keys, terms)?;
+        buffer.clear();
+        let (mut i, mut j) = (0, middle);
+        while i < middle && j < order.len() {
+            if Self::sort_keys_after(&keys[order[i]].1, &keys[order[j]].1, terms)? {
+                buffer.push(order[j]);
+                j += 1;
+            } else {
+                buffer.push(order[i]);
+                i += 1;
             }
+        }
+        buffer.extend_from_slice(&order[i..middle]);
+        buffer.extend_from_slice(&order[j..]);
+        order.copy_from_slice(buffer);
+        Ok(())
+    }
 
-            // Strings
-            (JValue::String(a), JValue::String(b)) => a.cmp(b),
-
-            // Booleans
-            (JValue::Bool(a), JValue::Bool(b)) => a.cmp(b),
-
-            // Arrays (lexicographic comparison)
-            (JValue::Array(a), JValue::Array(b)) => {
-                for (a_elem, b_elem) in a.iter().zip(b.iter()) {
-                    let cmp = self.compare_values(a_elem, b_elem);
-                    if cmp != Ordering::Equal {
-                        return cmp;
-                    }
+    /// jsonata-js's order-by comparator: true when the item with keys `a`
+    /// goes after the one with keys `b`. An undefined term sorts last in
+    /// either direction and is checked before the types; other terms must
+    /// both be numbers or both be strings.
+    fn sort_keys_after(
+        a: &[JValue],
+        b: &[JValue],
+        terms: &[(AstNode, bool)],
+    ) -> Result<bool, EvaluatorError> {
+        fn type_name(value: &JValue) -> &'static str {
+            match value {
+                JValue::Number(_) => "number",
+                JValue::String(_) => "string",
+                _ => "object",
+            }
+        }
+        let mut comp = Ordering::Equal;
+        for (index, (_, ascending)) in terms.iter().enumerate() {
+            if comp != Ordering::Equal {
+                break;
+            }
+            let (aa, bb) = (&a[index], &b[index]);
+            match (aa.is_undefined(), bb.is_undefined()) {
+                (true, true) => continue,
+                (true, false) => {
+                    comp = Ordering::Greater;
+                    continue;
                 }
-                a.len().cmp(&b.len())
+                (false, true) => {
+                    comp = Ordering::Less;
+                    continue;
+                }
+                (false, false) => {}
             }
-
-            // Different types: use type ordering
-            // null < bool < number < string < array < object
-            (JValue::Bool(_), JValue::Number(_)) => Ordering::Less,
-            (JValue::Bool(_), JValue::String(_)) => Ordering::Less,
-            (JValue::Bool(_), JValue::Array(_)) => Ordering::Less,
-            (JValue::Bool(_), JValue::Object(_)) => Ordering::Less,
-            #[cfg(feature = "python")]
-            (JValue::Bool(_), JValue::LazyPyDict(_)) => Ordering::Less,
-
-            (JValue::Number(_), JValue::Bool(_)) => Ordering::Greater,
-            (JValue::Number(_), JValue::String(_)) => Ordering::Less,
-            (JValue::Number(_), JValue::Array(_)) => Ordering::Less,
-            (JValue::Number(_), JValue::Object(_)) => Ordering::Less,
-            #[cfg(feature = "python")]
-            (JValue::Number(_), JValue::LazyPyDict(_)) => Ordering::Less,
-
-            (JValue::String(_), JValue::Bool(_)) => Ordering::Greater,
-            (JValue::String(_), JValue::Number(_)) => Ordering::Greater,
-            (JValue::String(_), JValue::Array(_)) => Ordering::Less,
-            (JValue::String(_), JValue::Object(_)) => Ordering::Less,
-            #[cfg(feature = "python")]
-            (JValue::String(_), JValue::LazyPyDict(_)) => Ordering::Less,
-
-            (JValue::Array(_), JValue::Bool(_)) => Ordering::Greater,
-            (JValue::Array(_), JValue::Number(_)) => Ordering::Greater,
-            (JValue::Array(_), JValue::String(_)) => Ordering::Greater,
-            (JValue::Array(_), JValue::Object(_)) => Ordering::Less,
-            #[cfg(feature = "python")]
-            (JValue::Array(_), JValue::LazyPyDict(_)) => Ordering::Less,
-
-            (JValue::Object(_), _) => Ordering::Greater,
-            #[cfg(feature = "python")]
-            (JValue::LazyPyDict(_), _) => Ordering::Greater,
-            _ => Ordering::Equal,
+            comp = match (aa, bb) {
+                (JValue::Number(x), JValue::Number(y)) => {
+                    x.partial_cmp(y).unwrap_or(Ordering::Equal)
+                }
+                (JValue::String(x), JValue::String(y)) => x.cmp(y),
+                (JValue::Number(_) | JValue::String(_), JValue::Number(_) | JValue::String(_)) => {
+                    return Err(EvaluatorError::TypeError(format!(
+                        "T2007: Type mismatch when comparing values in order-by clause: {} and {}",
+                        type_name(aa),
+                        type_name(bb)
+                    )));
+                }
+                _ => {
+                    return Err(EvaluatorError::TypeError(
+                        "T2008: The expressions within an order-by clause must evaluate to numeric or string values"
+                            .to_string(),
+                    ));
+                }
+            };
+            if !*ascending {
+                comp = comp.reverse();
+            }
         }
+        Ok(comp == Ordering::Greater)
     }
 
     /// Check if a value is truthy (JSONata semantics).
