@@ -4091,17 +4091,9 @@ impl Evaluator {
                     });
                 }
 
-                // For $$name, we need to evaluate name against parent context
-                // This is similar to $.name but using parent data
-                let parent_data = self.context.get_parent().ok_or_else(|| {
-                    EvaluatorError::ReferenceError("Parent context not available".to_string())
-                })?;
-
-                // Access field on parent context
-                match parent_data {
-                    JValue::Object(obj) => Ok(obj.get(name).cloned().unwrap_or(JValue::Null)),
-                    _ => Ok(JValue::Null),
-                }
+                // `$$name` is the variable named `$name` in jsonata-js; the lexer
+                // emits it as `Variable("$name")`, so only bare `$$` reaches here.
+                self.evaluate_internal(&AstNode::Variable(format!("${}", name)), data)
             }
 
             AstNode::Path { steps } => self.evaluate_path(steps, data),

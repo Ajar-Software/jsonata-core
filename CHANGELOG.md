@@ -65,6 +65,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`$$name` is the variable named `$name`**
+  ([#201](https://github.com/txjmb/jsonata-core/issues/201)). jsonata-js reads everything after
+  the leading `$` as the variable name, so `$$` is the variable `$` (the input) and `$$a` is
+  the variable `$a`, undefined unless bound. Over `{"a": [1, 2, 3]}`, `$$a` and `$string($$a)`
+  are undefined (they were `null` and `"null"`), `($a := 5; $$a)` is undefined, and
+  `($$x := 2; $$x * 3)` is 6. `$$` and `$$.a` are unchanged.
+- **A lambda called as a path step gets only the arguments written**
+  ([#202](https://github.com/txjmb/jsonata-core/issues/202)). The parser no longer passes the
+  context item as an implicit first argument, so over `{"a": [1, 2, 3]}`
+  `a.function($v) { $v * 2 }()` is undefined (it was `[2, 4, 6]`), as in jsonata-js; pass
+  `$` to get the items. A parenthesised step called the same way, as in
+  `a.(function($v) { $v * 2 })($)`, now works (it was T1006).
 - **`@` on a block, `*` or `$` outside a path binds nothing**
   ([#213](https://github.com/txjmb/jsonata-core/issues/213)). jsonata-js only applies a
   binding to a path step, so `(acct.Order.P)@$v` is the three products (it was the input,

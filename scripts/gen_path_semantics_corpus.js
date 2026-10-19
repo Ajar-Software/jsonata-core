@@ -295,6 +295,18 @@ const EXTRA = [
   '(function($sort) { $exists($sort) })()', '($f := function($v) { $type($v) }; $f())',
   '($f := function($v, $w) { [$v, $w] }; $f(1))',
   '($f := function($n, $acc) { $n = 0 ? $type($acc) : $f($n - 1) }; $f(3))',
+  // `$$` is the variable named `$`, so `$$arr` is the (unbound) variable
+  // `$arr`, not a field of the input (#201).
+  '$$arr', '$string($$arr)', '$string($$missing)', '$exists($$arr)', '{"x": $$arr}',
+  '$$arr[0]', '$$v.w', 'arr.$$v', '$$$', '($arr := 5; $$arr)', '($b := $$v; $b)',
+  '($$x := 2; $$x * 3)', '$$', '$$.arr', '$$.x.y',
+  // A lambda called as a path step gets exactly the arguments written; the
+  // context item is not passed as an implicit first argument (#202).
+  'arr.function($v) { $v * 2 }()', 'arr.function($v) { $v * 2 }(3)',
+  'arr.function($v) { $v * 2 }($)', 'arr.function() { $ * 2 }()',
+  'arr.function($v, $w) { $v + $w }(1)', 'arr.function($v) { $v * 2 }(2, 3)',
+  'arr.(function($v) { $v * 2 })($)', 'arr.(function($v) { $v * 2 })()',
+  'arr.(function($v) { $v * 2 }($))', '($f := function() { function($x) { $x + 1 } }; arr.$f()(10))',
 ];
 
 // The same questions with a top-level array as input. jsonata-js wraps that
