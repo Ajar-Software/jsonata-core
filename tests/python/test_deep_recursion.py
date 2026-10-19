@@ -77,6 +77,35 @@ def test_recursion_through_expression_calls(engine):
     assert out["error"].startswith("U1001")
 
 
+TAIL_CALLED_CALLBACKS = [
+    "($f := function($n){ $n = 0 ? 0 : $reduce([$n, 1], function($a, $b){ $f($a - 1) }) };"
+    " $f(5000))",
+    "($f := function($n){ $n = 0 ? 'done' : $map([$n], function($x){ $f($x - 1) }) };"
+    " $count($f(5000)))",
+    "($f := function($n){ $n = 0 ? 'done' : $filter([$n], function($x){ $f($x - 1) }) };"
+    " $count($f(5000)))",
+    "($f := function($n){ $n = 0 ? 'done' : $each({'k': $n}, function($x){ $f($x - 1) }) };"
+    " $count($f(5000)))",
+]
+
+
+@pytest.mark.parametrize("expr", TAIL_CALLED_CALLBACKS)
+def test_recursion_through_tail_called_builtin_callback(engine, expr):
+    # The callback of a builtin called in tail position is run by the
+    # trampoline without an ordinary evaluation step; recursing through it
+    # used to overflow the native stack at about 1,200 levels (#191).
+    expected = "0" if "$reduce" in expr else "1"
+    assert _evaluate_on_small_stack(engine, expr) == {"ok": expected}
+
+
+def test_unbounded_recursion_through_tail_called_builtin_callback(engine):
+    expr = "($f := function($n){ $map([$n], function($x){ $f($x + 1) }) }; $f(0))"
+    out = _evaluate_on_small_stack(engine, expr)
+    assert out["error"].startswith("U1001")
+    out = _evaluate_on_small_stack(engine, expr, timeout=1)
+    assert out["error"][:5] in ("U1001", "D1012")
+
+
 def test_recursion_without_base_case_raises_u1001(engine):
     out = _evaluate_on_small_stack(engine, NO_BASE_CASE)
     assert out["error"].startswith("U1001")

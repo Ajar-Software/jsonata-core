@@ -268,29 +268,31 @@ fn partial_of_lambda_captures_target_at_creation() {
 }
 
 #[test]
-fn partial_of_builtin_sees_later_shadowing() {
-    // A builtin-named partial resolves its target BY NAME at invocation time,
-    // so a user binding that shadows the builtin afterwards wins. (Matches
-    // jsonata-js, where the partial's generated thunk resolves through the
-    // environment chain.)
+fn partial_of_builtin_ignores_later_shadowing() {
+    // The partial resolves `$uppercase` when it is made, as jsonata-js's
+    // partialApplyProcedure evaluates the procedure first, so a user binding
+    // that shadows the builtin afterwards does not change it.
     assert_eval(
         "( $up := $uppercase(?); $uppercase := function($x){ \"shadowed\" }; $up(\"a\") )",
-        "\"shadowed\"",
+        "\"A\"",
     );
 }
 
 #[test]
 fn partial_of_builtin_reference_binding() {
     // $f := $sum stores a builtin reference; partially applying through it
-    // resolves the builtin at invocation.
+    // applies that builtin, even after $f is rebound.
     assert_eval("( $f := $sum; $p := $f(?); $p([1,2,3]) )", "6");
+    assert_eval(
+        "( $f := $sum; $p := $f(?); $f := function($x){ 0 }; $p([1,2]) )",
+        "3",
+    );
 }
 
 #[test]
-fn partial_of_unknown_name_fails_at_invocation() {
-    // Creating the partial succeeds (the sigil form defers resolution);
-    // invoking it reports the missing function.
-    assert_error_contains("( $p := $notreal(?); $p(1) )", "T1006");
+fn partial_of_unknown_name_fails_at_creation() {
+    // jsonata-js evaluates the target first; nothing is bound: T1008.
+    assert_error_contains("( $p := $notreal(?); $p(1) )", "T1008");
 }
 
 #[test]
@@ -548,6 +550,369 @@ mod divergent_from_reference {
             "\"done\"",
         );
     }
+}
+
+// ── Lexical scope (#191) ─────────────────────────────────────────────────────
+//
+// A function body resolves the names it neither binds nor captured in the
+// scope it was defined in, never in its caller's. Values verified against
+// jsonata-js 2.2.2; more cases in the path-semantics corpus.
+
+#[test]
+fn caller_binding_does_not_shadow_builtin_in_body() {
+    assert_eval(
+        "( $f := function($x){ $string($x) }; ( $string := function($x){ \"z\" }; $f(1) ) )",
+        "\"1\"",
+    );
+    // Through the compiled fast paths: stored $map callback and a recursive
+    // tail call.
+    assert_eval(
+        "( $f := function($x){ $string($x) }; ( $string := function($x){ \"z\" }; $map([1,2], $f) ) )",
+        "[\"1\",\"2\"]",
+    );
+    assert_eval(
+        "( $f := function($n){ $n = 0 ? $string($n) : $f($n - 1) }; \
+           ( $string := function($x){ \"z\" }; $f(3) ) )",
+        "\"0\"",
+    );
+}
+
+#[test]
+fn late_binding_in_defining_scope_shadows_builtin_in_body() {
+    // Same frame, bound after the function: visible, as in jsonata-js (and
+    // so the compiled fast path must not call the builtin).
+    assert_eval(
+        "( $f := function($x){ $string($x) }; $string := function($x){ \"z\" }; $map([1,2], $f) )",
+        "[\"z\",\"z\"]",
+    );
+}
+
+#[test]
+fn caller_variable_not_visible_in_body() {
+    assert_eval(
+        "( $g := function(){ $exists($v) }; $f := function($v){ $g() }; $f(1) )",
+        "false",
+    );
+    // A tail call reuses the trampoline frame; the caller's parameter must
+    // not survive into the callee.
+    assert_eval(
+        "( $g := function($x){ $exists($y) }; $f := function($y){ $g(1) }; $f(\"q\") )",
+        "false",
+    );
+}
+
+#[test]
+fn escaped_closure_resolves_builtin_not_caller_binding() {
+    assert_eval(
+        "( $h := ( $k := 1; function($x){ $string($x + $k) } ); \
+           ( $string := function($x){ \"z\" }; $h(1) ) )",
+        "\"2\"",
+    );
+}
+
+#[test]
+fn tail_call_keeps_frames_closures_were_defined_in() {
+    // The callee was defined in the caller's frame: it gets a frame of its
+    // own, so its parameter does not overwrite the caller's `$m`.
+    assert_eval(
+        "( $outer := function(){ ( $k := function(){ $m }; $m := 1; \
+             $inner := function($m){ $k() }; $inner(99) ) }; $outer() )",
+        "1",
+    );
+    // A closure made in the caller's frame is passed on by a tail call: the
+    // frame stays, so the closure still sees `$m`.
+    assert_eval(
+        "( $other := function($f){ $f() }; \
+           $outer := function(){ ( $k := function(){ $m }; $m := 1; $other($k) ) }; $outer() )",
+        "1",
+    );
+    // Plain tail recursion still runs in constant frames.
+    assert_eval(
+        "( $loop := function($n, $acc){ $n = 0 ? $acc : $loop($n - 1, $acc + 1) }; $loop(50000, 0) )",
+        "50000",
+    );
+}
+
+#[test]
+fn eval_does_not_see_internal_temporaries() {
+    assert_eval(
+        "( $c := $string ~> $eval; \
+           $c(\"[$exists($__chain_x), $exists($__chain_f), $exists($__temp_arg_0)]\") )",
+        "[false,false,false]",
+    );
+    assert_eval(
+        "( $m := $map; $m([\"$exists($__temp_arg_0)\", \"$exists($__temp_arg_1)\"], $eval) )",
+        "[false,false]",
+    );
+    assert_eval("( $x := 7; $m := $map; $m([\"$x\"], $eval) )", "7");
+}
+
+#[test]
+fn eval_binds_in_callers_scope() {
+    assert_eval("( $eval(\"$y := 5\"); $y )", "5");
+    assert_eval("( $eval(\"$q := function(){ 42 }\"); $q() )", "42");
+    assert_eval("( $eval(\"$y := 5\"); $eval(\"$y + 1\") )", "6");
+    assert_eval(
+        "( $f := function(){ ($eval(\"$y := 5\"); $y) }; $f() )",
+        "5",
+    );
+    // Through the evaluator's own frames, the binding still lands in the
+    // caller's.
+    assert_eval("( $m := $map; $m([\"$w := 3\"], $eval); $w )", "3");
+    assert_eval("( $c := $string ~> $eval; $c(\"$z := 4\"); $z )", "4");
+}
+
+#[test]
+fn eval_in_composition_sees_callers_scope() {
+    // jsonata-js runs a composition in the calling environment.
+    assert_eval("( $x := 7; $c := $string ~> $eval; $c(\"$x\") )", "7");
+    assert_eval("( $x := 7; ($string ~> $eval)(\"$x\") )", "7");
+    assert_eval(
+        "( $x := 7; $c := $string ~> $eval; ($x := 8; $c(\"$x\")) )",
+        "8",
+    );
+    assert_eval(
+        "( $mk := function(){ ($x := \"in\"; $string ~> $eval) }; \
+           $x := \"out\"; $mk()(\"$x\") )",
+        "\"out\"",
+    );
+    assert_eval(
+        "( $c := $string ~> $eval; $g := function($a){ ($r := $c(\"$a\"); $r) }; $g(3) )",
+        "3",
+    );
+}
+
+#[test]
+fn tail_loop_keeps_frame_seen_by_function_held_by_another() {
+    // `$prev` from the last pass is a function holding a closure that reads
+    // that pass's `$late`; the frame must stay for it, however it is held.
+    for c in [
+        "function(){ $late } ~> $string",
+        "$h(function(){ $string($late) })",
+        "(function(){ $late } ~> $string) ~> $string",
+        "$map([1], function($v){ function(){ $late } })[0] ~> $string",
+        "$reduce([1, 2], function($a, $v){ function(){ $late } }, 0) ~> $string",
+        "function(){ $eval(\"$late\") } ~> $string",
+    ] {
+        let src = format!(
+            "( $h := function($k){{ function(){{ $k() }} }}; \
+               $f := function($n, $prev, $x, $acc){{ $n = 0 ? $acc : \
+               $f($n - 1, $c := {c}, $late := $n, $append($acc, $prev())) }}; \
+               $f(3, function(){{ \"none\" }}, 0, []) )"
+        );
+        assert_eval(&src, "[\"none\",\"3\",\"2\"]");
+    }
+    assert_eval(
+        "( $f := function($n, $prev, $x, $acc){ $n = 0 ? $acc : \
+           $f($n - 1, $c := function($a, $b){ $string($late) }(?, 1), $late := $n, \
+           $append($acc, $prev(0))) }; $f(3, function($v){ \"none\" }, 0, []) )",
+        "[\"none\",\"3\",\"2\"]",
+    );
+}
+
+#[test]
+fn composition_runs_first_function_below_its_defining_scope() {
+    // jsonata-js: f runs in the composition's own frame (bindings dropped,
+    // names from where `~>` was), g in the caller's.
+    assert_eval(
+        "( $c := $eval ~> $string; $c(\"$z := 5\"); $exists($z) )",
+        "false",
+    );
+    assert_eval(
+        "( \"$x := 4\" ~> ($eval ~> $string); $exists($x) )",
+        "false",
+    );
+    assert_eval(
+        "( $c := $eval ~> $string; $map([\"$z := 5\"], $c); $exists($z) )",
+        "false",
+    );
+    assert_eval(
+        "( $p := $eval(?); $c := $p ~> $string; $c(\"$w := 1\"); $exists($w) )",
+        "false",
+    );
+    assert_eval(
+        "( $c := ($eval ~> $string) ~> $string; $c(\"$z := 5\"); $exists($z) )",
+        "false",
+    );
+    assert_eval(
+        "( $n := \"top\"; $c := $eval ~> $string; \
+           $f := function($n){ ($r := $c(\"$n\"); $r) }; $f(\"arg\") )",
+        "\"top\"",
+    );
+    assert_eval(
+        "( $n := \"outer\"; $c := $eval ~> $uppercase; ($n := \"call\"; $c(\"$n\")) )",
+        "\"OUTER\"",
+    );
+    assert_eval(
+        "( $c := $eval ~> $string; \
+           $c(\"[$exists($__chain_x), $exists($__chain_f), $exists($__temp_arg_0)]\") )",
+        "\"[false,false,false]\"",
+    );
+    assert_eval("( $c := $string ~> $eval; $c(\"$z := 5\"); $z )", "5");
+}
+
+#[test]
+fn composition_in_tail_position_is_a_tail_call() {
+    assert_eval(
+        "( $inc := function($x){ $x + 1 }; \
+           $loop := function($n){ $n >= 10000 ? $n : ($inc ~> $loop)($n) }; $loop(0) )",
+        "10000",
+    );
+    assert_eval(
+        "( $loop := function($n){ $n >= 10000 ? $n : \
+           ($string ~> function($s){ $loop($number($s) + 1) })($n) }; $loop(0) )",
+        "10000",
+    );
+    assert_eval(
+        "( $inc := function($x){ $x + 1 }; \
+           $loop := function($n){ ($c := $inc ~> $loop; $n >= 10000 ? $n : $c($n)) }; $loop(0) )",
+        "10000",
+    );
+}
+
+#[test]
+fn tail_eval_runs_where_the_call_chain_began() {
+    // jsonata-js applies a tail call's thunk in the environment its
+    // trampoline was entered from; `$eval` reads and binds there.
+    assert_eval(
+        "( $v := \"root\"; $h := function(){ $eval(\"$v\") }; ($v := \"caller\"; $h()) )",
+        "\"caller\"",
+    );
+    assert_eval(
+        "( $v := \"def\"; $c := $string ~> function($s){ $eval($s) }; \
+           ($v := \"call\"; $c(\"$v\")) )",
+        "\"call\"",
+    );
+    assert_eval(
+        "( $v := \"root\"; $h := function(){ $eval(\"$v := 9\") }; \
+           $w := ($v := \"caller\"; $h(); $v); [$w, $v] )",
+        "[9,\"root\"]",
+    );
+    assert_eval(
+        "( $v := \"root\"; $h := function(){ $eval(\"$v\") }; $g := function(){ $h() }; \
+           ($v := \"caller\"; $g()) )",
+        "\"caller\"",
+    );
+    assert_eval(
+        "( $v := \"root\"; $e := $eval; $h := function(){ $e(\"$v\") }; ($v := \"caller\"; $h()) )",
+        "\"caller\"",
+    );
+    assert_eval(
+        "( $f := function($a){ $exists($eval(\"$a\")) }; $f(21) )",
+        "true",
+    );
+    assert_eval(
+        "( $f := function($a){ [$eval(\"$a * 2\")] }; $f(21) )",
+        "[42]",
+    );
+    assert_eval(
+        "( $n := 1; $f := function(){ ($n := 2; ($eval)(\"$n\")) }; ($n := 3; $f()) )",
+        "3",
+    );
+    // A builtin run as a tail call applies its function arguments where the
+    // chain began, so their own tail `$eval`s run there too.
+    assert_eval(
+        "( $n := 1; $f := function(){ ($n := 2; \
+           $filter([1, 2], function($v){ ($n := 9; $eval(\"$n = 2\")) })) }; $exists($f()) )",
+        "false",
+    );
+    assert_eval(
+        "( $n := 1; $f := function(){ ($n := 2; $map([1], function($v){ $eval(\"$n\") })) }; $f() )",
+        "1",
+    );
+    assert_eval(
+        "( $n := 1; $f := function(){ ($n := 2; $map([1], function($v){ $eval(\"$n\") })) }; \
+           $g := function(){ ($n := 3; $r := $f(); $r) }; $g() )",
+        "3",
+    );
+    assert_eval(
+        "( $n := 1; $f := function(){ ($n := 2; \
+           $r := $map([1], function($v){ $eval(\"$n\") }); $r) }; $f() )",
+        "2",
+    );
+    assert_eval(
+        "( $n := 1; $f := function(){ ($n := 2; $map([1], function($v){ \
+           ($n := 5; $map([1], function($w){ $eval(\"$n\") })) })) }; $f() )",
+        "1",
+    );
+    // Not a tail call: the body's own scope, as in jsonata-js.
+    assert_eval(
+        "( $v := \"root\"; $h := function(){ ($r := $eval(\"$v\"); $r) }; ($v := \"caller\"; $h()) )",
+        "\"root\"",
+    );
+    assert_eval(
+        "( $f := function($a){ ($r := $eval(\"$a * 2\"); $r) }; $f(21) )",
+        "42",
+    );
+}
+
+#[test]
+fn tail_loop_making_closures_stays_fast_and_correct() {
+    // Each pass makes a function; dropped ones must not pin their frames.
+    assert_eval(
+        "( $f := function($n, $acc){ ($g := function(){ $n }; \
+           $n = 0 ? $acc : $f($n - 1, $acc + $g())) }; $f(50000, 0) )",
+        "1250025000",
+    );
+    assert_eval(
+        "( $f := function($n, $acc){ ($m := $map([$n], function($v){ $v }); \
+           $n = 0 ? $acc : $f($n - 1, $acc + $m)) }; $f(50000, 0) )",
+        "1250025000",
+    );
+    // A closure made by a call from the loop's frame keeps that frame too.
+    assert_eval(
+        "( $loop := function($n, $acc){ $n = 0 ? $map($acc, function($f){ $f() }) : \
+           ($mk := function(){ function(){ $n } }; $loop($n - 1, $append($acc, [$mk()]))) }; \
+           $loop(4, []) )",
+        "[4,3,2,1]",
+    );
+    assert_eval(
+        "( $other := function($o){ ($f := $o.h; $f()) }; \
+           $outer := function($m){ ($mk := function(){ function(){ $m } }; $other({\"h\": $mk()})) }; \
+           $outer(5) )",
+        "5",
+    );
+    // Kept ones see their own pass.
+    assert_eval(
+        "( $f := function($n, $acc){ ($g := function(){ $n }; \
+           $n = 0 ? $map($acc, function($h){ $h() }) : $f($n - 1, $append($acc, [$g]))) }; \
+           $f(5, []) )",
+        "[5,4,3,2,1]",
+    );
+}
+
+#[test]
+fn returned_closure_does_not_see_callers_of_its_maker() {
+    // The closure's defining frame (the maker's call) is gone when it runs;
+    // it resolves through the maker's own defining scope, never through the
+    // frames of whoever called the maker.
+    assert_eval(
+        "( $A := function(){ function(){ $exists($secret) } }; \
+           $C := function($secret){ $A()() }; $C(\"leak\") )",
+        "false",
+    );
+    assert_eval(
+        "( $A := function(){ function($v){ $string($v) } }; \
+           $C := function($string){ $map([1,2], $A()) }; $C(function($x){ \"leak\" }) )",
+        "[\"1\",\"2\"]",
+    );
+    assert_eval(
+        "( $mk := function(){ ( $local := \"L\"; function(){ $local & $other } ) }; \
+           $C := function($other){ $mk()() }; $C(\"leak\") )",
+        "\"L\"",
+    );
+    assert_eval(
+        "( $A := function(){ function(){ $exists($secret) } }; \
+           ( $secret := \"leak\"; $g := $A(); $g() ) )",
+        "false",
+    );
+}
+
+#[test]
+fn non_function_binding_hides_builtin() {
+    assert_error_contains("( $string := 5; $string(1) )", "T1006");
+    assert_error_contains("( $string := 5; $string(?) )", "T1008");
+    assert_error_contains("$map([1], function($string){ $string(1) })", "T1006");
 }
 
 // ── Memory: no closure leaks ─────────────────────────────────────────────────

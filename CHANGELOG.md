@@ -73,6 +73,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A function body resolves names where the function is defined, not where it is called**
+  ([#191](https://github.com/txjmb/jsonata-core/issues/191)). A binding in the caller's scope
+  leaked into the body: `($f := function($x){ $string($x) }; ($string := function($x){"z"};
+  $f(1)))` is `"1"` as in jsonata-js (it was `"z"`), and `($g := function(){ $v }; $f :=
+  function($v){ $g() }; $f(1))` is undefined (it was `1`). The same holds for transforms,
+  partial applications, tail calls, and internal temporaries such as `$__temp_arg_0`, and to a
+  closure returned from another function, which resolves through its maker's defining scope and
+  never its maker's callers. While the defining scope is still running, a binding made there
+  after the function is seen too; once that scope has finished, only the bindings the function
+  captured when it was defined remain (jsonata-js keeps the whole scope alive, so
+  `($f := ($g := function(){ $y }; $y := 5; $g); $f())` is 5 there and undefined here). A partial
+  application such as `$uppercase(?)` now resolves its function when it is made, as jsonata-js
+  does: rebinding `$uppercase` afterwards no longer changes it, and partially applying an
+  unbound name is T1008 when the partial is made. Every compiled fast
+  path now checks builtin shadowing through one rule, so `$map`/`$filter`/`$reduce` callbacks,
+  object constructors, predicates and fused aggregates call a builtin only where the
+  tree-walker would; a parameter named like a builtin (`function($string){ $string(1) }`) now
+  shadows it there too. Calling a name bound to something that is not a function, such as
+  `$string := 5; $string(1)`, is T1006 (T1008 when partially applied) instead of calling the
+  builtin. Deep recursion no longer slows down with depth when its body calls a builtin, since a
+  lookup skips the caller frames. `$eval` runs in its caller's scope without seeing the
+  evaluator's temporaries, and a binding it makes lands there, even when it is reached through
+  `$map`: `($m := $map; $m(["$w := 3"], $eval); $w)` is 3. A composition `f ~> g` calls g in
+  the scope it is called from and f in a call frame of its own below the scope where `~>` was,
+  as jsonata-js's `chainAST` does, so `($x := 7; ($string ~> $eval)("$x"))` is 7 (it was
+  undefined) and `($c := $eval ~> $string; $c("$z := 5"); $z)` stays undefined. g's call is a
+  tail call, so `($inc ~> $loop)($n)` in tail position loops without growing the stack. `$eval`
+  as a lambda body's tail call runs where the chain of tail calls began, as jsonata-js applies
+  a tail call's thunk: `($v := "root"; $h := function(){ $eval("$v") }; ($v := "caller";
+  $h()))` is "caller", while `($r := $eval("$v"); $r)` in the body still reads the body's own
+  scope. A tail-call loop reuses its frame for the next pass unless a function that can see
+  the frame outlives the pass; functions the pass makes and drops, including ones kept in
+  local arrays, objects or other functions, or tail-called, do not count, so such loops run in
+  constant memory. A function that does live on, such as one passed to the next pass, keeps
+  its frame, so a loop that passes a new closure on each pass still grows with the number of
+  passes. That is a cost of lexical scoping, as in jsonata-js: a loop that collects a closure
+  on each pass into an accumulator (`$f($k - 1, $append($acc, $c))`) keeps every pass's frame
+  with all its bindings, the accumulator so far included, so its memory grows with the square
+  of the number of passes (about 1.1 GB at 5,000 passes, where it was 41 MB). A builtin such as
+  `$map` run as a tail call applies its function arguments where the chain of tail calls began,
+  as jsonata-js does (`$sort` excepted, since jsonata-js fails that call with "comp is not a
+  function"); recursion through such a callback, or through a tail-called composition, goes as
+  deep as other recursion and is U1001 without a base case, never a native stack overflow.
+  Still different from jsonata-js: the right side of `?:` and `??` is not a
+  tail position here; a partial application of a user function does not carry the chain of
+  tail calls, and a `$eval(?)` partial runs where it is called, not where it was made; function
+  arguments of a builtin called outside a tail position are applied where the builtin runs, not
+  in jsonata-js's wrapper over the caller's environment; a tail `$eval` takes the call
+  site's context as its input; and a composition's first function flattens one more level of
+  nested one-item sequences than jsonata-js when its result comes from such a tail-called
+  builtin (`($r ~> $string)(4)` with a `$r` nesting `$map` is `"[[0]]"`, `"[[[0]]]"` there).
 - **A sort over one item gives that item, not a one-item array**
   ([#221](https://github.com/txjmb/jsonata-core/issues/221)). jsonata-js sorts as a step after
   its input, which flattens the input into a sequence, and returns a sequence of zero or one

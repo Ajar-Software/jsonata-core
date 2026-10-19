@@ -134,6 +134,12 @@ impl JArray {
         self.flat
     }
 
+    /// The shared items themselves, for code that follows reference counts.
+    #[inline]
+    pub(crate) fn items_rc(&self) -> &Rc<Vec<JValue>> {
+        &self.items
+    }
+
     /// A mutable reference to the items, cloning them first if they are
     /// shared (`Rc::make_mut`). Clears `flat`, since the caller may store an
     /// array in them.
