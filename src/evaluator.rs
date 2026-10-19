@@ -4816,8 +4816,9 @@ impl Evaluator {
                     None if index == 0 => data.clone(),
                     None => result.clone(),
                 };
-                tuples = Some(self.create_tuple_stream(step, &source, index == 0)?);
-                sorted_tuples = false;
+                let (stream, sorted) = self.create_tuple_stream(step, &source, index == 0)?;
+                tuples = Some(stream);
+                sorted_tuples = sorted;
                 continue;
             }
 
@@ -4872,7 +4873,7 @@ impl Evaluator {
                     .is_some_and(|f| matches!(f, JValue::Object(o) if is_tuple_object(o)))
                 {
                     tuples = Some(arr.to_vec());
-                    sorted_tuples = Self::sorts_tuples(&step.node);
+                    sorted_tuples = arr.sorted_tuples;
                     continue;
                 }
             }
@@ -5365,7 +5366,7 @@ impl Evaluator {
         step: &PathStep,
         input: &JValue,
         is_first_path_step: bool,
-    ) -> Result<Vec<JValue>, EvaluatorError> {
+    ) -> Result<(Vec<JValue>, bool), EvaluatorError> {
         use std::rc::Rc;
 
         // Mark that this evaluate() call produced tuple wrappers, so the
@@ -5491,7 +5492,8 @@ impl Evaluator {
                 new_tuple.insert("__tuple__".to_string(), JValue::Bool(true));
                 result.push(JValue::object(new_tuple));
             }
-            return self.apply_tuple_stages(result, &step.stages, sorted_tuples);
+            let stream = self.apply_tuple_stages(result, &step.stages, sorted_tuples)?;
+            return Ok((stream, sorted_tuples));
         }
 
         let mut result = Vec::new();
@@ -5572,7 +5574,7 @@ impl Evaluator {
 
         // jsonata-js applies a tuple step's stages to the stream it built
         // (`evaluateStages`), each filter seeing every tuple's bindings.
-        self.apply_tuple_stages(result, &step.stages, false)
+        Ok((self.apply_tuple_stages(result, &step.stages, false)?, false))
     }
 
     /// Apply a step's stages, in order, to an already-built tuple stream --
@@ -5599,27 +5601,21 @@ impl Evaluator {
                         tuples = item_at(&tuples, position).cloned().into_iter().collect();
                         continue;
                     }
+                    if sorted_tuples {
+                        let mut stream = JArray::new(tuples);
+                        stream.sorted_tuples = true;
+                        tuples = match self.evaluate_filter(pred, JValue::Array(stream))? {
+                            JValue::Array(kept) => kept.to_vec(),
+                            _ => Vec::new(),
+                        };
+                        continue;
+                    }
                     let len = tuples.len();
-                    let plain =
-                        sorted_tuples.then(|| sorted_tuple_items(&JArray::new(tuples.clone())));
                     let mut kept = Vec::with_capacity(len);
                     for (index, tup) in tuples.into_iter().enumerate() {
                         let JValue::Object(obj) = &tup else {
                             continue;
                         };
-                        if let Some(plain) = &plain {
-                            let item = &plain[index];
-                            let selector = self
-                                .with_dollar_bound(item, |ev| ev.evaluate_internal(pred, item))?;
-                            let repeats = match predicate_index_match(&selector, index, len) {
-                                Some(n) => n,
-                                None => usize::from(self.is_truthy(&selector)),
-                            };
-                            for _ in 0..repeats {
-                                kept.push(tup.clone());
-                            }
-                            continue;
-                        }
                         // Bind this tuple's carried focus/index/ancestor keys so
                         // the predicate can reference them (save/restore rather
                         // than blind unbind -- see bind_tuple_keys).

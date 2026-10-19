@@ -127,7 +127,7 @@ impl JArray {
 
     /// A new sequence of the same items, sharing them: what jsonata-js
     /// builds when a step collects an array's items with `createSequence()`.
-    /// O(1); none of this array's other flags carry over.
+    /// O(1); of this array's other flags only `sorted_tuples` carries over.
     #[inline]
     pub fn fresh_sequence(&self) -> JArray {
         JArray {
@@ -136,7 +136,8 @@ impl JArray {
             cons: false,
             keep_singleton: false,
             outer_wrapper: false,
-            sorted_tuples: false,
+            // Tuples stay unmarked when a step collects them (#214).
+            sorted_tuples: self.sorted_tuples,
         }
     }
 

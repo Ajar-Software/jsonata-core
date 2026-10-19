@@ -193,6 +193,12 @@ const EXTRA = [
   'acct.Order.P^(>%.id)[N = "C"]#$k', 'acct.Order.P^(>%.id)[N = "C"]#$k.{"k": $k, "v": $}',
   'acct.Order.P^(>%.id)#$k[N = "C"]', 'acct.Order.P^(>%.id)#$k[$k = 1]', 'acct.Order.P^(>%.id)#$k.{"k": $k}',
   'acct.Order.P[N = "C"]^(%.id)#$k[N = "C"]',
+  // A one-item sort keeps its mark through a filter, and `#` after a sort keeps it.
+  'acct.Order.P[N = "C"]^(%.id)[N = "C"]{N: N}', 'acct.Order.P[N = "C"]^(%.id)[0]{N: N}',
+  'acct.Order.P[N = "C"]^(%.id)[true]{N: N}', 'acct.Order.P[N = "C"]^(%.id)[]{N: N}',
+  'acct.Order[1].P^(%.id)[0]{N: N}', 'acct.Order#$i.P[N = "C"]^($i)[0]{N: N}',
+  'acct.Order.P^(>%.id)#$k{N: N}', 'acct.Order.P^(>%.id)#$k^(N)', 'acct.Order.P^(>%.id)#$k^(N).N',
+  'acct.Order.P^(>%.id)#$k[$k > 0].N',
   // Outside a path, as a value, a sort of a tuple stream gives values.
   '($x := acct.Order.P^(>%.id); $x[N = "C"])', '(acct.Order.P^(>%.id))[N = "C"]',
   '(true ? acct.Order.P^(>%.id) : 0)[N = "C"]', '{"a": acct.Order.P^(>%.id)}.a[N = "C"]',
