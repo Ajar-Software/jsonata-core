@@ -8488,13 +8488,23 @@
    }
   },
   {
-   "expression": "(objs)@$v{\"k\": p}.k",
+   "expression": "(objs)@$v{\"k\": $v.p}",
+   "result": {}
+  },
+  {
+   "expression": "(objs)@$v{\"k\": $v.p}.k",
    "result": {
     "$undefined": true
    }
   },
   {
-   "expression": "(objs)@$v{\"k\": $v.p}",
+   "expression": "(objs)@$v{\"k\": $v}.k",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "(objs)@$v{\"k\": $v.p}.{\"x\": k}",
    "result": {}
   },
   {

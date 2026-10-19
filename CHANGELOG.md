@@ -76,6 +76,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `(acct.Order.P)[%.id = "o1"]` and `*[%.id = "o1"]`, which were accepted here. Inside a
   path, as in `(acct.Order.P)[%.id = "o1"].N`, they still work. A `%` on either side of `~>`
   is not passed on, as in jsonata-js, so `%.id ~> $count` is 0 where it raised S0217.
+  A filtered group-by under a sort, as in `(acct.Order.P)[%.id = "o1"]{N: N}^(N)`, gives a
+  value, and `@` after a filtered group-by, as in `acct.Order.P[0]{N: N}@$v`, raises S0215.
 - **A sort over a block's tuple stream unwraps a single or empty result**
   ([#207](https://github.com/txjmb/jsonata-core/issues/207)). `(acct.Order.P[N="C"])^(%.id)`
   is `{"N":"C"}` (it was `[{"N":"C"}]`), and `(acct.Order.P)[N = "Z"]^(>%.id)` is undefined

@@ -222,7 +222,8 @@ const EXTRA = [
   '(acct.Order.P)[%.id = "o1"] ~> $count', '%.id ~> $count', '$count(%.id)', 'acct.Order.(%.id ~> $count)',
   '(acct.Order.P)[%.id = "o1"]{N: N}^(N)', '((acct.Order.P)[%.id = "o1"])[0]', '[(acct.Order.P)[%.id = "o1"]][0]',
   '(acct.Order.P)[%.id = "o1"]{N: N}@$v', 'acct.Order.P[0]{N: N}@$v', 'acct.Order.P{N: N}@$v',
-  '(objs)@$v{"k": p}', '(objs)@$v{"k": p}.k', '(objs)@$v{"k": $v.p}',
+  '(objs)@$v{"k": p}', '(objs)@$v{"k": $v.p}', '(objs)@$v{"k": $v.p}.k', '(objs)@$v{"k": $v}.k',
+  '(objs)@$v{"k": $v.p}.{"x": k}',
   // `$match` returns every match as a sequence (#194).
   '$match("aba", /a/)', '$match("aba", /a/, 1)', '$match("aba", /a/, 0)', '$match("aba", /z/)',
   '$match("xay", /a/)', '$match("ab", /(a)(c)?/)', '$match("abc", /x*/)', '$match("abc", /x*/, 1)',
