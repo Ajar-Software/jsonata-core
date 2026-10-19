@@ -317,6 +317,11 @@ const EXTRA = [
   '($u := $uppercase; ["x", "y"].($u)($))', '($uppercase)("x")', '($substring)(?, 1)("abc")',
   '["abc", "de"].($substring)($, ?)(1)', '($f := $uppercase ~> $trim; [" x"].($f)($))',
   '($u := $string; arr.$u())', '($f := function($x) { $x * 10 }; ($f)(?)(2))',
+  // A `?` call in a lambda's tail position is a partial application too.
+  '(function() { (function($a) { $string($a) })(?) })()("x")',
+  '($g := function($a) { $uppercase($a) }; $f := function() { $g(?) }; $f()("x"))',
+  '($g := function($a, $b) { $a & $b }; $f := function($x) { $g($x, ?) }; $f("a")("b"))',
+  '($f := function() { (function($a, $b) { $a + $b })(1, ?) }; $f()(2))',
   // `$` is not an operator, so it can sit inside a name.
   '$a$b', '($a$b := 3; $a$b)', '($$a$b := 4; $$a$b)', '($a$b := 3; $$a$b)',
 ];

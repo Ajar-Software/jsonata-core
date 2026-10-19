@@ -9767,6 +9767,22 @@
    "result": 20
   },
   {
+   "expression": "(function() { (function($a) { $string($a) })(?) })()(\"x\")",
+   "result": "x"
+  },
+  {
+   "expression": "($g := function($a) { $uppercase($a) }; $f := function() { $g(?) }; $f()(\"x\"))",
+   "result": "X"
+  },
+  {
+   "expression": "($g := function($a, $b) { $a & $b }; $f := function($x) { $g($x, ?) }; $f(\"a\")(\"b\"))",
+   "result": "ab"
+  },
+  {
+   "expression": "($f := function() { (function($a, $b) { $a + $b })(1, ?) }; $f()(2))",
+   "result": 3
+  },
+  {
    "expression": "$a$b",
    "result": {
     "$undefined": true

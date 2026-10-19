@@ -7696,8 +7696,16 @@ impl Evaluator {
 
             // Function call - this is where TCO happens
             AstNode::Function { name, args, .. } => {
+                // A `?` argument makes a partial application, not a call: the
+                // non-TCO path builds it.
+                let has_placeholder = args.iter().any(|a| matches!(a, AstNode::Placeholder));
                 // Check if this is a call to a lambda value (user function)
-                if let Some(stored_lambda) = self.context.lookup_lambda_value(name).cloned() {
+                if let Some(stored_lambda) = self
+                    .context
+                    .lookup_lambda_value(name)
+                    .filter(|_| !has_placeholder)
+                    .cloned()
+                {
                     if stored_lambda.thunk {
                         let mut evaluated_args = Vec::with_capacity(args.len());
                         for arg in args {
@@ -7717,6 +7725,12 @@ impl Evaluator {
 
             // Call node (calling a lambda value)
             AstNode::Call { procedure, args } => {
+                // A `?` argument makes a partial application, not a call: the
+                // non-TCO path builds it.
+                if args.iter().any(|a| matches!(a, AstNode::Placeholder)) {
+                    let result = self.evaluate_internal(node, data)?;
+                    return Ok(LambdaResult::JValue(result));
+                }
                 // Evaluate the procedure to get the callable
                 let callable = self.evaluate_internal(procedure, data)?;
 

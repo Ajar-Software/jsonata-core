@@ -79,7 +79,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `a.(function($v) { $v * 2 })($)`, now works (it was T1006).
 - **Calling an expression applies any function value**, as jsonata-js does. `($uppercase)("x")`
   is `"X"` and `a.($string)()` calls the builtin per item (both were errors). A `?` argument
-  partially applies it, so `(function($v, $w) { $v + $w })(?, 1)(5)` is 6. Calling a
+  partially applies it, so `(function($v, $w) { $v + $w })(?, 1)(5)` is 6, also as the last
+  expression of a lambda (`$f := function() { $g(?) }` was an error). Calling a
   non-function, as in `(1)(2)`, raises T1006 (it had no code).
 - **`$` may appear inside a name**, as in jsonata-js: `$a$b` is the variable `a$b` and `a$b`
   the field `a$b` (both were parse errors).
