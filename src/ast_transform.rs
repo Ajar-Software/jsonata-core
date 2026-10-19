@@ -39,6 +39,11 @@ pub enum AstTransformError {
     Coded { code: &'static str, message: String },
 }
 
+/// jsonata-js's message for S0217 (`errorCodes` in jsonata.js), used for
+/// every place an ancestor can't be derived.
+const S0217_MESSAGE: &str =
+    "The object representing the 'parent' cannot be derived from this expression";
+
 fn coded(code: &'static str, message: impl Into<String>) -> AstTransformError {
     AstTransformError::Coded {
         code,
@@ -455,10 +460,7 @@ pub fn resolve_ancestry(ast: AstNode) -> Result<AstNode, AstTransformError> {
     // reference that bubbled all the way to the top, means there was no
     // enclosing path to derive an ancestor from.
     if !transformed.pending.is_empty() || matches!(transformed.node, AstNode::Parent(_)) {
-        return Err(coded(
-            "S0217",
-            "The parent operator % cannot be used at this point in the expression",
-        ));
+        return Err(coded("S0217", S0217_MESSAGE));
     }
     // Depth 0 again: substitute_labels is a SEPARATE, independent counter --
     // cycle 1+3's frames are gone by now (transform_node above already
@@ -891,8 +893,8 @@ fn transform_node_impl(
 /// aggregating pending ancestor references from every child -- mirrors
 /// jsonata-js's per-case `pushAncestry` calls in processAST.
 ///
-/// Two deliberate asymmetries with the generic "bubble everything" rule,
-/// both matching jsonata-js exactly:
+/// Three deliberate asymmetries with the generic "bubble everything" rule,
+/// all matching jsonata-js exactly:
 /// - `Call`'s `procedure` does NOT bubble (only `args` do) -- jsonata-js's
 ///   function/partial case never calls `pushAncestry` on `result.procedure`.
 /// - `Lambda`'s `body` does NOT bubble at all -- jsonata-js's lambda case
@@ -902,6 +904,9 @@ fn transform_node_impl(
 ///   simply remains an inert `AstNode::Parent(label)` in the body until the
 ///   lambda is invoked (matching jsonata-js: `function(){%}` parses fine,
 ///   with the raw `%` untouched inside the body).
+/// - An `ObjectTransform`'s (group-by's) `pattern` does NOT bubble -- the
+///   `{` group case processes its pairs without `pushAncestry`, so a `%`
+///   there stays unresolved and evaluates to undefined (#192).
 ///
 /// `depth` follows the same shared cycle-1+cycle-3 convention as
 /// `transform_node` (see its doc comment) -- `transform_children` is a full
@@ -1042,13 +1047,16 @@ fn transform_children_impl(
         }
         AstNode::ObjectTransform { input, pattern } => {
             let input_t = transform_node(*input, state, depth)?;
-            let mut pending = input_t.pending;
+            // A `%` slot still pending when it leaves a group-by's key or
+            // value is dropped: jsonata-js's `{` case processes the pairs
+            // without `pushAncestry`, so the slot is neither resolved nor
+            // raised as S0217. Its label is never bound, and `%` evaluates
+            // to undefined there (#192). A seek that fails inside a pair,
+            // as in `{"k": (1).%}`, still raises S0217.
             let mut transformed_pattern = Vec::with_capacity(pattern.len());
             for (k, v) in pattern {
                 let k_t = transform_node(k, state, depth)?;
-                pending.extend(k_t.pending);
                 let v_t = transform_node(v, state, depth)?;
-                pending.extend(v_t.pending);
                 transformed_pattern.push((k_t.node, v_t.node));
             }
             Ok(Transformed {
@@ -1056,7 +1064,7 @@ fn transform_children_impl(
                     input: Box::new(input_t.node),
                     pattern: transformed_pattern,
                 },
-                pending,
+                pending: input_t.pending,
             })
         }
         AstNode::Conditional {
@@ -1516,10 +1524,14 @@ fn seek_parent_step_impl(
             // resolve `%` against `Order` rather than raising S0217.
             None => Ok(level),
         },
-        _ => Err(coded(
-            "S0217",
-            "The parent operator % cannot derive an ancestor from this kind of path step",
-        )),
+        // A group-by reached as a step (`(a.b{...}).%`): seek through its
+        // input, as seek_parent_wrapped does.
+        AstNode::ObjectTransform { .. } => {
+            step.is_tuple = true;
+            step.inner_tuple = true;
+            seek_parent_wrapped(&mut step.node, label, level, state, depth)
+        }
+        _ => Err(coded("S0217", S0217_MESSAGE)),
     }
 }
 
@@ -1566,10 +1578,13 @@ fn seek_parent_wrapped_impl(
             Some(last) => seek_parent_wrapped(last, label, level, state, depth),
             None => Ok(level),
         },
-        _ => Err(coded(
-            "S0217",
-            "The parent operator % cannot derive an ancestor from this kind of expression",
-        )),
+        // A group-by. jsonata-js keeps the group on the path node, so
+        // seekParent walks the grouped path's steps; here that path is the
+        // group-by's input.
+        AstNode::ObjectTransform { input, .. } => {
+            seek_parent_wrapped(input.as_mut(), label, level, state, depth)
+        }
+        _ => Err(coded("S0217", S0217_MESSAGE)),
     }
 }
 
@@ -2484,6 +2499,67 @@ mod tests {
             .unwrap();
         let err = resolve_ancestry(ast).unwrap_err();
         assert!(err.to_string().starts_with("S0217"));
+    }
+
+    #[test]
+    fn test_real_parser_percent_in_group_by_is_left_unresolved() {
+        // jsonata-js never resolves a `%` in a group-by's key or value
+        // (#192): the input steps get no ancestor tag and nothing is raised.
+        for expr in ["a.b{%.id: c}", "a.b{c: %.id}", "a.b{c: %.%.x}"] {
+            let ast = crate::parser::Parser::new(expr.to_string())
+                .unwrap()
+                .parse()
+                .unwrap();
+            match resolve_ancestry(ast).unwrap() {
+                AstNode::ObjectTransform { input, .. } => match *input {
+                    AstNode::Path { steps } => {
+                        assert!(steps.iter().all(|s| s.ancestor_label.is_none()), "{expr}");
+                    }
+                    other => panic!("expected Path, got {:?}", other),
+                },
+                other => panic!("expected ObjectTransform, got {:?}", other),
+            }
+        }
+    }
+
+    #[test]
+    fn test_s0217_uses_jsonata_js_wording() {
+        // The top-level check, a seek that reaches a non-path step, and a
+        // seek into a non-path expression.
+        for expr in ["%", "[1].%", "a.b{c: (1).%}"] {
+            let ast = crate::parser::Parser::new(expr.to_string())
+                .unwrap()
+                .parse()
+                .unwrap();
+            let err = resolve_ancestry(ast).unwrap_err();
+            assert_eq!(err.to_string(), format!("S0217: {S0217_MESSAGE}"), "{expr}");
+        }
+    }
+
+    #[test]
+    fn test_real_parser_percent_seeks_through_group_by_input() {
+        // `(a.b{...}).%`: jsonata-js's seekParent walks the grouped path's
+        // steps, so `b` is tagged rather than raising S0217.
+        let ast = crate::parser::Parser::new("(a.b{c: d}).%".to_string())
+            .unwrap()
+            .parse()
+            .unwrap();
+        let steps = match resolve_ancestry(ast).unwrap() {
+            AstNode::Path { steps } => steps,
+            other => panic!("expected Path, got {:?}", other),
+        };
+        assert!(steps[0].is_tuple && steps[0].inner_tuple);
+        let AstNode::Block(exprs) = &steps[0].node else {
+            panic!("expected Block, got {:?}", steps[0].node);
+        };
+        let AstNode::ObjectTransform { input, .. } = &exprs[0] else {
+            panic!("expected ObjectTransform, got {:?}", exprs[0]);
+        };
+        let AstNode::Path { steps: inner } = input.as_ref() else {
+            panic!("expected Path, got {:?}", input);
+        };
+        assert!(inner[0].ancestor_label.is_none());
+        assert!(inner[1].ancestor_label.is_some() && inner[1].is_tuple);
     }
 
     #[test]

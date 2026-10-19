@@ -49,6 +49,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`%` inside a group-by no longer raises S0217**
+  ([#192](https://github.com/txjmb/jsonata-core/issues/192)). As in jsonata-js, a `%` in a
+  group-by's key or value is never resolved and evaluates to undefined, so
+  `acct.Order.P{%.id: N}` is `{}` and `acct.Order.P{N: $count(%)}` counts 0. A `%` after a
+  group-by, as in `(acct.Order.P{N: N}).%`, seeks through the grouped path. S0217 now uses
+  jsonata-js's message: "The object representing the 'parent' cannot be derived from this
+  expression".
 - **`~>` follows jsonata-js `evaluateApplyExpression`**
   ([#193](https://github.com/txjmb/jsonata-core/issues/193)). The left side is evaluated once
   and passed on even when undefined, so `nope ~> $count()` is `0` and `nope ~> $append([])` is

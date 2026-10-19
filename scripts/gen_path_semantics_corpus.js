@@ -134,6 +134,18 @@ const EXTRA = [
   '($x := 1; acct.Order.P)^(>%.id).N', 'acct.Order.(P).{"n": N, "o": %.id}',
   'acct.Order#$k.(P#$i.%).{"i": $i, "k": $k}', 'o#$i.(t#$i.%).{"i": $i}',
   'acct.Order.P{%.id: N}', 'acct.Order.(P)#$i.{"n": N, "i": $i, "o": %.id}',
+  // A `%` in a group-by's key or value is never resolved, so it is undefined
+  // there; a `%` it can't reach is still S0217 (#192).
+  'acct.Order.P{N: %.id}', 'acct.Order.P{"k": %.id}', 'acct.Order.P{"k": %}',
+  'acct.Order.P{N: %.%.Order.id}', 'acct.Order.P{N: $count(%)}', 'acct.Order.P{N: [%.id]}',
+  'acct.Order.P{N: N & %.id}', 'acct.Order.P{N: (%.id)}', 'acct.Order.P{N: P.%}',
+  'acct.Order.P[%.id = "o1"]{N: %.id}', 'acct.Order@$o.P{N: %.id}', 'acct.Order.P#$i{N: %}',
+  'acct.Order.P^(N){N: %.id}', 'acct.Order{id: P{N: %}}', 'acct.Order.(P{N: %.id})',
+  'acct.Order.P.%{id: %}', 'acct.Order.P{N: $.%}', '%', 'acct.Order.P.{N: %.id}',
+  // A `%` after a group-by seeks through the grouped path.
+  '(acct.Order.P{N: N}).%', 'acct.Order.(P{N: N}).%.id', '(acct.Order.P{N: N}).%.Order',
+  '(acct.Order{id: P}).%', 'acct.(Order{id: P}).%', '(acct.Order.P{N: %.id}).%',
+  'acct.Order.P{N: (1).%}', '(acct.Order.P{N: N})^(%.id).A', 'acct.(Order.P{N: N}).%.Order',
   // `$match` returns every match as a sequence (#194).
   '$match("aba", /a/)', '$match("aba", /a/, 1)', '$match("aba", /a/, 0)', '$match("aba", /z/)',
   '$match("xay", /a/)', '$match("ab", /(a)(c)?/)', '$match("abc", /x*/)', '$match("abc", /x*/, 1)',

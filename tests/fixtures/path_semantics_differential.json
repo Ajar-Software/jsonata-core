@@ -5976,6 +5976,166 @@
    ]
   },
   {
+   "expression": "acct.Order.P{N: %.id}",
+   "result": {}
+  },
+  {
+   "expression": "acct.Order.P{\"k\": %.id}",
+   "result": {}
+  },
+  {
+   "expression": "acct.Order.P{\"k\": %}",
+   "result": {}
+  },
+  {
+   "expression": "acct.Order.P{N: %.%.Order.id}",
+   "result": {}
+  },
+  {
+   "expression": "acct.Order.P{N: $count(%)}",
+   "result": {
+    "A": 0,
+    "B": 0,
+    "C": 0
+   }
+  },
+  {
+   "expression": "acct.Order.P{N: [%.id]}",
+   "result": {
+    "A": [],
+    "B": [],
+    "C": []
+   }
+  },
+  {
+   "expression": "acct.Order.P{N: N & %.id}",
+   "result": {
+    "A": "A",
+    "B": "B",
+    "C": "C"
+   }
+  },
+  {
+   "expression": "acct.Order.P{N: (%.id)}",
+   "result": {}
+  },
+  {
+   "expression": "acct.Order.P{N: P.%}",
+   "result": {}
+  },
+  {
+   "expression": "acct.Order.P[%.id = \"o1\"]{N: %.id}",
+   "result": {}
+  },
+  {
+   "expression": "acct.Order@$o.P{N: %.id}",
+   "result": {}
+  },
+  {
+   "expression": "acct.Order.P#$i{N: %}",
+   "result": {}
+  },
+  {
+   "expression": "acct.Order.P^(N){N: %.id}",
+   "result": {}
+  },
+  {
+   "expression": "acct.Order{id: P{N: %}}",
+   "result": {
+    "o1": {},
+    "o2": {}
+   }
+  },
+  {
+   "expression": "acct.Order.(P{N: %.id})",
+   "result": [
+    {},
+    {}
+   ]
+  },
+  {
+   "expression": "acct.Order.P.%{id: %}",
+   "result": {}
+  },
+  {
+   "expression": "acct.Order.P{N: $.%}",
+   "result": {
+    "$error": "S0217"
+   }
+  },
+  {
+   "expression": "%",
+   "result": {
+    "$error": "S0217"
+   }
+  },
+  {
+   "expression": "acct.Order.P.{N: %.id}",
+   "result": [
+    {
+     "A": "o1"
+    },
+    {
+     "B": "o1"
+    },
+    {
+     "C": "o2"
+    }
+   ]
+  },
+  {
+   "expression": "(acct.Order.P{N: N}).%",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "acct.Order.(P{N: N}).%.id",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "(acct.Order.P{N: N}).%.Order",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "(acct.Order{id: P}).%",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "acct.(Order{id: P}).%",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "(acct.Order.P{N: %.id}).%",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "acct.Order.P{N: (1).%}",
+   "result": {
+    "$error": "S0217"
+   }
+  },
+  {
+   "expression": "(acct.Order.P{N: N})^(%.id).A",
+   "result": "A"
+  },
+  {
+   "expression": "acct.(Order.P{N: N}).%.Order",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
    "expression": "$match(\"aba\", /a/)",
    "result": [
     {
