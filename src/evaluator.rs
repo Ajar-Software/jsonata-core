@@ -13,7 +13,7 @@ use std::time::Instant;
 
 use crate::ast::{AstNode, BinaryOp, PathStep, Stage};
 use crate::parser;
-use crate::value::{JArray, JValue};
+use crate::value::{with_stack, JArray, JValue};
 use indexmap::IndexMap;
 use std::rc::Rc;
 use thiserror::Error;
@@ -478,7 +478,43 @@ fn compiled_expr_node_count_exceeds(expr: &CompiledExpr, limit: usize) -> bool {
     walk(expr, &mut budget)
 }
 
+/// Deepest AST nesting the compiled path accepts; anything deeper is left to
+/// the tree-walker. Neither compilation nor `eval_compiled` checks the native
+/// stack per node (that would tax the hot path), and both can run deep inside
+/// a recursion with only `EVAL_RED_ZONE` of stack left, so their recursion
+/// has to fit in it: at roughly 1KB of stack per level for compiling plus
+/// evaluating in a release build (~9KB unoptimized), 128 levels stay inside
+/// the red zone. Real expressions are far shallower; the parser alone allows
+/// ~1000 levels.
+const MAX_COMPILED_DEPTH: usize = 128;
+
+thread_local! {
+    static COMPILE_DEPTH: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Compile one AST node, declining (`None`, so the tree-walker evaluates the
+/// whole expression) once nesting passes `MAX_COMPILED_DEPTH`. Every
+/// recursive step of compilation passes through here.
 fn try_compile_expr_inner(node: &AstNode, allowed_vars: Option<&[&str]>) -> Option<CompiledExpr> {
+    struct DepthGuard;
+    impl Drop for DepthGuard {
+        fn drop(&mut self) {
+            COMPILE_DEPTH.with(|d| d.set(d.get() - 1));
+        }
+    }
+    let depth = COMPILE_DEPTH.with(|d| {
+        let depth = d.get() + 1;
+        d.set(depth);
+        depth
+    });
+    let _guard = DepthGuard;
+    if depth > MAX_COMPILED_DEPTH {
+        return None;
+    }
+    try_compile_node(node, allowed_vars)
+}
+
+fn try_compile_node(node: &AstNode, allowed_vars: Option<&[&str]>) -> Option<CompiledExpr> {
     match node {
         // ── Literals ────────────────────────────────────────────────────
         AstNode::String(s) => Some(CompiledExpr::Literal(JValue::string(s.clone()))),
@@ -1427,11 +1463,11 @@ pub(crate) fn compiled_is_truthy(value: &JValue) -> bool {
         JValue::Number(n) => *n != 0.0,
         JValue::String(s) => !s.is_empty(),
         // Recursive, matching `Evaluator::is_truthy` and `$boolean` (#111).
-        JValue::Array(a) => match a.len() {
+        JValue::Array(a) => with_stack(|| match a.len() {
             0 => false,
             1 => compiled_is_truthy(&a[0]),
             _ => a.iter().any(compiled_is_truthy),
-        },
+        }),
         JValue::Object(o) => !o.is_empty(),
         // A Python dict arrives as a lazy view, not a materialised Object.
         // Without this arm it fell through to `_ => false` and every non-empty
@@ -2775,6 +2811,10 @@ fn reduce_tuple_stream(group: &[JValue]) -> IndexMap<String, JValue> {
 }
 
 fn unwrap_tuple_output(value: JValue) -> JValue {
+    with_stack(|| unwrap_tuple_output_level(value))
+}
+
+fn unwrap_tuple_output_level(value: JValue) -> JValue {
     match value {
         JValue::Object(obj) if is_tuple_object(&obj) => obj
             .get("@")
@@ -2827,9 +2867,11 @@ impl TupleKeyBindings {
 pub struct EvaluatorOptions {
     /// Maximum wall-clock evaluation time in milliseconds. Exceeding it raises D1012.
     pub timeout_ms: Option<u64>,
-    /// Maximum AST-recursion stack depth. Exceeding it raises D1011 if this is the
-    /// tighter of this value and the hardcoded native-stack safety ceiling (302);
-    /// otherwise the hardcoded ceiling still raises U1001 (see GitHub issue #34).
+    /// Maximum evaluation stack depth, like jsonata-js's `stack` option. Exceeding
+    /// it raises D1011. Without it, evaluation may nest up to the built-in
+    /// `MAX_EVAL_DEPTH` (30,000 levels, about 10,000 non-tail recursive calls),
+    /// beyond which U1001 is raised; a value at or above that limit changes
+    /// nothing (GitHub issues #34, #200).
     pub max_stack_depth: Option<usize>,
     /// Maximum length of a query-result sequence (map/filter/wildcard/descendants/
     /// keys/lookup/append/spread/each/range/path-mapping). Exceeding it raises D2015.
@@ -2850,7 +2892,9 @@ pub struct EvaluatorOptions {
 fn wildcard_values<'a>(values: impl Iterator<Item = &'a JValue>) -> JValue {
     fn flatten_into(value: &JValue, out: &mut Vec<JValue>) {
         match value {
-            JValue::Array(items) => items.iter().for_each(|item| flatten_into(item, out)),
+            JValue::Array(items) => {
+                with_stack(|| items.iter().for_each(|item| flatten_into(item, out)))
+            }
             other => out.push(other.clone()),
         }
     }
@@ -3369,11 +3413,50 @@ where
     }
 }
 
+/// Hard ceiling on nested `evaluate_internal` levels when the user has not set
+/// a tighter `max_stack_depth` (GitHub issue #200). jsonata-js has no such
+/// limit: its async evaluator recurses on the heap, so recursion is bounded
+/// only by memory (`$f(1000000)` of a non-tail recursive `$f` evaluates under
+/// node). Here deep levels run on heap-allocated stack segments (see
+/// `EVAL_STACK_SEGMENT`), so this is a memory backstop, not a native-stack
+/// one: it turns a runaway recursion into U1001 instead of exhausting memory.
+///
+/// A non-tail recursive call costs about three levels (the call, the
+/// conditional, the operator around the call), so this allows about 10,000
+/// nested calls, at roughly 3KB of stack segment per level in a release
+/// build (~90MB at the limit).
+///
+/// A recursive function can build a value as deep as its recursion. The value
+/// walkers (conversion to and from Python, serialization, `$string`,
+/// equality, `**`) grow their own stack through `value::with_stack`, but
+/// dropping a `JValue` is still plain recursive drop glue: a release build
+/// tears down roughly 10,000 levels of nesting on a 1MB stack, fewer for
+/// arrays. That limit predates this one (`$reduce` can nest a value
+/// arbitrarily deep) and is not raised by it.
+const MAX_EVAL_DEPTH: usize = 30_000;
+
+/// Stack headroom below which `evaluate_internal` moves to a new segment. It
+/// must cover the native frames of one evaluation level (`evaluate_internal`
+/// down to the next `evaluate_internal`, through function calls, lambda
+/// invocation and builtin dispatch) plus the work done at a level that does
+/// not re-enter `evaluate_internal`: compiling and running a compiled
+/// sub-expression (at most `MAX_COMPILED_DEPTH` levels), regex matching, a
+/// host function. Value walkers grow their own stack (`value::with_stack`).
+/// Unoptimized builds use about eight times more stack per frame (compiling
+/// one AST level takes ~9KB there), hence the larger value.
+const EVAL_RED_ZONE: usize = if cfg!(debug_assertions) {
+    2 * 1024 * 1024
+} else {
+    256 * 1024
+};
+
+/// Size of each heap-allocated stack segment `stacker` switches to.
+const EVAL_STACK_SEGMENT: usize = 8 * 1024 * 1024;
+
 /// Evaluator for JSONata expressions
 pub struct Evaluator {
     context: Context,
     recursion_depth: usize,
-    max_recursion_depth: usize,
     /// Set whenever `create_tuple_stream` builds a `{"@":.., "__tuple__":true}`
     /// wrapper during this top-level `evaluate()` call. Reset at the start of
     /// `evaluate()` and checked at the end to decide whether the (recursive,
@@ -3405,9 +3488,6 @@ impl Evaluator {
         Evaluator {
             context: Context::new(),
             recursion_depth: 0,
-            // Limit recursion depth to prevent stack overflow
-            // True TCO would allow deeper recursion but requires parser-level thunk marking
-            max_recursion_depth: 302,
             tuple_stream_created: false,
             keep_tuple_stream: false,
             options: EvaluatorOptions::default(),
@@ -3420,7 +3500,6 @@ impl Evaluator {
         Evaluator {
             context,
             recursion_depth: 0,
-            max_recursion_depth: 302,
             tuple_stream_created: false,
             keep_tuple_stream: false,
             options: EvaluatorOptions::default(),
@@ -3435,7 +3514,6 @@ impl Evaluator {
         Evaluator {
             context,
             recursion_depth: 0,
-            max_recursion_depth: 302,
             tuple_stream_created: false,
             keep_tuple_stream: false,
             options,
@@ -4040,22 +4118,20 @@ impl Evaluator {
         &mut self,
         f: impl FnOnce(&mut Self) -> Result<T, EvaluatorError>,
     ) -> Result<T, EvaluatorError> {
-        // Check recursion depth to prevent stack overflow. `effective_limit` is
-        // whichever is tighter: the user's `max_stack_depth` guardrail or the
-        // hardcoded native-stack-safety ceiling (`max_recursion_depth`, always
-        // 302, GitHub issue #34). The hardcoded ceiling is an always-on backstop
-        // regardless of user options — only a user limit BELOW it can produce
-        // D1011; hitting the hardcoded ceiling itself (no option set, or an
-        // option set at/above 302) still produces U1001.
+        // Depth guard. A user `max_stack_depth` raises D1011, like jsonata-js's
+        // `stack` option. Without one, the only limit is `MAX_EVAL_DEPTH`, a
+        // memory backstop (U1001) far deeper than real recursion needs: the
+        // native stack itself cannot overflow, since every level passes
+        // through the `stacker::maybe_grow` below (GitHub issues #34, #200).
         self.recursion_depth += 1;
         let effective_limit = match self.options.max_stack_depth {
-            Some(limit) => limit.min(self.max_recursion_depth),
-            None => self.max_recursion_depth,
+            Some(limit) => limit.min(MAX_EVAL_DEPTH),
+            None => MAX_EVAL_DEPTH,
         };
         if self.recursion_depth > effective_limit {
             self.recursion_depth -= 1;
             return Err(EvaluatorError::EvaluationError(
-                if effective_limit < self.max_recursion_depth {
+                if effective_limit < MAX_EVAL_DEPTH {
                     "D1011: Stack overflow. Check for non-terminating recursive function. Consider rewriting as tail-recursive".to_string()
                 } else {
                     format!(
@@ -4081,16 +4157,13 @@ impl Evaluator {
             }
         }
 
-        // The soft depth counter above is calibrated against a comfortably
-        // large native stack. Hosts with a much smaller default thread stack
-        // (notably Windows, ~1MB vs Linux's ~8MB) can exhaust the *real*
-        // stack well before this counter trips, crashing the process instead
-        // of returning U1001 (see GitHub issue #34). stacker::maybe_grow
-        // transparently swaps in a bigger stack segment when headroom is
-        // low, so this stays a no-op cost on the common shallow path.
-        const RED_ZONE: usize = 128 * 1024;
-        const GROW_STACK_SIZE: usize = 8 * 1024 * 1024;
-        let result = stacker::maybe_grow(RED_ZONE, GROW_STACK_SIZE, || f(self));
+        // Run the node on a fresh heap-allocated stack segment whenever less
+        // than `EVAL_RED_ZONE` of the current one is left, so deep recursion
+        // never overruns the thread's real stack, however small (Windows'
+        // 1MB main thread included). Every recursive evaluation cycle passes
+        // through here; see `EVAL_RED_ZONE` for what the red zone covers. On
+        // the common shallow path this is one stack-pointer compare.
+        let result = stacker::maybe_grow(EVAL_RED_ZONE, EVAL_STACK_SEGMENT, || f(self));
 
         self.recursion_depth -= 1;
         result
@@ -8870,7 +8943,7 @@ impl Evaluator {
 
                 for val in obj.values() {
                     // Recursively collect descendants
-                    descendants.extend(self.collect_descendants(val)?);
+                    descendants.extend(with_stack(|| self.collect_descendants(val))?);
                 }
             }
             #[cfg(feature = "python")]
@@ -8880,7 +8953,7 @@ impl Evaluator {
 
                 let obj = lazy.to_object().map_err(EvaluatorError::from)?;
                 for val in obj.values() {
-                    descendants.extend(self.collect_descendants(val)?);
+                    descendants.extend(with_stack(|| self.collect_descendants(val))?);
                 }
             }
             JValue::Array(arr) => {
@@ -8888,7 +8961,7 @@ impl Evaluator {
                 // This matches JavaScript behavior: arrays are traversed but not collected
                 for val in arr.iter() {
                     // Recursively collect descendants
-                    descendants.extend(self.collect_descendants(val)?);
+                    descendants.extend(with_stack(|| self.collect_descendants(val))?);
                 }
             }
             _ => {

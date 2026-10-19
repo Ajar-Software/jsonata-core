@@ -222,15 +222,19 @@ unsafe fn convert_ptr(
         return Ok(JValue::Bool(ptr == ffi::Py_True()));
     }
     if ffi::PyList_Check(ptr) != 0 {
-        let len = ffi::PyList_GET_SIZE(ptr);
-        let mut result = Vec::with_capacity(len as usize);
-        for i in 0..len {
-            // Borrowed reference; safe because nothing in convert_ptr can
-            // trigger user code that mutates the list while we iterate.
-            let item = ffi::PyList_GET_ITEM(ptr, i);
-            result.push(convert_ptr(py, item, lazy)?);
-        }
-        return Ok(JValue::array(result));
+        // A Python list can nest arbitrarily deep; recurse on a grown stack
+        // segment when the current one runs low (see `value::with_stack`).
+        return crate::value::with_stack(|| {
+            let len = ffi::PyList_GET_SIZE(ptr);
+            let mut result = Vec::with_capacity(len as usize);
+            for i in 0..len {
+                // Borrowed reference; safe because nothing in convert_ptr can
+                // trigger user code that mutates the list while we iterate.
+                let item = ffi::PyList_GET_ITEM(ptr, i);
+                result.push(convert_ptr(py, item, lazy)?);
+            }
+            Ok(JValue::array(result))
+        });
     }
     if ffi::PyDict_Check(ptr) != 0 {
         let dict = Borrowed::from_ptr(py, ptr).cast_unchecked::<PyDict>();
@@ -240,7 +244,7 @@ unsafe fn convert_ptr(
                 dict.to_owned().unbind(),
             ))));
         }
-        return convert_dict_eager(&dict);
+        return crate::value::with_stack(|| convert_dict_eager(&dict));
     }
 
     // Scalar subclasses and everything else: re-bind (incref) and take the
