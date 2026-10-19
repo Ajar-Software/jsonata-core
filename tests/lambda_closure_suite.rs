@@ -648,6 +648,76 @@ fn eval_does_not_see_internal_temporaries() {
 }
 
 #[test]
+fn eval_binds_in_callers_scope() {
+    assert_eval("( $eval(\"$y := 5\"); $y )", "5");
+    assert_eval("( $eval(\"$q := function(){ 42 }\"); $q() )", "42");
+    assert_eval("( $eval(\"$y := 5\"); $eval(\"$y + 1\") )", "6");
+    assert_eval(
+        "( $f := function(){ ($eval(\"$y := 5\"); $y) }; $f() )",
+        "5",
+    );
+    // Through the evaluator's own frames, the binding still lands in the
+    // caller's.
+    assert_eval("( $m := $map; $m([\"$w := 3\"], $eval); $w )", "3");
+    assert_eval("( $c := $string ~> $eval; $c(\"$z := 4\"); $z )", "4");
+}
+
+#[test]
+fn eval_in_composition_sees_callers_scope() {
+    // jsonata-js runs a composition in the calling environment.
+    assert_eval("( $x := 7; $c := $string ~> $eval; $c(\"$x\") )", "7");
+    assert_eval("( $x := 7; ($string ~> $eval)(\"$x\") )", "7");
+    assert_eval(
+        "( $x := 7; $c := $string ~> $eval; ($x := 8; $c(\"$x\")) )",
+        "8",
+    );
+    assert_eval(
+        "( $mk := function(){ ($x := \"in\"; $string ~> $eval) }; \
+           $x := \"out\"; $mk()(\"$x\") )",
+        "\"out\"",
+    );
+    assert_eval(
+        "( $c := $string ~> $eval; $g := function($a){ ($r := $c(\"$a\"); $r) }; $g(3) )",
+        "3",
+    );
+}
+
+#[test]
+fn tail_loop_making_closures_stays_fast_and_correct() {
+    // Each pass makes a function; dropped ones must not pin their frames.
+    assert_eval(
+        "( $f := function($n, $acc){ ($g := function(){ $n }; \
+           $n = 0 ? $acc : $f($n - 1, $acc + $g())) }; $f(50000, 0) )",
+        "1250025000",
+    );
+    assert_eval(
+        "( $f := function($n, $acc){ ($m := $map([$n], function($v){ $v }); \
+           $n = 0 ? $acc : $f($n - 1, $acc + $m)) }; $f(50000, 0) )",
+        "1250025000",
+    );
+    // A closure made by a call from the loop's frame keeps that frame too.
+    assert_eval(
+        "( $loop := function($n, $acc){ $n = 0 ? $map($acc, function($f){ $f() }) : \
+           ($mk := function(){ function(){ $n } }; $loop($n - 1, $append($acc, [$mk()]))) }; \
+           $loop(4, []) )",
+        "[4,3,2,1]",
+    );
+    assert_eval(
+        "( $other := function($o){ ($f := $o.h; $f()) }; \
+           $outer := function($m){ ($mk := function(){ function(){ $m } }; $other({\"h\": $mk()})) }; \
+           $outer(5) )",
+        "5",
+    );
+    // Kept ones see their own pass.
+    assert_eval(
+        "( $f := function($n, $acc){ ($g := function(){ $n }; \
+           $n = 0 ? $map($acc, function($h){ $h() }) : $f($n - 1, $append($acc, [$g]))) }; \
+           $f(5, []) )",
+        "[5,4,3,2,1]",
+    );
+}
+
+#[test]
 fn returned_closure_does_not_see_callers_of_its_maker() {
     // The closure's defining frame (the maker's call) is gone when it runs;
     // it resolves through the maker's own defining scope, never through the

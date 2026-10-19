@@ -423,6 +423,23 @@ const EXTRA = [
   '($c := $string ~> $eval; $c("[$exists($__chain_x), $exists($__chain_f), $exists($__temp_arg_0)]"))',
   '($m := $map; $m(["$exists($__temp_arg_0)", "$exists($__temp_arg_1)"], $eval))',
   '($x := 7; $m := $map; $m(["$x"], $eval))',
+  // A tail loop that makes a function on each pass, dropped or kept.
+  '($f := function($n, $acc) { ($g := function() { $n }; $n = 0 ? $acc : $f($n - 1, $acc + $g())) }; $f(5000, 0))',
+  '($f := function($n, $acc) { ($m := $map([$n], function($v) { $v }); $n = 0 ? $acc : $f($n - 1, $acc + $m)) }; $f(5000, 0))',
+  '($f := function($n, $acc) { ($g := function() { $n }; $n = 0 ? $map($acc, function($h) { $h() }) : $f($n - 1, $append($acc, [$g]))) }; $f(5, []))',
+  '($loop := function($n, $acc) { $n = 0 ? $map($acc, function($f) { $f() }) : ($mk := function() { function() { $n } }; $loop($n - 1, $append($acc, [$mk()]))) }; $loop(4, []))',
+  '($other := function($a) { ($f := $a[0]; $f()) }; $outer := function($m) { ($mk := function() { ($z := 2; function() { $m + $z }) }; $other([$mk()])) }; $outer(5))',
+  '($other := function($o) { ($f := $o.h; $f()) }; $outer := function($m) { ($mk := function() { function() { $m } }; $other({"h": $mk()})) }; $outer(5))',
+  // `$eval` binds in its caller's scope, through temporaries too.
+  '($eval("$y := 5"); $y)', '($eval("$q := function() { 42 }"); $q())', '(($eval("$y := 5")); $y)',
+  '($eval("$y := 5"); $eval("$y + 1"))', '($m := $map; $m(["$w := 3"], $eval); $w)',
+  '($f := function() { ($eval("$y := 5"); $y) }; $f())',
+  // A composition runs in the scope it is called from, as jsonata-js's
+  // native compositions do, so `$eval` in one sees and binds there.
+  '($x := 7; $c := $string ~> $eval; $c("$x"))', '($x := 7; ($string ~> $eval)("$x"))',
+  '($c := $string ~> $eval; $c("$z := 4"); $z)', '($x := 7; $c := $string ~> $eval; ($x := 8; $c("$x")))',
+  '($mk := function() { ($x := "in"; $string ~> $eval) }; $x := "out"; $mk()("$x"))',
+  '($c := $string ~> $eval; $g := function($a) { ($r := $c("$a"); $r) }; $g(3))',
   // `$$` is the variable named `$`, so `$$arr` is the (unbound) variable
   // `$arr`, not a field of the input (#201).
   '$$arr', '$string($$arr)', '$string($$missing)', '$exists($$arr)', '{"x": $$arr}',

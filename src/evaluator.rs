@@ -2780,22 +2780,84 @@ struct Scope {
     /// skipping the caller's frames in between, so a function body sees the
     /// scope it was written in and not the one it is called from (#191).
     barrier: Option<usize>,
-    /// Set once a function has been defined that can see this frame: the
-    /// frame is then part of that function's scope, so the tail-call
-    /// trampoline must not clear it for another function (#191).
-    has_closures: std::cell::Cell<bool>,
+    /// A frame of the tail-call trampoline, which it may clear and reuse
+    /// for the next call (`Context::enter_tail_call`).
+    tco: bool,
+    /// For a trampoline frame: a token each function defined to see this
+    /// frame holds (`DefScope::keep`), created with the first. While some
+    /// function outside the frame's own bindings holds one, the frame is
+    /// part of its scope and must not be reused (#191).
+    token: std::cell::OnceCell<Rc<FrameToken>>,
     /// An evaluator-internal frame (argument temporaries, a composition's
     /// parts), which `$eval` does not see.
     internal: bool,
 }
 
+/// A trampoline frame's token (`Scope::token`). It holds the token of the
+/// next trampoline frame out in its lexical chain, so a function holds
+/// only its innermost one and still keeps every frame it sees.
+#[derive(Debug)]
+pub(crate) struct FrameToken {
+    _outer: Option<Rc<FrameToken>>,
+}
+
 impl Scope {
+    /// Whether a function that can see this frame is reachable other than
+    /// through the frame's own bindings. Each such function holds one
+    /// clone of the token; the ones reachable only from the bindings (bound
+    /// there, or captured by one that is) go when the frame is cleared.
+    /// Functions inside arrays or objects are not looked for, so they count
+    /// as outside, which only costs a frame.
+    fn seen_from_outside(&self) -> bool {
+        let Some(token) = self.token.get() else {
+            return false;
+        };
+        let holders = Rc::strong_count(token) - 1;
+        if holders == 0 {
+            return false;
+        }
+        // Every function reachable from the bindings through function
+        // values and their captures, with how many references to it come
+        // from there.
+        let mut found: HashMap<*const StoredLambda, (&Rc<StoredLambda>, usize)> = HashMap::new();
+        let mut pending: Vec<&JValue> = self.bindings.values().collect();
+        while let Some(value) = pending.pop() {
+            let JValue::Lambda(rc) = value else {
+                continue;
+            };
+            let entry = found.entry(Rc::as_ptr(rc)).or_insert((rc, 0));
+            entry.1 += 1;
+            if entry.1 == 1 {
+                pending.extend(rc.captured_env.values());
+                if let Some(partial) = &rc.partial {
+                    if let PartialTarget::Lambda(target) = &partial.target {
+                        found.entry(Rc::as_ptr(target)).or_insert((target, 0)).1 += 1;
+                    }
+                }
+            }
+        }
+        // Those referenced only from there die with the bindings.
+        let inside = found
+            .values()
+            .filter(|(rc, refs)| {
+                Rc::strong_count(rc) == *refs
+                    && rc
+                        .def_scope
+                        .keep
+                        .as_ref()
+                        .is_some_and(|t| Rc::ptr_eq(t, token))
+            })
+            .count();
+        holders > inside
+    }
+
     fn new(id: u64, barrier: Option<usize>) -> Self {
         Scope {
             bindings: HashMap::new(),
             id,
             barrier,
-            has_closures: std::cell::Cell::new(false),
+            tco: false,
+            token: std::cell::OnceCell::new(),
             internal: false,
         }
     }
@@ -2818,6 +2880,11 @@ pub(crate) struct DefScope {
     /// The evaluator built this function (a composition); its frames are
     /// internal.
     internal: bool,
+    /// The token of the innermost trampoline frame in `chain` (see
+    /// `Scope::token`), which keeps the trampoline from reusing it, and
+    /// through it the ones further out, while this function lives. None
+    /// outside tail-call loops.
+    keep: Option<Rc<FrameToken>>,
 }
 
 /// Lexical chains are short (a few blocks and calls), so they are kept
@@ -2852,13 +2919,21 @@ impl DefScope {
             frames: [(0, 0); DEF_CHAIN_INLINE],
         },
         internal: false,
+        keep: None,
     };
 
-    /// A function the evaluator builds itself, such as a composition: like
-    /// `ROOT`, and its frames are hidden from `$eval`.
+    /// A function the evaluator builds itself, such as a composition. Its
+    /// frames continue at its caller's frame and are hidden from `$eval`,
+    /// as jsonata-js's native compositions run in the calling environment:
+    /// `$eval` inside one sees, and binds in, the scope it is called from.
     pub(crate) const INTERNAL: DefScope = DefScope {
+        ctx: 0,
+        chain: DefChain::Inline {
+            len: 0,
+            frames: [(0, 0); DEF_CHAIN_INLINE],
+        },
         internal: true,
-        ..DefScope::ROOT
+        keep: None,
     };
 }
 
@@ -2876,6 +2951,9 @@ pub struct Context {
     ctx_id: u64,
     /// The id the next pushed (or cleared) frame gets.
     next_scope_id: u64,
+    /// The most frames the stack has held, for tests that bound it.
+    #[cfg(test)]
+    peak_depth: usize,
 }
 
 impl Context {
@@ -2885,6 +2963,8 @@ impl Context {
             parent_data: None,
             ctx_id: NEXT_CONTEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             next_scope_id: 1,
+            #[cfg(test)]
+            peak_depth: 1,
         }
     }
 
@@ -2894,10 +2974,18 @@ impl Context {
         id
     }
 
+    fn push_frame(&mut self, scope: Scope) {
+        self.scope_stack.push(scope);
+        #[cfg(test)]
+        {
+            self.peak_depth = self.peak_depth.max(self.scope_stack.len());
+        }
+    }
+
     /// Push a new scope onto the stack
     fn push_scope(&mut self) {
         let id = self.fresh_scope_id();
-        self.scope_stack.push(Scope::new(id, None));
+        self.push_frame(Scope::new(id, None));
     }
 
     /// Push the frame of a call to a function defined at `def`: lookups that
@@ -2907,7 +2995,7 @@ impl Context {
         let id = self.fresh_scope_id();
         let mut scope = Scope::new(id, Some(barrier));
         scope.internal = def.internal;
-        self.scope_stack.push(scope);
+        self.push_frame(scope);
     }
 
     /// Push a frame for evaluator-internal bindings, hidden from `$eval`.
@@ -2915,38 +3003,62 @@ impl Context {
         let id = self.fresh_scope_id();
         let mut scope = Scope::new(id, None);
         scope.internal = true;
-        self.scope_stack.push(scope);
+        self.push_frame(scope);
     }
 
-    /// Push a frame whose lookups skip the internal frames on top of the
-    /// stack, for `$eval`, which evaluates in its caller's scope.
-    fn push_scope_below_internal(&mut self) {
+    /// The innermost frame that is not internal, where `$eval` runs.
+    fn frame_below_internal(&self) -> usize {
         let mut i = self.scope_stack.len() - 1;
         while i > 0 && self.scope_stack[i].internal {
             i = self.scope_stack[i].barrier.unwrap_or(i - 1);
         }
+        i
+    }
+
+    /// Push a frame whose lookups continue at frame `at`.
+    fn push_scope_at(&mut self, at: usize) {
         let id = self.fresh_scope_id();
-        self.scope_stack.push(Scope::new(id, Some(i)));
+        self.push_frame(Scope::new(id, Some(at)));
+    }
+
+    /// Pop the top frame and move its bindings into frame `at`.
+    fn pop_scope_into(&mut self, at: usize) {
+        if self.scope_stack.len() > 1 {
+            let top = self.scope_stack.pop().unwrap();
+            self.scope_stack[at].bindings.extend(top.bindings);
+        }
+    }
+
+    /// Push the trampoline's first frame, for a call to a function
+    /// defined at `def`.
+    fn push_tail_call_scope(&mut self, def: &DefScope) {
+        self.push_scope_defined_at(def);
+        self.scope_stack.last_mut().unwrap().tco = true;
     }
 
     /// Give a tail call to a function defined at `def` its frame, returning
     /// how many frames were pushed (0 or 1). The trampoline reuses the
-    /// previous call's frame, cleared, when nothing can still see it: the
-    /// callee was defined elsewhere and no function was defined that sees
-    /// it. Otherwise that frame is someone's defining scope (the callee's,
-    /// or a closure's that may still be called), so it stays and the callee
-    /// gets a frame of its own above it. Plain tail recursion thus runs in
-    /// one frame.
+    /// previous call's frame, cleared, when nothing else can see it: the
+    /// callee was defined elsewhere, and no function defined to see the
+    /// frame lives on outside the frame's own bindings. Otherwise the frame
+    /// is someone's defining scope (the callee's, or a closure's that may
+    /// still be called), so it stays and the callee gets a frame above it.
+    /// Tail loops thus run in one frame, even ones that make a function on
+    /// each pass and drop it.
     fn enter_tail_call(&mut self, def: &DefScope) -> usize {
         let barrier = self.barrier_for(def);
         let top = self.scope_stack.len() - 1;
-        if barrier < top && !self.scope_stack[top].has_closures.get() {
+        if barrier < top && !self.scope_stack[top].seen_from_outside() {
             self.clear_current_scope();
-            self.scope_stack[top].barrier = Some(barrier);
-            self.scope_stack[top].internal = def.internal;
+            let scope = &mut self.scope_stack[top];
+            scope.barrier = Some(barrier);
+            scope.internal = def.internal;
+            // Its lexical chain changes; a function defined from now on
+            // takes a new token, holding the new chain's.
+            scope.token = std::cell::OnceCell::new();
             0
         } else {
-            self.push_scope_defined_at(def);
+            self.push_tail_call_scope(def);
             1
         }
     }
@@ -2956,6 +3068,10 @@ impl Context {
     /// function that outlived its block sees what is left of its scope, and
     /// never the frames of whoever called the function that made it).
     fn barrier_for(&self, def: &DefScope) -> usize {
+        if def.internal {
+            // `DefScope::INTERNAL`: the caller's frame.
+            return self.scope_stack.len() - 1;
+        }
         if def.ctx != self.ctx_id {
             return 0;
         }
@@ -2971,15 +3087,41 @@ impl Context {
             .map_or(0, |&(index, _)| index)
     }
 
+    /// The token of trampoline frame `i`, holding that of the next
+    /// trampoline frame out in its lexical chain.
+    fn frame_token(&self, i: usize) -> Rc<FrameToken> {
+        let scope = &self.scope_stack[i];
+        if let Some(token) = scope.token.get() {
+            return Rc::clone(token);
+        }
+        let mut j = i;
+        let mut outer = None;
+        while j > 0 {
+            j = self.scope_stack[j].barrier.unwrap_or(j - 1);
+            if self.scope_stack[j].tco {
+                outer = Some(self.frame_token(j));
+                break;
+            }
+        }
+        Rc::clone(
+            scope
+                .token
+                .get_or_init(|| Rc::new(FrameToken { _outer: outer })),
+        )
+    }
+
     /// The defining scope for a function created now.
     fn def_scope(&self) -> DefScope {
+        let mut keep = None;
         let mut frames = [(0, 0); DEF_CHAIN_INLINE];
         let mut len = 0;
         let mut heap: Option<Vec<(usize, u64)>> = None;
         let mut i = self.scope_stack.len() - 1;
         while i > 0 {
             let scope = &self.scope_stack[i];
-            scope.has_closures.set(true);
+            if scope.tco && keep.is_none() {
+                keep = Some(self.frame_token(i));
+            }
             match &mut heap {
                 Some(v) => v.push((i, scope.id)),
                 None if len < DEF_CHAIN_INLINE => {
@@ -3005,6 +3147,7 @@ impl Context {
             ctx: self.ctx_id,
             chain,
             internal: false,
+            keep,
         }
     }
 
@@ -7909,7 +8052,7 @@ impl Evaluator {
         // in one iteration (like recursive $iter) remain available in subsequent ones.
         // Like any call's frame, it looks past the caller's scopes to the
         // function's defining one (re-pointed per iteration below).
-        self.context.push_scope_defined_at(&stored_lambda.def_scope);
+        self.context.push_tail_call_scope(&stored_lambda.def_scope);
         // Frames this trampoline has pushed (see `Context::enter_tail_call`).
         let mut frames = 1;
 
@@ -8859,10 +9002,20 @@ impl Evaluator {
         };
 
         // Evaluate the parsed expression
-        // In the caller's scope, without the evaluator's own temporaries.
-        self.context.push_scope_below_internal();
-        let evaluated = self.evaluate_internal(&parsed_ast, eval_context);
-        self.context.pop_scope();
+        // In the caller's scope, as jsonata-js evaluates in the calling
+        // environment, so a `:=` there binds in it. When the evaluator's own
+        // frames (argument temporaries, a composition) are on top, it runs
+        // in a frame that looks past them, whose bindings then go to the
+        // caller's frame.
+        let at = self.context.frame_below_internal();
+        let evaluated = if at == self.context.scope_stack.len() - 1 {
+            self.evaluate_internal(&parsed_ast, eval_context)
+        } else {
+            self.context.push_scope_at(at);
+            let evaluated = self.evaluate_internal(&parsed_ast, eval_context);
+            self.context.pop_scope_into(at);
+            evaluated
+        };
         match evaluated {
             Ok(result) => Ok(result),
             Err(e) => {
@@ -10545,5 +10698,51 @@ mod tests {
         let mut evaluator = Evaluator::new();
         let result = evaluator.evaluate(&ast, &data).unwrap();
         assert_eq!(result, serde_json::json!("OUT").into());
+    }
+
+    // --- #191: tail loops that make a function on each pass ----------------
+    //
+    // The tail-call trampoline reuses its frame unless a function that can
+    // see it lives on. A function made and dropped on each pass must not
+    // keep the frames, or the stack (and memory) grows with the loop.
+
+    fn peak_depth_of(src: &str) -> (JValue, usize) {
+        let ast = crate::parser::parse(src).unwrap();
+        let mut evaluator = Evaluator::new();
+        let result = evaluator.evaluate(&ast, &JValue::Null).unwrap();
+        (result, evaluator.context.peak_depth)
+    }
+
+    #[test]
+    fn tail_loop_making_a_closure_each_pass_keeps_stack_bounded() {
+        let (result, depth) = peak_depth_of(
+            "($f := function($n, $acc){ ($g := function(){ $n }; \
+             $n = 0 ? $acc : $f($n - 1, $acc + $g())) }; $f(50000, 0))",
+        );
+        assert_eq!(result, JValue::from(1_250_025_000.0));
+        assert!(depth < 16, "scope stack reached {depth} frames");
+    }
+
+    #[test]
+    fn tail_loop_passing_a_lambda_each_pass_keeps_stack_bounded() {
+        let (result, depth) = peak_depth_of(
+            "($f := function($n, $acc){ ($m := $map([$n], function($v){ $v }); \
+             $n = 0 ? $acc : $f($n - 1, $acc + $m)) }; $f(50000, 0))",
+        );
+        assert_eq!(result, JValue::from(1_250_025_000.0));
+        assert!(depth < 16, "scope stack reached {depth} frames");
+    }
+
+    #[test]
+    fn tail_loop_keeps_frames_of_closures_that_escape() {
+        // Each pass's closure goes into the accumulator, so each pass's
+        // frame stays; the closures see their own pass's `$n`.
+        let (result, depth) = peak_depth_of(
+            "($f := function($n, $acc){ ($g := function(){ $n }; \
+             $n = 0 ? $map($acc, function($h){ $h() }) : $f($n - 1, $append($acc, [$g]))) }; $f(50, []))",
+        );
+        let expected: Vec<JValue> = (1..=50).rev().map(|n| JValue::from(n as f64)).collect();
+        assert_eq!(result, JValue::array(expected));
+        assert!(depth > 50, "scope stack reached only {depth} frames");
     }
 }

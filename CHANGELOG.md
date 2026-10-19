@@ -85,7 +85,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   shadows it there too. Calling a name bound to something that is not a function, such as
   `$string := 5; $string(1)`, is T1006 (T1008 when partially applied) instead of calling the
   builtin. Deep recursion no longer slows down with depth when its body calls a builtin, since a
-  lookup skips the caller frames.
+  lookup skips the caller frames. `$eval` runs in its caller's scope without seeing the
+  evaluator's temporaries, and a binding it makes lands there, even when it is reached through
+  `$map` or a composition: `($m := $map; $m(["$w := 3"], $eval); $w)` is 3. A composition such
+  as `$string ~> $eval` runs in the scope it is called from, as in jsonata-js, so
+  `($x := 7; ($string ~> $eval)("$x"))` is 7 (both were undefined).
 - **`$replace` drives a regex or a matcher function as jsonata-js does**
   ([#198](https://github.com/txjmb/jsonata-core/issues/198)). A replacement function's
   `$m.start` and `$m.end` count UTF-16 code units, so `$replace("éab", /a/, function($m)
