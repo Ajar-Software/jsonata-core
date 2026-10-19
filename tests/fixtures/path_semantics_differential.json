@@ -8423,6 +8423,81 @@
    }
   },
   {
+   "expression": "(acct.Order.P)[%.id = \"o1\"] ~> $count",
+   "result": 2
+  },
+  {
+   "expression": "%.id ~> $count",
+   "result": 0
+  },
+  {
+   "expression": "$count(%.id)",
+   "result": {
+    "$error": "S0217"
+   }
+  },
+  {
+   "expression": "acct.Order.(%.id ~> $count)",
+   "result": [
+    0,
+    0
+   ]
+  },
+  {
+   "expression": "(acct.Order.P)[%.id = \"o1\"]{N: N}^(N)",
+   "result": {
+    "A": "A",
+    "B": "B"
+   }
+  },
+  {
+   "expression": "((acct.Order.P)[%.id = \"o1\"])[0]",
+   "result": {
+    "$error": "S0217"
+   }
+  },
+  {
+   "expression": "[(acct.Order.P)[%.id = \"o1\"]][0]",
+   "result": {
+    "$error": "S0217"
+   }
+  },
+  {
+   "expression": "(acct.Order.P)[%.id = \"o1\"]{N: N}@$v",
+   "result": {
+    "$error": "S0215"
+   }
+  },
+  {
+   "expression": "acct.Order.P[0]{N: N}@$v",
+   "result": {
+    "$error": "S0215"
+   }
+  },
+  {
+   "expression": "acct.Order.P{N: N}@$v",
+   "result": {}
+  },
+  {
+   "expression": "(objs)@$v{\"k\": p}",
+   "result": {
+    "k": [
+     1,
+     2
+    ]
+   }
+  },
+  {
+   "expression": "(objs)@$v{\"k\": p}.k",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "(objs)@$v{\"k\": $v.p}",
+   "result": {}
+  },
+  {
    "expression": "$match(\"aba\", /a/)",
    "result": [
     {

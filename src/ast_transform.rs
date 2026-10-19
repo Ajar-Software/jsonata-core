@@ -712,6 +712,17 @@ fn check_focus_bind_target(
             "A context variable binding must precede any predicates on a step",
         ));
     }
+    // A group-by keeps its operand's kind, so `@` lands on the operand's
+    // step (`X[p]{...}@$v` is S0215 in jsonata-js).
+    if let AstNode::ObjectTransform { input, .. } = target_node {
+        return match &**input {
+            AstNode::Path { steps } => match steps.last() {
+                Some(last) => check_focus_bind_target(marker, &last.stages, &last.node),
+                None => Ok(()),
+            },
+            other => check_focus_bind_target(marker, &[], other),
+        };
+    }
     if matches!(target_node, AstNode::Sort { .. }) {
         return Err(coded(
             "S0216",
@@ -818,6 +829,34 @@ fn transform_marker_lhs(
     }
 }
 
+/// Rebuild a group-by around its transformed input.
+fn transform_group(
+    input_t: Transformed,
+    pattern: Vec<(AstNode, AstNode)>,
+    state: &mut AncestryState,
+    depth: usize,
+) -> Result<Transformed, AstTransformError> {
+    // A `%` slot still pending when it leaves a group-by's key or value is
+    // dropped: jsonata-js's `{` case processes the pairs without
+    // `pushAncestry`, so the slot is neither resolved nor raised as S0217.
+    // Its label is never bound, and `%` evaluates to undefined there (#192).
+    // A seek that fails inside a pair, as in `{"k": (1).%}`, still raises
+    // S0217.
+    let mut transformed_pattern = Vec::with_capacity(pattern.len());
+    for (k, v) in pattern {
+        let k_t = transform_node(k, state, depth)?;
+        let v_t = transform_node(v, state, depth)?;
+        transformed_pattern.push((k_t.node, v_t.node));
+    }
+    Ok(Transformed {
+        node: AstNode::ObjectTransform {
+            input: Box::new(input_t.node),
+            pattern: transformed_pattern,
+        },
+        pending: input_t.pending,
+    })
+}
+
 /// Transform a node that something around it makes a path in jsonata-js
 /// (a sort's input, `#`'s operand), so a one-step path keeps the bindings
 /// and predicate slots that a node evaluated by itself would drop.
@@ -839,6 +878,12 @@ fn transform_as_path(
             lhs,
             rhs,
         } => transform_marker(op, *lhs, *rhs, false, state, depth),
+        // A group-by keeps its operand's kind, so a path around it makes
+        // its operand a path.
+        AstNode::ObjectTransform { input, pattern } => {
+            let input_t = transform_as_path(*input, state, depth)?;
+            transform_group(input_t, pattern, state, depth)
+        }
         other => transform_node(other, state, depth),
     }
 }
@@ -979,8 +1024,14 @@ fn transform_children_impl(
         AstNode::Binary { op, lhs, rhs } => {
             let lhs_t = transform_node(*lhs, state, depth)?;
             let rhs_t = transform_node(*rhs, state, depth)?;
-            let mut pending = lhs_t.pending;
-            pending.extend(rhs_t.pending);
+            // jsonata-js's `~>` case never calls `pushAncestry`, so a `%`
+            // still seeking on either side is dropped rather than raised as
+            // S0217: `%.id ~> $count` is 0.
+            let mut pending = Vec::new();
+            if op != BinaryOp::ChainPipe {
+                pending = lhs_t.pending;
+                pending.extend(rhs_t.pending);
+            }
             Ok(Transformed {
                 node: AstNode::Binary {
                     op,
@@ -1086,25 +1137,7 @@ fn transform_children_impl(
         }
         AstNode::ObjectTransform { input, pattern } => {
             let input_t = transform_node(*input, state, depth)?;
-            // A `%` slot still pending when it leaves a group-by's key or
-            // value is dropped: jsonata-js's `{` case processes the pairs
-            // without `pushAncestry`, so the slot is neither resolved nor
-            // raised as S0217. Its label is never bound, and `%` evaluates
-            // to undefined there (#192). A seek that fails inside a pair,
-            // as in `{"k": (1).%}`, still raises S0217.
-            let mut transformed_pattern = Vec::with_capacity(pattern.len());
-            for (k, v) in pattern {
-                let k_t = transform_node(k, state, depth)?;
-                let v_t = transform_node(v, state, depth)?;
-                transformed_pattern.push((k_t.node, v_t.node));
-            }
-            Ok(Transformed {
-                node: AstNode::ObjectTransform {
-                    input: Box::new(input_t.node),
-                    pattern: transformed_pattern,
-                },
-                pending: input_t.pending,
-            })
+            transform_group(input_t, pattern, state, depth)
         }
         AstNode::Conditional {
             condition,
@@ -1143,7 +1176,7 @@ fn transform_children_impl(
             // style "resolve against the step itself" special case is needed;
             // it's a plain uniform backward walk over the input steps).
             // A sort makes its input a path in jsonata-js, so a one-step
-            // input keeps its `@` binding (see `bind_outside_path`).
+            // input keeps its `@` binding (see `finish_value_path`).
             let input_t = transform_as_path(*input, state, depth)?;
             let was_path = matches!(input_t.node, AstNode::Path { .. });
             // jsonata wraps a non-path input into a single-step path so the
@@ -1379,7 +1412,7 @@ fn transform_path_steps_impl(
                 state,
                 depth + 1,
             )?;
-            if remaining > 0 {
+            if remaining > 0 || not_a_path {
                 path_pending.push(PendingAncestor {
                     label: pending.label,
                     level: remaining,
@@ -1430,16 +1463,22 @@ fn finish_value_path(steps: &mut [PathStep]) {
     if is_js_path_node(&step.node) {
         return;
     }
+    // A step's group-by operand was transformed as a path (see
+    // migrate_binding_markers); nothing makes it one here.
+    if let AstNode::ObjectTransform { input, .. } = &mut step.node {
+        if let AstNode::Path { steps } = &mut **input {
+            finish_value_path(steps);
+        }
+    }
     if let Some(first_index) = step
         .stages
         .iter()
         .position(|stage| matches!(stage, Stage::Index(_)))
     {
-        let mut position = 0;
-        step.stages.retain(|stage| {
-            position += 1;
-            position > first_index + 1 || !matches!(stage, Stage::KeepArray)
-        });
+        let after_index = step.stages.split_off(first_index);
+        step.stages
+            .retain(|stage| !matches!(stage, Stage::KeepArray));
+        step.stages.extend(after_index);
     } else if step.index_var.is_none() {
         step.focus = None;
         step.is_tuple = step.ancestor_label.is_some() || step.inner_tuple;
@@ -1776,6 +1815,18 @@ fn migrate_binding_markers(
                 }
             }
         }
+        // A group-by as a step: the path makes its operand a path.
+        other @ AstNode::ObjectTransform { .. } => match transform_as_path(other, state, depth + 1)
+        {
+            Ok(t) => {
+                step.node = t.node;
+                Ok((vec![step], t.pending))
+            }
+            Err(e) => {
+                drop_stages_iteratively(std::mem::take(&mut step.stages));
+                Err(e)
+            }
+        },
         other => match transform_node(other, state, depth + 1) {
             Ok(t) => {
                 step.node = t.node;
