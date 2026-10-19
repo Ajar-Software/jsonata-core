@@ -4816,10 +4816,11 @@ impl Evaluator {
     /// `f ~> g` for two functions: the function `λ($x) { g(f($x)) }`, as
     /// jsonata-js builds from its `chainAST`.
     fn compose_functions(f: JValue, g: JValue) -> JValue {
-        // Names no expression binds: `$x` would be visible to f and g.
-        const F: &str = "__chain_f";
-        const G: &str = "__chain_g";
-        const X: &str = "__chain_x";
+        // Names no expression can spell: `$x` or `$__chain_x` would be
+        // visible to f and g.
+        const F: &str = "chain f";
+        const G: &str = "chain g";
+        const X: &str = "chain x";
         let call = |name: &str, arg: AstNode| AstNode::Function {
             name: name.to_string(),
             args: vec![arg],

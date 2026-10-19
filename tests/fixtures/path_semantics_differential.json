@@ -10356,6 +10356,14 @@
    }
   },
   {
+   "expression": "($f := function($x){ [$__chain_x] }; ($f ~> $string)(5))",
+   "result": "[]"
+  },
+  {
+   "expression": "($f := function($x){ $exists($__chain_x) or $exists($__chain_f) }; ($f ~> $string)(1))",
+   "result": "false"
+  },
+  {
    "expression": "($f := /a/; $f(\"xa\"))",
    "result": {
     "match": "a",

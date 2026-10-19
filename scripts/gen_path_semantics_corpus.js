@@ -384,6 +384,8 @@ const EXTRA = [
   // The evaluated callback is held where no expression can name it.
   '$map([1,2,3], ($k := 1; function($v){ $exists($__hof_callback) }))',
   '($g := function(){ $__hof_callback }; $map([1], ($g)))', '$reduce([1,2], $random)',
+  '($f := function($x){ [$__chain_x] }; ($f ~> $string)(5))',
+  '($f := function($x){ $exists($__chain_x) or $exists($__chain_f) }; ($f ~> $string)(1))',
   // A regex literal is a function: called with a string, it gives the first
   // match, with `groups` and a `next` that gives the one after (#205).
   '($f := /a/; $f("xa"))', '"xa" ~> /a/', '$keys("xa" ~> /a/)', '"xa" ~> /a/ ~> $keys',
