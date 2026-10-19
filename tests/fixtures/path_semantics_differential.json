@@ -9746,6 +9746,419 @@
    }
   },
   {
+   "expression": "$$arr",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "$string($$arr)",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "$string($$missing)",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "$exists($$arr)",
+   "result": false
+  },
+  {
+   "expression": "{\"x\": $$arr}",
+   "result": {}
+  },
+  {
+   "expression": "$$arr[0]",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "$$v.w",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "arr.$$v",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "$$$",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "($arr := 5; $$arr)",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "($b := $$v; $b)",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "($$x := 2; $$x * 3)",
+   "result": 6
+  },
+  {
+   "expression": "$$",
+   "result": {
+    "a": [
+     {
+      "b": [
+       1
+      ]
+     }
+    ],
+    "o": [
+     {
+      "t": [
+       "x"
+      ]
+     },
+     {
+      "t": [
+       "y",
+       "z"
+      ]
+     }
+    ],
+    "n": [
+     [
+      1,
+      2
+     ],
+     [
+      3
+     ]
+    ],
+    "nn": [
+     [
+      [
+       1
+      ]
+     ]
+    ],
+    "one": {
+     "z": [
+      7
+     ]
+    },
+    "e": [],
+    "m": {
+     "k": {
+      "b": [
+       [
+        1
+       ]
+      ]
+     }
+    },
+    "x": {
+     "y": [
+      1
+     ]
+    },
+    "arr": [
+     1,
+     2,
+     3
+    ],
+    "objs": [
+     {
+      "p": 1
+     },
+     {
+      "p": 2
+     }
+    ],
+    "obj1": [
+     {
+      "p": 1
+     }
+    ],
+    "v": 5,
+    "het": [
+     {
+      "a": 1,
+      "b": 5
+     },
+     {
+      "b": 0,
+      "a": 4
+     }
+    ],
+    "acct": {
+     "Order": [
+      {
+       "id": "o1",
+       "P": [
+        {
+         "N": "A"
+        },
+        {
+         "N": "B"
+        }
+       ]
+      },
+      {
+       "id": "o2",
+       "P": [
+        {
+         "N": "C"
+        }
+       ]
+      }
+     ]
+    }
+   }
+  },
+  {
+   "expression": "$$.arr",
+   "result": [
+    1,
+    2,
+    3
+   ]
+  },
+  {
+   "expression": "$$.x.y",
+   "result": [
+    1
+   ]
+  },
+  {
+   "expression": "arr.function($v) { $v * 2 }()",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "arr.function($v) { $v * 2 }(3)",
+   "result": [
+    6,
+    6,
+    6
+   ]
+  },
+  {
+   "expression": "arr.function($v) { $v * 2 }($)",
+   "result": [
+    2,
+    4,
+    6
+   ]
+  },
+  {
+   "expression": "arr.function() { $ * 2 }()",
+   "result": [
+    2,
+    4,
+    6
+   ]
+  },
+  {
+   "expression": "arr.function($v, $w) { $v + $w }(1)",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "arr.function($v) { $v * 2 }(2, 3)",
+   "result": [
+    4,
+    4,
+    4
+   ]
+  },
+  {
+   "expression": "arr.(function($v) { $v * 2 })($)",
+   "result": [
+    2,
+    4,
+    6
+   ]
+  },
+  {
+   "expression": "arr.(function($v) { $v * 2 })()",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "arr.(function($v) { $v * 2 }($))",
+   "result": [
+    2,
+    4,
+    6
+   ]
+  },
+  {
+   "expression": "($f := function() { function($x) { $x + 1 } }; arr.$f()(10))",
+   "result": [
+    11,
+    11,
+    11
+   ]
+  },
+  {
+   "expression": "$type(arr.function($v, $w) { $v + $w }(?, 1))",
+   "result": "array"
+  },
+  {
+   "expression": "arr.function($v, $w) { $v + $w }(?, 1)(5)",
+   "result": [
+    6,
+    6,
+    6
+   ]
+  },
+  {
+   "expression": "(function($v, $w) { $v + $w })(?, 1)(5)",
+   "result": 6
+  },
+  {
+   "expression": "$type((function($v, $w) { $v + $w })(?, 1))",
+   "result": "function"
+  },
+  {
+   "expression": "arr.function($v) { $v }($)()",
+   "result": {
+    "$error": "T1006"
+   }
+  },
+  {
+   "expression": "arr.function($v) { $v }($)(1)",
+   "result": {
+    "$error": "T1006"
+   }
+  },
+  {
+   "expression": "(1)(2)",
+   "result": {
+    "$error": "T1006"
+   }
+  },
+  {
+   "expression": "(nope)(2)",
+   "result": {
+    "$error": "T1006"
+   }
+  },
+  {
+   "expression": "(\"x\")(?)",
+   "result": {
+    "$error": "T1008"
+   }
+  },
+  {
+   "expression": "[\"x\", \"y\"].($uppercase)($)",
+   "result": [
+    "X",
+    "Y"
+   ]
+  },
+  {
+   "expression": "arr.($string)()",
+   "result": [
+    "1",
+    "2",
+    "3"
+   ]
+  },
+  {
+   "expression": "objs.($sum)(p)",
+   "result": [
+    1,
+    2
+   ]
+  },
+  {
+   "expression": "($u := $uppercase; [\"x\", \"y\"].($u)($))",
+   "result": [
+    "X",
+    "Y"
+   ]
+  },
+  {
+   "expression": "($uppercase)(\"x\")",
+   "result": "X"
+  },
+  {
+   "expression": "($substring)(?, 1)(\"abc\")",
+   "result": "bc"
+  },
+  {
+   "expression": "[\"abc\", \"de\"].($substring)($, ?)(1)",
+   "result": [
+    "bc",
+    "e"
+   ]
+  },
+  {
+   "expression": "($f := $uppercase ~> $trim; [\" x\"].($f)($))",
+   "result": "X"
+  },
+  {
+   "expression": "($u := $string; arr.$u())",
+   "result": [
+    "1",
+    "2",
+    "3"
+   ]
+  },
+  {
+   "expression": "($f := function($x) { $x * 10 }; ($f)(?)(2))",
+   "result": 20
+  },
+  {
+   "expression": "(function() { (function($a) { $string($a) })(?) })()(\"x\")",
+   "result": "x"
+  },
+  {
+   "expression": "($g := function($a) { $uppercase($a) }; $f := function() { $g(?) }; $f()(\"x\"))",
+   "result": "X"
+  },
+  {
+   "expression": "($g := function($a, $b) { $a & $b }; $f := function($x) { $g($x, ?) }; $f(\"a\")(\"b\"))",
+   "result": "ab"
+  },
+  {
+   "expression": "($f := function() { (function($a, $b) { $a + $b })(1, ?) }; $f()(2))",
+   "result": 3
+  },
+  {
+   "expression": "$a$b",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "($a$b := 3; $a$b)",
+   "result": 3
+  },
+  {
+   "expression": "($$a$b := 4; $$a$b)",
+   "result": 4
+  },
+  {
+   "expression": "($a$b := 3; $$a$b)",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
    "expression": "a",
    "root": true,
    "result": [
