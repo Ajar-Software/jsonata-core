@@ -79,6 +79,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `$string := 5; $string(1)`, is T1006 (T1008 when partially applied) instead of calling the
   builtin. Deep recursion no longer slows down with depth when its body calls a builtin, since a
   lookup skips the caller frames.
+- **`$replace` drives a regex or a matcher function as jsonata-js does**
+  ([#198](https://github.com/txjmb/jsonata-core/issues/198)). A replacement function's
+  `$m.start` and `$m.end` count UTF-16 code units, so `$replace("éab", /a/, function($m)
+  {$string($m.start)})` is `"é1b"` (it was `"é2b"`). A zero-length match after the first is
+  D1004 with a replacement function too, so `$replace("abc", /x*/, function($m){"-"})` raises
+  it (it gave `"-a-b-c-"`), and is still found after the limit is reached. A first match may
+  be zero-length, so `$replace("abc", /x*$/, "-")` is `"abc-"` (it was D1004). A custom
+  matcher function works as the pattern, with a replacement string or function, and its
+  result is checked as `$match` checks it (T1010).
+- **`$$name` is the variable named `$name`**
+  ([#201](https://github.com/txjmb/jsonata-core/issues/201)). jsonata-js reads everything after
+  the leading `$` as the variable name, so `$$` is the variable `$` (the input) and `$$a` is
+  the variable `$a`, undefined unless bound. Over `{"a": [1, 2, 3]}`, `$$a` and `$string($$a)`
+  are undefined (they were `null` and `"null"`), `($a := 5; $$a)` is undefined, and
+  `($$x := 2; $$x * 3)` is 6. `$$` and `$$.a` are unchanged.
+- **A lambda called as a path step gets only the arguments written**
+  ([#202](https://github.com/txjmb/jsonata-core/issues/202)). The parser no longer passes the
+  context item as an implicit first argument, so over `{"a": [1, 2, 3]}`
+  `a.function($v) { $v * 2 }()` is undefined (it was `[2, 4, 6]`), as in jsonata-js; pass
+  `$` to get the items. A parenthesised step called the same way, as in
+  `a.(function($v) { $v * 2 })($)`, now works (it was T1006).
+- **Calling an expression applies any function value**, as jsonata-js does. `($uppercase)("x")`
+  is `"X"` and `a.($string)()` calls the builtin per item (both were errors). A `?` argument
+  partially applies it, so `(function($v, $w) { $v + $w })(?, 1)(5)` is 6, also as the last
+  expression of a lambda (`$f := function() { $g(?) }` was an error). Calling a
+  non-function, as in `(1)(2)`, raises T1006 (it had no code).
+- **`$` may appear inside a name**, as in jsonata-js: `$a$b` is the variable `a$b` and `a$b`
+  the field `a$b` (both were parse errors).
 - **`@` on a block, `*` or `$` outside a path binds nothing**
   ([#213](https://github.com/txjmb/jsonata-core/issues/213)). jsonata-js only applies a
   binding to a path step, so `(acct.Order.P)@$v` is the three products (it was the input,

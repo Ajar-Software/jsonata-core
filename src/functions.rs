@@ -6,6 +6,7 @@
 
 use crate::value::JValue;
 use indexmap::IndexMap;
+use std::borrow::Cow;
 use thiserror::Error;
 
 /// Function errors
@@ -512,152 +513,271 @@ pub mod string {
         crate::value::js_number_to_string(n)
     }
 
-    /// Helper to perform capture group substitution in replacement string
-    /// Handles $0 (full match), $1, $2, etc. (capture groups), and $$ (literal $)
-    fn substitute_capture_groups(
+    /// JavaScript's whitespace (`WhiteSpace` and `LineTerminator`), which
+    /// `parseInt`, `Number` and `trim` skip. Unlike `char::is_whitespace`,
+    /// it includes U+FEFF and leaves out U+0085.
+    pub fn is_js_whitespace(c: char) -> bool {
+        matches!(
+            c,
+            '\t' | '\n' | '\u{b}' | '\u{c}' | '\r' | ' ' | '\u{a0}' | '\u{1680}' | '\u{2000}'
+                ..='\u{200a}'
+                    | '\u{2028}'
+                    | '\u{2029}'
+                    | '\u{202f}'
+                    | '\u{205f}'
+                    | '\u{3000}'
+                    | '\u{feff}'
+        )
+    }
+
+    /// jsonata-js `replace`'s string replacer: appends `replacement` to `out`
+    /// with `$$` as `$`, `$0` as the match and `$n` as group `n` of
+    /// `group_count`. `group(i)` gives group `i + 1`, and is only asked for
+    /// the groups the replacement refers to, as jsonata-js converts only
+    /// those; a group that is `None` or doesn't exist gives nothing. As in
+    /// jsonata-js, `$` takes at most as many digits as the group count has
+    /// (falling back to one fewer when that number is out of range), they are
+    /// read with `parseInt`, and a `$` not followed by a number is kept.
+    pub fn substitute_capture_groups<'g, E>(
+        out: &mut String,
         replacement: &str,
         full_match: &str,
-        groups: &[Option<regex::Match>],
-    ) -> String {
-        let mut result = String::new();
+        group_count: usize,
+        mut group: impl FnMut(usize) -> Result<Option<Cow<'g, str>>, E>,
+    ) -> Result<(), E> {
+        let bytes = replacement.as_bytes();
         let mut position = 0;
-        let chars: Vec<char> = replacement.chars().collect();
-
-        while position < chars.len() {
-            if chars[position] == '$' {
-                position += 1;
-
-                if position >= chars.len() {
-                    // $ at end of string, treat as literal
-                    result.push('$');
-                    break;
+        let mut index = replacement.find('$');
+        while let Some(dollar) = index {
+            if position >= bytes.len() {
+                break;
+            }
+            out.push_str(&replacement[position..dollar]);
+            position = dollar + 1;
+            match bytes.get(position) {
+                Some(b'$') => {
+                    out.push('$');
+                    position += 1;
                 }
-
-                let next_ch = chars[position];
-
-                if next_ch == '$' {
-                    // $$ → literal $
-                    result.push('$');
+                Some(b'0') => {
+                    out.push_str(full_match);
                     position += 1;
-                } else if next_ch == '0' {
-                    // $0 → full match
-                    result.push_str(full_match);
-                    position += 1;
-                } else if next_ch.is_ascii_digit() {
-                    // Calculate maxDigits based on number of capture groups
-                    // This matches the JavaScript implementation's logic
-                    let max_digits = if groups.is_empty() {
+                }
+                _ => {
+                    let max_digits = if group_count == 0 {
                         1
                     } else {
-                        // floor(log10(groups.len())) + 1
-                        ((groups.len() as f64).log10().floor() as usize) + 1
+                        (group_count as f64).log10().floor() as usize + 1
                     };
-
-                    // Collect up to max_digits consecutive digits
-                    let mut digits_end = position;
-                    let mut digit_count = 0;
-                    while digits_end < chars.len()
-                        && chars[digits_end].is_ascii_digit()
-                        && digit_count < max_digits
-                    {
-                        digits_end += 1;
-                        digit_count += 1;
+                    let rest = &replacement[position..];
+                    let mut number = js_parse_int(rest, max_digits);
+                    if max_digits > 1 && number.is_some_and(|n| n > group_count as i64) {
+                        number = js_parse_int(rest, max_digits - 1);
                     }
-
-                    if digit_count > 0 {
-                        // Try to parse as group number
-                        let num_str: String = chars[position..digits_end].iter().collect();
-                        let mut group_num = num_str.parse::<usize>().unwrap();
-
-                        // If the group number is out of range and we collected more than 1 digit,
-                        // try parsing with one fewer digit (fallback logic)
-                        let mut used_digits = digit_count;
-                        if max_digits > 1 && group_num > groups.len() && digit_count > 1 {
-                            let fallback_str: String =
-                                chars[position..digits_end - 1].iter().collect();
-                            if let Ok(fallback_num) = fallback_str.parse::<usize>() {
-                                group_num = fallback_num;
-                                used_digits = digit_count - 1;
+                    match number {
+                        Some(n) => {
+                            if n >= 1 && (n as usize) <= group_count {
+                                if let Some(text) = group(n as usize - 1)? {
+                                    out.push_str(&text);
+                                }
                             }
+                            // `position += index.toString().length`, in UTF-16
+                            // units: the number was read from whitespace, a
+                            // sign and digits, each one unit long.
+                            position += rest
+                                .chars()
+                                .take(n.to_string().len())
+                                .map(char::len_utf8)
+                                .sum::<usize>();
                         }
-
-                        // Check if this is a valid group reference
-                        if groups.is_empty() {
-                            // No capture groups at all - $n is replaced with empty string
-                            // and position advances past the digits (per JS implementation)
-                            position += used_digits;
-                        } else if group_num > 0 && group_num <= groups.len() {
-                            // Valid group reference
-                            if let Some(m) = &groups[group_num - 1] {
-                                result.push_str(m.as_str());
-                            }
-                            // If group didn't match (None), add nothing (empty string)
-                            position += used_digits;
-                        } else {
-                            // Group number out of range - replace with empty string
-                            // and advance position (per JS implementation)
-                            position += used_digits;
-                        }
-                    } else {
-                        // No digits found (shouldn't happen since we checked next_ch.is_ascii_digit())
-                        result.push('$');
+                        None => out.push('$'),
                     }
-                } else {
-                    // $ followed by non-digit, treat as literal $
-                    result.push('$');
-                    // Don't consume the next character, let it be processed in next iteration
                 }
-            } else {
-                result.push(chars[position]);
-                position += 1;
+            }
+            index = replacement[position..].find('$').map(|i| i + position);
+        }
+        out.push_str(&replacement[position..]);
+        Ok(())
+    }
+
+    /// JavaScript `parseInt(text.substring(0, max_len), 10)`, where
+    /// `max_len` counts UTF-16 units: leading whitespace, an optional sign,
+    /// then the digits. `None` is NaN.
+    fn js_parse_int(text: &str, max_len: usize) -> Option<i64> {
+        let mut units = 0;
+        let mut chars = text
+            .chars()
+            .take_while(|c| {
+                units += c.len_utf16();
+                units <= max_len
+            })
+            .skip_while(|c| is_js_whitespace(*c))
+            .peekable();
+        let negative = match chars.peek() {
+            Some('-') => true,
+            Some('+') => false,
+            _ => return parse_digits(chars),
+        };
+        chars.next();
+        parse_digits(chars).map(|n| if negative { -n } else { n })
+    }
+
+    fn parse_digits(chars: impl Iterator<Item = char>) -> Option<i64> {
+        let mut digits = chars.map_while(|c| c.to_digit(10)).peekable();
+        digits.peek()?;
+        digits.try_fold(0i64, |n, d| n.checked_mul(10)?.checked_add(i64::from(d)))
+    }
+
+    /// One match of a regex, as jsonata-js's regex closure (`evaluateRegex`)
+    /// describes it. `byte_start` and `byte_end` index the Rust string; a
+    /// group that didn't take part in the match is `None`. `utf16_span` is
+    /// the match's `start` and `end` in UTF-16 code units, as JavaScript
+    /// strings count them, when the cursor counts them (see
+    /// `RegexMatches::counting_utf16`).
+    pub struct RegexMatch<'s> {
+        pub text: &'s str,
+        pub byte_start: usize,
+        pub byte_end: usize,
+        pub utf16_span: Option<(usize, usize)>,
+        pub groups: Vec<Option<&'s str>>,
+    }
+
+    impl RegexMatch<'_> {
+        /// The `{match, start, end, groups}` object jsonata-js hands a
+        /// `$replace` replacement function. jsonata-js also gives it a `next`
+        /// function, which isn't reproduced here. Needs `utf16_span`.
+        pub fn to_object(&self) -> JValue {
+            let (start, end) = self.utf16_span.expect("the cursor counts UTF-16 offsets");
+            let mut obj = IndexMap::with_capacity(4);
+            obj.insert("match".to_string(), JValue::string(self.text));
+            obj.insert("start".to_string(), JValue::from(start as i64));
+            obj.insert("end".to_string(), JValue::from(end as i64));
+            obj.insert("groups".to_string(), self.groups_value());
+            JValue::object(obj)
+        }
+
+        fn groups_value(&self) -> JValue {
+            JValue::array(
+                self.groups
+                    .iter()
+                    .map(|group| group.map_or(JValue::Undefined, JValue::string))
+                    .collect(),
+            )
+        }
+    }
+
+    /// The successive matches of a regex over a string, following
+    /// jsonata-js `evaluateRegex`: the first call to `next_match` is the
+    /// closure applied to the string, each later one is the previous match's
+    /// `next()`. jsonata-js regexes are always global, so a `g` flag changes
+    /// nothing. A later match that is zero-length is D1004, since matching
+    /// would never move on; the first match may be zero-length.
+    pub struct RegexMatches<'r, 's> {
+        re: &'r Regex,
+        s: &'s str,
+        /// Where the next search starts (`lastIndex`); `None` before the first.
+        from: Option<usize>,
+        /// Whether to fill in each match's `utf16_span`.
+        count_utf16: bool,
+        /// The UTF-16 offset of byte `counted_to`, kept as the search moves on.
+        counted_to: usize,
+        utf16_index: usize,
+    }
+
+    impl<'r, 's> RegexMatches<'r, 's> {
+        pub fn new(re: &'r Regex, s: &'s str) -> Self {
+            RegexMatches {
+                re,
+                s,
+                from: None,
+                count_utf16: false,
+                counted_to: 0,
+                utf16_index: 0,
             }
         }
 
-        result
+        /// Fill in each match's `utf16_span`, which costs a pass over the
+        /// string; only what is visible to an expression needs it.
+        pub fn counting_utf16(mut self) -> Self {
+            self.count_utf16 = true;
+            self
+        }
+
+        pub fn next_match(&mut self) -> Result<Option<RegexMatch<'s>>, FunctionError> {
+            let start = match self.from {
+                None => 0,
+                Some(from) if from >= self.s.len() => return Ok(None),
+                Some(from) => from,
+            };
+            // A regex without groups needs only the match's bounds, which
+            // the regex finds faster than its captures.
+            let (found, groups) = if self.re.captures_len() == 1 {
+                match self.re.find_at(self.s, start) {
+                    Some(found) => (found, Vec::new()),
+                    None => return self.end(),
+                }
+            } else {
+                match self.re.captures_at(self.s, start) {
+                    Some(caps) => {
+                        let groups = (1..caps.len())
+                            .map(|i| caps.get(i).map(|group| group.as_str()))
+                            .collect();
+                        (caps.get(0).expect("group 0 is the whole match"), groups)
+                    }
+                    None => return self.end(),
+                }
+            };
+            if self.from.is_some() && found.is_empty() {
+                return Err(FunctionError::RuntimeError(
+                    "D1004: Regular expression matches zero length string".to_string(),
+                ));
+            }
+            self.from = Some(found.end());
+            let utf16_span = self.count_utf16.then(|| {
+                self.utf16_index += self.s[self.counted_to..found.start()]
+                    .encode_utf16()
+                    .count();
+                self.counted_to = found.start();
+                let end = self.utf16_index + found.as_str().encode_utf16().count();
+                (self.utf16_index, end)
+            });
+            Ok(Some(RegexMatch {
+                text: found.as_str(),
+                byte_start: found.start(),
+                byte_end: found.end(),
+                utf16_span,
+                groups,
+            }))
+        }
+
+        fn end(&mut self) -> Result<Option<RegexMatch<'s>>, FunctionError> {
+            self.from = Some(self.s.len());
+            Ok(None)
+        }
     }
 
-    /// $match(str, regex, limit) with a regex, following jsonata-js `match` and its regex
-    /// closure (`evaluateRegex`): every match from the start of the string, up
-    /// to `limit`, each as `{match, index, groups}`, in a sequence. jsonata-js
-    /// regexes are always global, so a `g` flag changes nothing. As in jsonata-js,
-    /// the next match is looked for after each one, even when the limit has
-    /// been reached, and a zero-length match found that way is D1004, since
-    /// matching would never move on. `index` counts UTF-16 code units, as
-    /// JavaScript strings do.
+    /// $match(str, regex, limit) with a regex, following jsonata-js `match`:
+    /// every match from the start of the string (see `RegexMatches`), up to
+    /// `limit`, each as `{match, index, groups}`, in a sequence. As in
+    /// jsonata-js, the next match is looked for after each one, even when the
+    /// limit has been reached, so a zero-length match found that way is still
+    /// D1004. `index` counts UTF-16 code units.
     pub fn match_regex(re: &Regex, s: &str, limit: Option<usize>) -> Result<JValue, FunctionError> {
         let mut results = Vec::new();
         if limit == Some(0) {
             return Ok(JValue::sequence(results));
         }
-        // The UTF-16 offset of `counted_to`, kept as the search moves forward.
-        let (mut counted_to, mut utf16_index) = (0, 0);
-        let mut next = re.captures(s);
-        while let Some(caps) = next {
-            let found = caps.get(0).expect("group 0 is the whole match");
-            utf16_index += s[counted_to..found.start()].encode_utf16().count();
-            counted_to = found.start();
-            let groups = (1..caps.len())
-                .map(|i| match caps.get(i) {
-                    Some(group) => JValue::string(group.as_str()),
-                    None => JValue::Undefined,
-                })
-                .collect();
+        let mut matches = RegexMatches::new(re, s).counting_utf16();
+        let mut current = matches.next_match()?;
+        while let Some(found) = current {
+            let (index, _) = found.utf16_span.expect("counting UTF-16 offsets");
             let mut match_obj = IndexMap::with_capacity(3);
-            match_obj.insert("match".to_string(), JValue::string(found.as_str()));
-            match_obj.insert("index".to_string(), JValue::from(utf16_index as i64));
-            match_obj.insert("groups".to_string(), JValue::array(groups));
+            match_obj.insert("match".to_string(), JValue::string(found.text));
+            match_obj.insert("index".to_string(), JValue::from(index as i64));
+            match_obj.insert("groups".to_string(), found.groups_value());
             results.push(JValue::object(match_obj));
 
-            next = if found.end() >= s.len() {
-                None
-            } else {
-                re.captures_at(s, found.end())
-            };
-            if next.as_ref().is_some_and(|caps| caps[0].is_empty()) {
-                return Err(FunctionError::RuntimeError(
-                    "D1004: Regular expression matches zero length string".to_string(),
-                ));
-            }
+            current = matches.next_match()?;
             if limit.is_some_and(|limit| results.len() >= limit) {
                 break;
             }
@@ -665,7 +785,42 @@ pub mod string {
         Ok(JValue::sequence(results))
     }
 
-    /// $replace(str, pattern, replacement, limit) - Replace substring or regex matches
+    /// jsonata-js `replace`'s loop over the matches of a regex: each match,
+    /// up to `limit`, is replaced by what `replacer` appends to the result
+    /// for it. As in jsonata-js, the next match is looked for after each
+    /// replacement, even when the limit has been reached, so a zero-length
+    /// match found that way is still D1004.
+    pub fn replace_regex<E: From<FunctionError>>(
+        mut matches: RegexMatches,
+        limit: Option<usize>,
+        mut replacer: impl FnMut(&RegexMatch, &mut String) -> Result<(), E>,
+    ) -> Result<String, E> {
+        let s = matches.s;
+        if limit == Some(0) {
+            return Ok(s.to_string());
+        }
+        let mut result = String::with_capacity(s.len());
+        let mut position = 0;
+        let mut count = 0;
+        let mut current = matches.next_match()?;
+        while let Some(found) = current {
+            if limit.is_some_and(|limit| count >= limit) {
+                break;
+            }
+            result.push_str(&s[position..found.byte_start]);
+            replacer(&found, &mut result)?;
+            position = found.byte_end;
+            count += 1;
+            current = matches.next_match()?;
+        }
+        result.push_str(&s[position..]);
+        Ok(result)
+    }
+
+    /// $replace(str, pattern, replacement, limit) with a substring or regex
+    /// pattern and a replacement string. In the replacement, `$0` is the
+    /// match and `$1`... its groups when the pattern is a regex; a substring
+    /// pattern's replacement is used as it is, as in jsonata-js.
     pub fn replace(
         s: &str,
         pattern: &JValue,
@@ -675,40 +830,11 @@ pub mod string {
         // Check if pattern is a regex
         if let Some((pat, flags)) = extract_regex(pattern) {
             let re = build_regex(&pat, &flags)?;
-
-            let mut count = 0;
-            let mut last_match = 0;
-            let mut output = String::new();
-
-            for cap in re.captures_iter(s) {
-                if limit.is_some_and(|lim| count >= lim) {
-                    break;
-                }
-
-                let m = cap.get(0).unwrap();
-
-                // D1004: Regular expression matches zero length string
-                if m.as_str().is_empty() {
-                    return Err(FunctionError::RuntimeError(
-                        "D1004: Regular expression matches zero length string".to_string(),
-                    ));
-                }
-
-                output.push_str(&s[last_match..m.start()]);
-
-                // Collect capture groups
-                let groups: Vec<Option<regex::Match>> =
-                    (1..cap.len()).map(|i| cap.get(i)).collect();
-
-                // Perform capture group substitution
-                let substituted = substitute_capture_groups(replacement, m.as_str(), &groups);
-                output.push_str(&substituted);
-
-                last_match = m.end();
-                count += 1;
-            }
-
-            output.push_str(&s[last_match..]);
+            let output = replace_regex(RegexMatches::new(&re, s), limit, |found, out| {
+                substitute_capture_groups(out, replacement, found.text, found.groups.len(), |i| {
+                    Ok::<_, FunctionError>(found.groups[i].map(Cow::Borrowed))
+                })
+            })?;
             return Ok(JValue::string(output));
         }
 
