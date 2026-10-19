@@ -5,10 +5,19 @@ name: Compare Benchmarks (Mac Mini)
 # run, which ran on a different GitHub-hosted runner, so runner speed alone
 # can move every test 15-50% in one direction. This builds both refs here
 # and times them in alternating rounds (benchmarks/python/ab_compare.py), so
-# only the code differs. Read-only: it reports to the job summary and log,
-# and touches nothing in git.
+# only the code differs. It touches nothing in git.
+#
+# Two ways to start it:
+# - Run it from the Actions tab with any two refs.
+# - Add the `benchmark-mac` label to a PR from this repository. It compares
+#   the PR's base and head commits, posts the table as a PR comment and
+#   removes the label, so adding it again runs it again. Labels need triage
+#   access, and PRs from forks are skipped, so outside code never runs on
+#   the self-hosted runner.
 
 on:
+  pull_request:
+    types: [labeled]
   workflow_dispatch:
     inputs:
       base_ref:
@@ -25,17 +34,27 @@ on:
 
 permissions:
   contents: read
-
-# One benchmark at a time on the shared runner, so runs don't skew each other.
-concurrency:
-  group: mac-mini-benchmark-compare
-  cancel-in-progress: false
+  pull-requests: write
+  issues: write
 
 jobs:
   compare:
     name: Compare Benchmarks (Mac Mini)
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.label.name == 'benchmark-mac' &&
+       github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: [self-hosted, macOS, ARM64]
     timeout-minutes: 45
+    # One comparison at a time on the shared runner, so runs don't skew each
+    # other. At job level, so a skipped run (another label) holds no slot.
+    concurrency:
+      group: mac-mini-benchmark-compare
+      cancel-in-progress: false
+    env:
+      BASE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || inputs.base_ref }}
+      HEAD_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || inputs.head_ref }}
+      ROUNDS: ${{ inputs.rounds || '12' }}
 
     steps:
       - name: Checkout
@@ -60,10 +79,17 @@ jobs:
       - name: Install maturin
         run: uv pip install --upgrade maturin
 
-      - name: Build both refs
+      - name: Remove the trigger label
+        if: github.event_name == 'pull_request'
         env:
-          BASE_REF: ${{ inputs.base_ref }}
-          HEAD_REF: ${{ inputs.head_ref }}
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          curl -fsS -X DELETE -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/issues/$PR/labels/benchmark-mac" > /dev/null || true
+
+      - name: Build both refs
         run: |
           set -euo pipefail
           # The runner is persistent, so clear anything a previous run left.
@@ -84,21 +110,40 @@ jobs:
           done
 
       - name: Compare
-        env:
-          ROUNDS: ${{ inputs.rounds }}
-          BASE_REF: ${{ inputs.base_ref }}
-          HEAD_REF: ${{ inputs.head_ref }}
         run: |
           set -euo pipefail
           python benchmarks/python/ab_compare.py --rounds "$ROUNDS" --markdown \
-            "$RUNNER_TEMP/ab/pkg-base" "$RUNNER_TEMP/ab/pkg-head" > "$RUNNER_TEMP/ab/report.md"
+            "$RUNNER_TEMP/ab/pkg-base" "$RUNNER_TEMP/ab/pkg-head" > "$RUNNER_TEMP/ab/table.md"
           {
             echo "## Benchmark comparison (Mac Mini)"
             echo
-            echo "Base: \`$BASE_REF\` (\`${base_sha:0:7}\`), head: \`$HEAD_REF\` (\`${head_sha:0:7}\`)"
+            echo "Base \`${base_sha:0:7}\`, head \`${head_sha:0:7}\`, measured on the same machine."
             echo
-            cat "$RUNNER_TEMP/ab/report.md"
-          } | tee -a "$GITHUB_STEP_SUMMARY"
+            cat "$RUNNER_TEMP/ab/table.md"
+          } > "$RUNNER_TEMP/ab/report.md"
+          tee -a "$GITHUB_STEP_SUMMARY" < "$RUNNER_TEMP/ab/report.md"
+
+      - name: Post the table on the PR
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          python - <<'EOF'
+          import json, os, urllib.request
+          body = open(os.path.join(os.environ["RUNNER_TEMP"], "ab", "report.md")).read()
+          url = f"{os.environ['GITHUB_API_URL']}/repos/{os.environ['GITHUB_REPOSITORY']}/issues/{os.environ['PR']}/comments"
+          request = urllib.request.Request(
+              url,
+              data=json.dumps({"body": body}).encode(),
+              headers={
+                  "Authorization": f"Bearer {os.environ['GH_TOKEN']}",
+                  "Accept": "application/vnd.github+json",
+              },
+              method="POST",
+          )
+          urllib.request.urlopen(request).read()
+          EOF
 
       - name: Clean up
         if: always()

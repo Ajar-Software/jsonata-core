@@ -377,8 +377,9 @@ python benchmarks/python/ab_compare.py --rounds 12 BASE_DIR HEAD_DIR
 ```
 
 The **Compare Benchmarks (Mac Mini)** workflow (`.github/workflows/benchmark-compare.yml`)
-runs the same comparison on the self-hosted Mac Mini for any two refs and writes the table
-to the job summary.
+runs the same comparison on the self-hosted Mac Mini. Run it from the Actions tab with any
+two refs, or add the `benchmark-mac` label to a PR from this repository to compare its base
+and head; the table goes to the job summary and, for a label, a PR comment.
 
 ## Contributing
 
