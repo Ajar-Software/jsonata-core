@@ -14,7 +14,8 @@
 // {"$undefined": true} and an error as {"$error": "<code>"}.
 //
 // Usage: node scripts/gen_path_semantics_corpus.js
-// Writes: tests/fixtures/path_semantics_differential.json
+// Writes: tests/fixtures/path_semantics_differential.json and
+//         tests/fixtures/path_semantics_combinations.json (over DATA)
 
 const fs = require('fs');
 const path = require('path');
@@ -236,6 +237,34 @@ const ROOT_EXPRESSIONS = [
   '$sort(a)', '$reverse(a)', 'a ~> $count', '(a)', '[1].(a[0])', '[1].{"x": $$.a[0]}',
 ];
 
+// Operator combinations (#212). The reference suite tries each operator on
+// its own, and several divergences hid in pairs it never tries: `%` in a
+// group-by, a `%` sort over a parenthesized path, a `%` filter on a whole
+// block. Every base is crossed with up to two operators, then a suffix step.
+// The results go to their own fixture, one case per line, so a regenerated
+// diff shows which combinations changed.
+const COMBO_BASES = [
+  'acct.Order.P', '(acct.Order.P)', 'acct.Order.(P)', 'acct.(Order.P)', 'acct.Order',
+  'o.t', '(o.t)', 'objs', '(objs)', '$', '*',
+];
+const COMBO_OPS = [
+  '[0]', '[-1]', '[N = "C"]', '[%.id = "o1"]', '[]', '^(N)', '^(>%.id)', '^($)',
+  '{N: N}', '{N: %.id}', '{"k": $count($)}', '#$i', '@$v',
+];
+const COMBO_SUFFIXES = ['', '.N', '.%', '.%.id', '.$', '.{"i": $i}'];
+
+function comboExpressions() {
+  const out = [];
+  for (const base of COMBO_BASES) {
+    for (const suffix of COMBO_SUFFIXES) out.push(base + suffix);
+    for (const op1 of COMBO_OPS) {
+      for (const suffix of COMBO_SUFFIXES) out.push(base + op1 + suffix);
+      for (const op2 of COMBO_OPS) out.push(base + op1 + op2);
+    }
+  }
+  return [...new Set(out)];
+}
+
 function encode(v) {
   if (typeof v === 'undefined') return { $undefined: true };
   if (Array.isArray(v)) return Array.prototype.map.call(v, encode);
@@ -281,6 +310,19 @@ async function main() {
   const out = path.join(__dirname, '..', 'tests', 'fixtures', 'path_semantics_differential.json');
   fs.writeFileSync(out, JSON.stringify(fixture, null, 1) + '\n');
   console.log(`wrote ${cases.length} cases to ${path.relative(process.cwd(), out)}`);
+
+  const combos = [];
+  for (const expression of comboExpressions()) {
+    combos.push({ expression, result: await evaluate(expression, DATA) });
+  }
+  const comboOut = path.join(__dirname, '..', 'tests', 'fixtures', 'path_semantics_combinations.json');
+  const lines = combos.map((c) => ' ' + JSON.stringify(c));
+  fs.writeFileSync(
+    comboOut,
+    '{\n "_comment": ' + JSON.stringify(fixture._comment) + ',\n "reference": ' +
+      JSON.stringify(fixture.reference) + ',\n "cases": [\n' + lines.join(',\n') + '\n ]\n}\n'
+  );
+  console.log(`wrote ${combos.length} cases to ${path.relative(process.cwd(), comboOut)}`);
 }
 
 main().catch((e) => {

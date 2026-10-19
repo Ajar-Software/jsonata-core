@@ -6,7 +6,11 @@
 //! function arguments and map stages. Cases marked `root` run on a
 //! top-level array instead of an object.
 //!
-//! Regenerate the fixture with `node scripts/gen_path_semantics_corpus.js`.
+//! A second test runs generated operator combinations (#212) from
+//! `fixtures/path_semantics_combinations.json`; the ones that still differ
+//! are listed by issue in `fixtures/path_semantics_combinations_known.json`.
+//!
+//! Regenerate both fixtures with `node scripts/gen_path_semantics_corpus.js`.
 //! Set `PATH_SEMANTICS_VERBOSE=1` to print every divergence.
 
 use jsonata_core::evaluator::Evaluator;
@@ -84,22 +88,22 @@ fn error_matches(expected: &Value, message: &str) -> bool {
     }
 }
 
-#[test]
-fn path_semantics_match_jsonata_js() {
-    let fixture: Value =
-        serde_json::from_str(include_str!("fixtures/path_semantics_differential.json")).unwrap();
-    let object_data = JValue::from(fixture["data"].clone());
-    let root_data = JValue::from(fixture["root_data"].clone());
+/// Runs each fixture case on both engines and returns the cases whose value
+/// differs from jsonata-js, as `(engine, expression)`.
+fn divergences(
+    fixture: &Value,
+    object_data: &JValue,
+    root_data: &JValue,
+) -> Vec<(&'static str, String)> {
     let verbose = std::env::var_os("PATH_SEMANTICS_VERBOSE").is_some();
-
     let mut divergences = Vec::new();
     for case in fixture["cases"].as_array().unwrap() {
         let src = case["expression"].as_str().unwrap();
         let expected = norm(&case["result"]);
         let data = if case["root"] == true {
-            &root_data
+            root_data
         } else {
-            &object_data
+            object_data
         };
         let expr = match Expression::compile(src) {
             Ok(expr) => expr,
@@ -132,14 +136,67 @@ fn path_semantics_match_jsonata_js() {
             }
         }
     }
+    divergences
+}
 
-    let known: Vec<(&str, String)> = KNOWN_DIVERGENCES
-        .iter()
-        .map(|(e, s)| (*e, s.to_string()))
-        .collect();
+fn assert_known(divergences: Vec<(&str, String)>, known: &[(&str, &str)], list: &str) {
+    let known: Vec<(&str, String)> = known.iter().map(|(e, s)| (*e, s.to_string())).collect();
     assert_eq!(
         divergences, known,
-        "divergences from jsonata-js changed; update KNOWN_DIVERGENCES \
+        "divergences from jsonata-js changed; update {list} \
          (run with PATH_SEMANTICS_VERBOSE=1 to see them)"
+    );
+}
+
+#[test]
+fn path_semantics_match_jsonata_js() {
+    let fixture: Value =
+        serde_json::from_str(include_str!("fixtures/path_semantics_differential.json")).unwrap();
+    let object_data = JValue::from(fixture["data"].clone());
+    let root_data = JValue::from(fixture["root_data"].clone());
+    assert_known(
+        divergences(&fixture, &object_data, &root_data),
+        KNOWN_DIVERGENCES,
+        "KNOWN_DIVERGENCES",
+    );
+}
+
+/// Operator combinations (#212), over the main fixture's `data`. Cases that
+/// still differ are listed by issue in
+/// `fixtures/path_semantics_combinations_known.json`; every engine diverges
+/// on the same ones, so the list holds expressions only.
+#[test]
+fn path_combinations_match_jsonata_js() {
+    let main: Value =
+        serde_json::from_str(include_str!("fixtures/path_semantics_differential.json")).unwrap();
+    let fixture: Value =
+        serde_json::from_str(include_str!("fixtures/path_semantics_combinations.json")).unwrap();
+    let known: Value = serde_json::from_str(include_str!(
+        "fixtures/path_semantics_combinations_known.json"
+    ))
+    .unwrap();
+    let object_data = JValue::from(main["data"].clone());
+
+    let mut actual: Vec<String> = divergences(&fixture, &object_data, &JValue::Undefined)
+        .into_iter()
+        .map(|(_, src)| src)
+        .collect();
+    let mut expected: Vec<String> = known["issues"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|issue| issue["expressions"].as_array().unwrap())
+        .map(|e| e.as_str().unwrap().to_string())
+        .collect();
+    actual.sort();
+    actual.dedup();
+    expected.sort();
+    let new: Vec<&String> = actual.iter().filter(|e| !expected.contains(e)).collect();
+    let fixed: Vec<&String> = expected.iter().filter(|e| !actual.contains(e)).collect();
+    assert!(
+        new.is_empty() && fixed.is_empty(),
+        "combination divergences changed; update \
+         fixtures/path_semantics_combinations_known.json \
+         (run with PATH_SEMANTICS_VERBOSE=1 to see them)\n  new: {new:?}\n  now matching: {fixed:?}"
     );
 }
