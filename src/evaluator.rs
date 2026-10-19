@@ -3890,10 +3890,14 @@ impl Evaluator {
 
         // A request to keep tuple streams reaches only a tail path: jsonata-js
         // marks a path or a block `tuple`, never the expressions inside them.
+        // A sort is a step of a path there.
         if self.keep_tuple_stream
             && !matches!(
                 node,
-                AstNode::Path { .. } | AstNode::Block(_) | AstNode::FunctionApplication(_)
+                AstNode::Path { .. }
+                    | AstNode::Sort { .. }
+                    | AstNode::Block(_)
+                    | AstNode::FunctionApplication(_)
             )
         {
             self.keep_tuple_stream = false;
@@ -4099,7 +4103,8 @@ impl Evaluator {
                 // group-by key/value expressions can read the carried `$focus`
                 // bindings off each wrapper (e.g. `...@$e...{ $e.FirstName: ... }`).
                 let saved_keep = self.keep_tuple_stream;
-                self.keep_tuple_stream = Self::is_tuple_path_node(input);
+                self.keep_tuple_stream =
+                    Self::is_tuple_path_node(input) || Self::sorts_tuples(input);
                 let input_value = self.evaluate_internal(input, data);
                 self.keep_tuple_stream = saved_keep;
                 let input_value = input_value?;
@@ -4431,16 +4436,31 @@ impl Evaluator {
                 // Keep the input path's tuple wrappers so the sort terms can read
                 // the carried `%`/`$focus`/`$index` bindings per element.
                 let saved = self.keep_tuple_stream;
-                self.keep_tuple_stream = Self::is_tuple_path_node(input);
+                self.keep_tuple_stream =
+                    Self::is_tuple_path_node(input) || Self::sorts_tuples(input);
                 let value = self.evaluate_internal(input, data);
+                // The sort terms are expressions of their own, which keep no
+                // tuple stream.
+                self.keep_tuple_stream = false;
+                let sorted = value.and_then(|value| self.evaluate_sort(&value, terms));
                 self.keep_tuple_stream = saved;
-                let mut sorted = self.evaluate_sort(&value?, terms)?;
-                // Sorting tuples gives a plain array of them in jsonata-js,
-                // which is no longer marked as a tuple stream (#214).
+                let mut sorted = sorted?;
                 if let JValue::Array(arr) = &mut sorted {
-                    arr.sorted_tuples = arr
+                    if arr
                         .first()
-                        .is_some_and(|f| matches!(f, JValue::Object(o) if is_tuple_object(o)));
+                        .is_some_and(|f| matches!(f, JValue::Object(o) if is_tuple_object(o)))
+                    {
+                        if saved {
+                            // Sorting tuples gives a plain array of them in
+                            // jsonata-js, which is no longer marked as a tuple
+                            // stream (#214).
+                            arr.sorted_tuples = true;
+                        } else {
+                            // Nothing around the sort reads the tuples, so
+                            // the path ends here and gives each one's value.
+                            sorted = JValue::sequence(arr.iter().map(tuple_focus_value).collect());
+                        }
+                    }
                 }
                 // jsonata-js sorts as a step of the path, so the path's own
                 // result rules apply after the sort: a tuple-stream path
@@ -4757,6 +4777,8 @@ impl Evaluator {
         };
 
         let mut tuples: Option<Vec<JValue>> = None;
+        // Whether `tuples` came straight from a sort of tuples (#214).
+        let mut sorted_tuples = false;
         let mut result = JValue::Undefined;
         for (index, step) in steps.iter().enumerate() {
             if tuples.is_some() || step.is_tuple || Self::step_creates_tuple(step) {
@@ -4790,6 +4812,7 @@ impl Evaluator {
                     None => result.clone(),
                 };
                 tuples = Some(self.create_tuple_stream(step, &source, index == 0)?);
+                sorted_tuples = false;
                 continue;
             }
 
@@ -4820,7 +4843,15 @@ impl Evaluator {
                 }
                 self.apply_filter_stages(value, &step.stages)?
             } else {
-                self.evaluate_step(step, items, previous.as_ref(), index + 1 == steps.len())?
+                // A sort step gives its tuples, which the rest of the path reads.
+                let saved = self.keep_tuple_stream;
+                if matches!(step.node, AstNode::Sort { .. }) {
+                    self.keep_tuple_stream = true;
+                }
+                let value =
+                    self.evaluate_step(step, items, previous.as_ref(), index + 1 == steps.len());
+                self.keep_tuple_stream = saved;
+                value?
             };
 
             if result.is_undefined() || matches!(&result, JValue::Array(arr) if arr.is_empty()) {
@@ -4836,6 +4867,7 @@ impl Evaluator {
                     .is_some_and(|f| matches!(f, JValue::Object(o) if is_tuple_object(o)))
                 {
                     tuples = Some(arr.to_vec());
+                    sorted_tuples = Self::sorts_tuples(&step.node);
                     continue;
                 }
             }
@@ -4844,7 +4876,9 @@ impl Evaluator {
         if let Some(stream) = tuples {
             result = if keep_tuple_stream {
                 // An enclosing sort or group-by reads the carried bindings.
-                JValue::array(stream)
+                let mut arr = JArray::new(stream);
+                arr.sorted_tuples = sorted_tuples;
+                JValue::Array(arr)
             } else {
                 JValue::sequence(stream.iter().map(tuple_focus_value).collect())
             };
@@ -5230,6 +5264,18 @@ impl Evaluator {
         }
     }
 
+    /// True for a sort of a tuple stream, alone or with stages after it, whose
+    /// tuples a sort or group-by around it sees as plain objects (#214).
+    fn sorts_tuples(node: &AstNode) -> bool {
+        match node {
+            AstNode::Sort { input, .. } => {
+                Self::is_tuple_path_node(input) || Self::sorts_tuples(input)
+            }
+            AstNode::Path { steps } if steps.len() == 1 => Self::sorts_tuples(&steps[0].node),
+            _ => false,
+        }
+    }
+
     /// True for a one-step path whose step is an expression jsonata-js does
     /// not treat as a path -- `[...][0]`, `$x[]`, `*[0]`, `(expr)[]` -- which
     /// this parser represents as a one-step path only to carry the postfix
@@ -5403,7 +5449,11 @@ impl Evaluator {
                 // The sort's own input path (`arr` in `arr^($)#$i`) gives what
                 // it orders. Over a tuple path the sort returns the tuples,
                 // whose bindings carry into the new stream.
-                self.evaluate_internal(&step.node, input)?
+                let saved = self.keep_tuple_stream;
+                self.keep_tuple_stream = true;
+                let value = self.evaluate_internal(&step.node, input);
+                self.keep_tuple_stream = saved;
+                value?
             };
             let sorted_arr: Vec<JValue> = match sorted {
                 JValue::Array(a) => a.iter().cloned().collect(),
@@ -8328,15 +8378,15 @@ impl Evaluator {
             JValue::Array(arr) => arr.clone(),
             other => return Ok(other.clone()),
         };
-        // A sort of sorted tuples orders them as plain objects, as
-        // jsonata-js does; the result keeps the tuples themselves.
-        let plain = array.sorted_tuples.then(|| sorted_tuple_items(&array));
-
         // jsonata-js `fn.sort` returns an input of length 0 or 1 as is (still a
         // sequence, if it was one), and builds a new plain array otherwise.
         if array.len() <= 1 {
             return Ok(JValue::Array(array));
         }
+
+        // A sort of sorted tuples orders them as plain objects, as
+        // jsonata-js does; the result keeps the tuples themselves.
+        let plain = array.sorted_tuples.then(|| sorted_tuple_items(&array));
 
         // Evaluate sort keys for each element
         let mut indexed_array: Vec<(usize, Vec<JValue>)> = Vec::new();

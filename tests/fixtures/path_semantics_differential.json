@@ -6958,6 +6958,100 @@
    ]
   },
   {
+   "expression": "acct.Order.P^(>%.id)[$count($.'@') > 0]{N: N}",
+   "result": {}
+  },
+  {
+   "expression": "acct.Order.P^(>%.id)[0]{N: N}",
+   "result": {}
+  },
+  {
+   "expression": "acct.Order.P^(>%.id)[true]{N: N}",
+   "result": {}
+  },
+  {
+   "expression": "acct.Order.P^(>%.id)[[0, 1]]{N: N}",
+   "result": {}
+  },
+  {
+   "expression": "acct.Order.P^(>%.id)[N = \"C\"]^(N)",
+   "result": {
+    "$undefined": true
+   }
+  },
+  {
+   "expression": "($x := acct.Order.P^(>%.id); $x[N = \"C\"])",
+   "result": {
+    "N": "C"
+   }
+  },
+  {
+   "expression": "(acct.Order.P^(>%.id))[N = \"C\"]",
+   "result": {
+    "N": "C"
+   }
+  },
+  {
+   "expression": "(true ? acct.Order.P^(>%.id) : 0)[N = \"C\"]",
+   "result": {
+    "N": "C"
+   }
+  },
+  {
+   "expression": "{\"a\": acct.Order.P^(>%.id)}.a[N = \"C\"]",
+   "result": {
+    "N": "C"
+   }
+  },
+  {
+   "expression": "(acct.Order.P^(>%.id)){N: N}",
+   "result": {
+    "C": "C",
+    "A": "A",
+    "B": "B"
+   }
+  },
+  {
+   "expression": "($x := acct.Order.P^(>%.id); $x{N: N})",
+   "result": {
+    "C": "C",
+    "A": "A",
+    "B": "B"
+   }
+  },
+  {
+   "expression": "(acct.Order.P^(>%.id))^(N)",
+   "result": [
+    {
+     "N": "A"
+    },
+    {
+     "N": "B"
+    },
+    {
+     "N": "C"
+    }
+   ]
+  },
+  {
+   "expression": "$string(acct.Order.P^(>%.id))",
+   "result": "[{\"N\":\"C\"},{\"N\":\"A\"},{\"N\":\"B\"}]"
+  },
+  {
+   "expression": "acct.Order.P^(>%.id) ~> $sort(function($a, $b) { $a.N < $b.N })",
+   "result": [
+    {
+     "N": "C"
+    },
+    {
+     "N": "B"
+    },
+    {
+     "N": "A"
+    }
+   ]
+  },
+  {
    "expression": "$match(\"aba\", /a/)",
    "result": [
     {

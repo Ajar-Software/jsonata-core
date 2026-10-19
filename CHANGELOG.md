@@ -15,8 +15,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   object** ([#214](https://github.com/txjmb/jsonata-core/issues/214)). jsonata-js's sort returns
   a tuple stream's tuples as a plain array, so the stage that follows reads the tuple, not its
   value: `acct.Order.P^(>%.id)[N = "C"]` is undefined (it was `{"N":"C"}`), a second sort such
-  as `^(N)` keeps the order, `{N: N}` gives `{}`, and `o.t^(>%.id)^($)` is T2008. Position
-  filters such as `[0]`, and later path steps, see the values as before.
+  as `^(N)` keeps the order, `{N: N}` gives `{}`, and `o.t^(>%.id)^($)` is T2008. This holds
+  after a position filter such as `[0]` too. Later path steps see the values as before, and a
+  sort used as a value (`$x := acct.Order.P^(>%.id)`, `$string(...)`) gives the values rather
+  than the internal tuples.
 - **A group-by on a path groups the whole path**
   ([#208](https://github.com/txjmb/jsonata-core/issues/208)). In jsonata-js the `{...}` is
   the path's group, and later `.` steps, calls, filters, sorts and binds extend that same path
