@@ -4185,6 +4185,17 @@ impl Evaluator {
             return result;
         }
 
+        self.with_checkpoint(|ev| ev.evaluate_internal_impl(node, data))
+    }
+
+    /// Run one level of evaluation under the recursion-depth, timeout and
+    /// native-stack checks every node evaluation makes. Inlined so the hot
+    /// node-evaluation path pays no extra call frame for it.
+    #[inline(always)]
+    fn with_checkpoint<T>(
+        &mut self,
+        f: impl FnOnce(&mut Self) -> Result<T, EvaluatorError>,
+    ) -> Result<T, EvaluatorError> {
         // Depth guard. A user `max_stack_depth` raises D1011, like jsonata-js's
         // `stack` option. Without one, the only limit is `MAX_EVAL_DEPTH`, a
         // memory backstop (U1001) far deeper than real recursion needs: the
@@ -4230,9 +4241,7 @@ impl Evaluator {
         // 1MB main thread included). Every recursive evaluation cycle passes
         // through here; see `EVAL_RED_ZONE` for what the red zone covers. On
         // the common shallow path this is one stack-pointer compare.
-        let result = stacker::maybe_grow(EVAL_RED_ZONE, EVAL_STACK_SEGMENT, || {
-            self.evaluate_internal_impl(node, data)
-        });
+        let result = stacker::maybe_grow(EVAL_RED_ZONE, EVAL_STACK_SEGMENT, || f(self));
 
         self.recursion_depth -= 1;
         result
@@ -4371,7 +4380,9 @@ impl Evaluator {
                 let saved_keep = self.keep_tuple_stream;
                 self.keep_tuple_stream =
                     Self::is_tuple_path_node(input) || Self::sorts_tuples(input);
-                let input_value = self.evaluate_internal(input, data);
+                // jsonata-js groups the input's result before the generic
+                // unwrap, so a one-item sequence holding an array is one item.
+                let input_value = self.evaluate_unwrapped_later(input, data);
                 self.keep_tuple_stream = saved_keep;
                 let input_value = input_value?;
 
@@ -4685,53 +4696,9 @@ impl Evaluator {
                 "Function application can only be used in path expressions".to_string(),
             )),
 
-            AstNode::Sort { input, terms } => {
-                // Keep the input path's tuple wrappers so the sort terms can read
-                // the carried `%`/`$focus`/`$index` bindings per element.
-                let saved = self.keep_tuple_stream;
-                let tuple_input = Self::is_tuple_path_node(input) || Self::sorts_tuples(input);
-                self.keep_tuple_stream = tuple_input;
-                let value = self.evaluate_internal(input, data);
-                // The sort terms are expressions of their own, which keep no
-                // tuple stream.
-                self.keep_tuple_stream = false;
-                let sorted = value.and_then(|value| self.evaluate_sort(&value, terms));
-                self.keep_tuple_stream = saved;
-                let mut sorted = sorted?;
-                if let JValue::Array(arr) = &mut sorted {
-                    // Only a tuple input gives tuples; input data shaped like
-                    // a wrapper is left alone.
-                    if tuple_input && starts_with_tuple(arr) {
-                        if saved {
-                            // Sorting tuples gives a plain array of them in
-                            // jsonata-js, which is no longer marked as a tuple
-                            // stream (#214). Its sort returns zero or one
-                            // item as it was, still marked.
-                            arr.sorted_tuples |= arr.len() > 1;
-                        } else {
-                            // Nothing around the sort reads the tuples, so
-                            // the path ends here and gives each one's value.
-                            let mut values =
-                                arr.with_items(arr.iter().map(tuple_focus_value).collect());
-                            values.sequence = true;
-                            values.sorted_tuples = false;
-                            sorted = JValue::Array(values);
-                        }
-                    }
-                }
-                // jsonata-js sorts as a step of the path, so the path's own
-                // result rules apply after the sort: a tuple-stream path
-                // re-collects into a fresh sequence, and `[]` keeps it.
-                if let AstNode::Path { steps } = &**input {
-                    if Self::is_tuple_path_node(input) {
-                        sorted.mark_sequence();
-                    }
-                    if Self::path_keeps_singleton_array(steps) {
-                        sorted.mark_keep_singleton();
-                    }
-                }
-                Ok(sorted)
-            }
+            AstNode::Sort { input, terms } => self
+                .evaluate_sort_node(input, terms, data, false)
+                .map(|(sorted, _)| sorted),
 
             // Transform: |location|update[,delete]|
             AstNode::Transform {
@@ -4944,22 +4911,28 @@ impl Evaluator {
         // A request to keep tuple streams is for this path only, not for the
         // expressions its steps evaluate.
         let keep_tuple_stream = std::mem::replace(&mut self.keep_tuple_stream, false);
-        let result = self.evaluate_path_steps(steps, data, keep_tuple_stream);
+        let result = self.evaluate_path_steps(steps, data, keep_tuple_stream, false);
         self.keep_tuple_stream = keep_tuple_stream;
-        result
+        result.map(|(value, _)| value)
     }
 
     /// `evaluate_path`, with `keep_tuple_stream` saying whether a tuple
     /// stream result is returned as its tuples rather than their values.
+    /// `dotted` is set for a one-step sort path that is itself the input of
+    /// a sort starting a longer path: its first step then starts that path.
+    /// The flag returned is set when a first-step sort of a consarray step
+    /// gave a single value, for an enclosing sort to pass on.
     fn evaluate_path_steps(
         &mut self,
         steps: &[PathStep],
         data: &JValue,
         keep_tuple_stream: bool,
-    ) -> Result<JValue, EvaluatorError> {
+        dotted: bool,
+    ) -> Result<(JValue, bool), EvaluatorError> {
         let Some(first) = steps.first() else {
-            return Ok(data.clone());
+            return Ok((data.clone(), false));
         };
+        let mut cons_single_out = false;
 
         // A lone field step on an object is that field's value, whatever it
         // holds: the general loop would reach the same answer through the
@@ -4968,10 +4941,10 @@ impl Evaluator {
             if let AstNode::Name(field) = &first.node {
                 match data {
                     JValue::Object(obj) if !is_tuple_object(obj) => {
-                        return Ok(obj.get(field).cloned().unwrap_or(JValue::Undefined));
+                        return Ok((obj.get(field).cloned().unwrap_or(JValue::Undefined), false));
                     }
                     #[cfg(feature = "python")]
-                    JValue::LazyPyDict(lazy) => return Ok(lazy.get_field(field)?),
+                    JValue::LazyPyDict(lazy) => return Ok((lazy.get_field(field)?, false)),
                     _ => {}
                 }
             }
@@ -4993,7 +4966,7 @@ impl Evaluator {
                     if let Some(JValue::Object(obj)) = self.context.lookup(name) {
                         if !is_tuple_object(obj) {
                             let value = obj.get(field).cloned().unwrap_or(JValue::Undefined);
-                            return Ok(collect_single_step_result(value, true));
+                            return Ok((collect_single_step_result(value, true), false));
                         }
                     }
                 }
@@ -5010,7 +4983,7 @@ impl Evaluator {
             if Self::path_keeps_singleton_array(steps) {
                 keep_if_sequence(&mut value);
             }
-            return Ok(value);
+            return Ok((value, false));
         }
 
         // jsonata-js maps the first step over an array input item by item,
@@ -5064,12 +5037,30 @@ impl Evaluator {
                         break;
                     }
                 }
+                // A leading array constructor is evaluated once against the
+                // whole input, its focus or index binding ignored (jsonata-js
+                // evaluatePath's `ii === 0 && step.consarray`). The stream
+                // starts from its items, or with a focus, which keeps the
+                // step's input as the next one's, from the path's input.
+                // The parser flags it only on a dotted path: alone
+                // (`[3,1]#$k`), it maps over the input like any first step.
+                if index == 0
+                    && (dotted || steps.len() > 1)
+                    && matches!(step.node, AstNode::Array(_))
+                {
+                    let stream = self.consarray_tuple_start(step, data)?;
+                    tuples = Some(stream);
+                    sorted_tuples = false;
+                    continue;
+                }
                 let source = match tuples.take() {
                     Some(stream) => JValue::array(stream),
                     None if index == 0 => data.clone(),
                     None => result.clone(),
                 };
-                let (stream, sorted) = self.create_tuple_stream(step, &source, index == 0)?;
+                let starts_dotted = index == 0 && (dotted || steps.len() > 1);
+                let (stream, sorted) =
+                    self.create_tuple_stream(step, &source, index == 0, starts_dotted)?;
                 tuples = Some(stream);
                 sorted_tuples = sorted;
                 continue;
@@ -5093,14 +5084,15 @@ impl Evaluator {
                 None => std::slice::from_ref(&single),
             };
 
-            result = if index == 0 && matches!(step.node, AstNode::Array(_)) {
-                // A leading array constructor builds one array from the whole
-                // input rather than one per item (jsonata-js `consarray`).
-                let mut value = self.evaluate_internal(&step.node, data)?;
-                if let JValue::Array(arr) = &mut value {
-                    arr.cons = true;
-                }
-                self.apply_filter_stages(value, &step.stages)?
+            result = if index == 0
+                && (matches!(step.node, AstNode::Array(_)) || Self::is_cons_block(&step.node))
+            {
+                self.evaluate_cons_first_step(step, steps, data)?
+            } else if let (0, AstNode::Sort { input, terms }) = (index, &step.node) {
+                let (value, cons_single) =
+                    self.evaluate_first_step_sort(step, steps, input, terms, data, dotted)?;
+                cons_single_out = cons_single;
+                value
             } else {
                 // A sort step gives its tuples, which the rest of the path reads.
                 let saved = self.keep_tuple_stream;
@@ -5140,14 +5132,150 @@ impl Evaluator {
             };
         }
 
+        // A `[]` on a step marks the path in jsonata-js. One on a sort marks
+        // the sort's path node instead, which keeps a sequence from being
+        // unwrapped but leaves a constructed array as it is: `nn^($)[].[$]`
+        // is the array `[$]` builds.
         if Self::path_keeps_singleton_array(steps) {
-            result = keep_singleton(result);
+            let node_only = steps.len() > 1 && !Self::steps_keep_singleton(steps);
+            if !(node_only && matches!(&result, JValue::Array(arr) if arr.cons && !arr.sequence)) {
+                result = keep_singleton(result);
+            }
         }
 
         if let JValue::Array(arr) = &result {
             check_sequence_length(arr.len(), &self.options)?;
         }
-        Ok(result)
+        Ok((result, cons_single_out))
+    }
+
+    /// The tuples a leading `consarray` step starts a tuple stream with: its
+    /// items, or with a focus, the path's input (see `evaluate_path_steps`).
+    /// Kept out of line, off the hot path.
+    #[inline(never)]
+    fn consarray_tuple_start(
+        &mut self,
+        step: &PathStep,
+        data: &JValue,
+    ) -> Result<Vec<JValue>, EvaluatorError> {
+        self.tuple_stream_created = true;
+        let value = self.evaluate_internal(&step.node, data)?;
+        let value = self.apply_filter_stages(value, &step.stages)?;
+        let items = match (step.focus.is_some(), value) {
+            // The top-level array's wrapper holds the bare array.
+            (true, _) => match data {
+                JValue::Array(arr) if arr.outer_wrapper => vec![data.bare()],
+                JValue::Array(arr) => arr.iter().cloned().collect(),
+                JValue::Undefined => Vec::new(),
+                other => vec![other.clone()],
+            },
+            (false, JValue::Undefined) => Vec::new(),
+            (false, JValue::Array(arr)) => arr.iter().cloned().collect(),
+            (false, other) => vec![other],
+        };
+        Ok(items
+            .into_iter()
+            .map(|item| {
+                let mut wrapper = IndexMap::new();
+                wrapper.insert("@".to_string(), item);
+                wrapper.insert("__tuple__".to_string(), JValue::Bool(true));
+                JValue::object(wrapper)
+            })
+            .collect())
+    }
+
+    /// A path's leading array constructor or consarray block, evaluated once
+    /// against the whole input. Kept out of line, off the hot path.
+    #[inline(never)]
+    fn evaluate_cons_first_step(
+        &mut self,
+        step: &PathStep,
+        steps: &[PathStep],
+        data: &JValue,
+    ) -> Result<JValue, EvaluatorError> {
+        // A leading array constructor builds one array from the whole
+        // input rather than one per item (jsonata-js `consarray`), as
+        // does a block holding a path that starts with one.
+        let mut value = self.evaluate_internal(&step.node, data)?;
+        if let JValue::Array(arr) = &mut value {
+            arr.cons = true;
+        }
+        let mut value = self.apply_filter_stages(value, &step.stages)?;
+        // A predicate on the block leaves one value bare, as the
+        // generic unwrap of jsonata-js's predicate result does.
+        if !step.stages.is_empty()
+            && !Self::path_keeps_singleton_array(std::slice::from_ref(step))
+            && Self::is_cons_block(&step.node)
+        {
+            if let JValue::Array(arr) = &value {
+                if arr.sequence && !arr.keep_singleton && arr.len() == 1 {
+                    value = arr[0].clone();
+                }
+            }
+        }
+        // jsonata-js takes the value as the next step's input sequence
+        // as is, so a block's single value gives that step no items,
+        // and the path no result; a sort still orders it.
+        let next_reads_items = steps
+            .get(1)
+            .is_some_and(|next| !matches!(next.node, AstNode::Sort { .. }));
+        Ok(
+            if next_reads_items
+                && !matches!(value, JValue::Array(_))
+                && Self::is_cons_block(&step.node)
+            {
+                JValue::Undefined
+            } else {
+                value
+            },
+        )
+    }
+
+    /// A path's first-step sort, and whether it gave a consarray step's
+    /// single value back. Kept out of line, off the hot path.
+    #[inline(never)]
+    fn evaluate_first_step_sort(
+        &mut self,
+        step: &PathStep,
+        steps: &[PathStep],
+        input: &AstNode,
+        terms: &[(AstNode, bool)],
+        data: &JValue,
+        dotted: bool,
+    ) -> Result<(JValue, bool), EvaluatorError> {
+        // A path's first-step sort evaluates once against the whole
+        // input (`takes_whole_input`), with `$` the input, and gives
+        // its tuples, which the rest of the path reads. Its input
+        // starts a dotted path when more steps follow.
+        let saved = self.keep_tuple_stream;
+        self.keep_tuple_stream = true;
+        let sorted = self.with_dollar_bound(data, |ev| {
+            ev.with_checkpoint(|ev| {
+                ev.evaluate_sort_node(input, terms, data, dotted || steps.len() > 1)
+            })
+        });
+        self.keep_tuple_stream = saved;
+        let (value, cons_single) = sorted?;
+        let value = self.apply_filter_stages(value, &step.stages)?;
+        // A sort of a consarray first step's single value gives it
+        // back as is, which the next step reads as no items, as for
+        // the consarray step itself above. A predicate on the sort
+        // collects its result into a sequence again.
+        let next_reads_items = steps
+            .get(1)
+            .is_some_and(|next| !matches!(next.node, AstNode::Sort { .. }));
+        // `[]` is only a mark there, not a predicate.
+        let filters = step
+            .stages
+            .iter()
+            .any(|stage| matches!(stage, Stage::Filter(_)));
+        let cons_single = cons_single && !filters;
+        let value = if cons_single && next_reads_items {
+            JValue::Undefined
+        } else {
+            collect_single_step_result(value, steps.len() == 1)
+        };
+        Ok((value, cons_single))
     }
 
     /// One plain (non-tuple) path step over its input sequence, following
@@ -5275,25 +5403,42 @@ impl Evaluator {
                 return Err(duplicate_key_error(key));
             }
             let context = object_context(data);
-            let mut result = IndexMap::with_capacity(pairs.len());
-            for (key, value) in pairs {
-                let AstNode::String(key) = key else {
-                    unreachable!("all keys are literals")
-                };
-                let value = self.evaluate_internal(value, &context)?;
-                if !value.is_undefined() {
-                    result.insert(key.to_string(), value);
+            let build = |ev: &mut Self| -> Result<JValue, EvaluatorError> {
+                let mut result = IndexMap::with_capacity(pairs.len());
+                for (key, value) in pairs {
+                    let AstNode::String(key) = key else {
+                        unreachable!("all keys are literals")
+                    };
+                    let value = ev.evaluate_internal(value, &context)?;
+                    if !value.is_undefined() {
+                        result.insert(key.to_string(), value);
+                    }
                 }
-            }
-            return Ok(JValue::object(result));
+                Ok(JValue::object(result))
+            };
+            // `$` is the group's context, also under an outer `$` binding (a
+            // step inside a block), bound once for the object and only when
+            // a value can read it.
+            return if pairs.iter().any(|(_, value)| Self::may_read_dollar(value)) {
+                self.with_dollar_bound(&context, build)
+            } else {
+                build(self)
+            };
         }
+        let keys_read_dollar = pairs.iter().any(|(key, _)| Self::may_read_dollar(key));
+        let values_read_dollar = pairs.iter().any(|(_, value)| Self::may_read_dollar(value));
 
         let items = group_items(data);
         // Each key's pair and the items grouped under it, in first-seen order.
         let mut groups: IndexMap<String, (usize, Vec<JValue>)> = IndexMap::new();
         for item in items.iter() {
             for (pair_index, (key, _)) in pairs.iter().enumerate() {
-                let key = match self.evaluate_internal(key, item)? {
+                let key = if keys_read_dollar {
+                    self.with_dollar_bound(item, |ev| ev.evaluate_internal(key, item))?
+                } else {
+                    self.evaluate_internal(key, item)?
+                };
+                let key = match key {
                     JValue::String(key) => key,
                     JValue::Undefined => continue,
                     other => return Err(key_type_error(&other)),
@@ -5311,12 +5456,69 @@ impl Evaluator {
         }
         let mut result = IndexMap::with_capacity(groups.len());
         for (key, (pair_index, group)) in groups {
-            let value = self.evaluate_internal(&pairs[pair_index].1, &group_context(&group))?;
+            let context = group_context(&group);
+            let value = &pairs[pair_index].1;
+            let value = if values_read_dollar {
+                self.with_dollar_bound(&context, |ev| ev.evaluate_internal(value, &context))?
+            } else {
+                self.evaluate_internal(value, &context)?
+            };
             if !value.is_undefined() {
                 result.insert(key, value);
             }
         }
         Ok(JValue::object(result))
+    }
+
+    /// False when evaluating `node` cannot read the `$` binding, so an
+    /// object constructor need not rebind it: no `$` in it, and no lambda or
+    /// call without arguments that could take the context. Unknown kinds of
+    /// node count as reading it.
+    fn may_read_dollar(node: &AstNode) -> bool {
+        match node {
+            AstNode::String(_)
+            | AstNode::Name(_)
+            | AstNode::Number(_)
+            | AstNode::Boolean(_)
+            | AstNode::Null
+            | AstNode::Undefined
+            | AstNode::Regex { .. }
+            | AstNode::ParentVariable(_)
+            | AstNode::Parent(_)
+            | AstNode::Wildcard
+            | AstNode::Descendant => false,
+            AstNode::Variable(name) => name.is_empty(),
+            AstNode::Path { steps } => steps.iter().any(|step| {
+                Self::may_read_dollar(&step.node)
+                    || step.stages.iter().any(|stage| match stage {
+                        Stage::Filter(expr) => Self::may_read_dollar(expr),
+                        _ => false,
+                    })
+            }),
+            AstNode::Binary { lhs, rhs, .. } => {
+                Self::may_read_dollar(lhs) || Self::may_read_dollar(rhs)
+            }
+            AstNode::Unary { operand, .. } => Self::may_read_dollar(operand),
+            AstNode::Function { args, .. } => {
+                args.is_empty() || args.iter().any(Self::may_read_dollar)
+            }
+            AstNode::Array(items) | AstNode::ArrayGroup(items) | AstNode::Block(items) => {
+                items.iter().any(Self::may_read_dollar)
+            }
+            AstNode::Object(pairs) => pairs
+                .iter()
+                .any(|(key, value)| Self::may_read_dollar(key) || Self::may_read_dollar(value)),
+            AstNode::Conditional {
+                condition,
+                then_branch,
+                else_branch,
+            } => {
+                Self::may_read_dollar(condition)
+                    || Self::may_read_dollar(then_branch)
+                    || else_branch.as_deref().is_some_and(Self::may_read_dollar)
+            }
+            _ => true,
+        }
     }
 
     /// Evaluate a path step's node against one input item. `$` is the item,
@@ -5550,12 +5752,318 @@ impl Evaluator {
                 return true;
             }
             if let AstNode::Sort { input, .. } = &step.node {
-                if let AstNode::Path { steps: inner } = input.as_ref() {
-                    return Self::path_keeps_singleton_array(inner);
-                }
+                // A `.` after the sort makes one path of all the steps before
+                // it, which jsonata-js marks for any `[]` among them.
+                return if steps.len() > 1 {
+                    let (on_step, on_node) = Self::sort_chain_keeps(input);
+                    on_step || on_node
+                } else {
+                    Self::sort_input_keeps_singleton(input)
+                };
             }
             false
         })
+    }
+
+    /// The `[]`s in a sort's input chain, as the steps jsonata-js makes of
+    /// it: whether one is on a step other than a sort, which marks a path a
+    /// later `.` makes of them, and whether one is on a sort, which marks
+    /// the sort's path node.
+    fn sort_chain_keeps(node: &AstNode) -> (bool, bool) {
+        match node {
+            AstNode::Sort { input, .. } => Self::sort_chain_keeps(input),
+            AstNode::Path { steps } => {
+                let (mut on_step, mut on_node) = (false, false);
+                for step in steps {
+                    let keeps = step.stages.iter().any(|s| matches!(s, Stage::KeepArray));
+                    if matches!(&step.node, AstNode::Sort { .. }) {
+                        let (inner_step, inner_node) = Self::sort_chain_keeps(&step.node);
+                        on_step |= inner_step;
+                        on_node |= inner_node || keeps;
+                    } else {
+                        on_step |= keeps;
+                    }
+                }
+                (on_step, on_node)
+            }
+            _ => (false, false),
+        }
+    }
+
+    /// True when a dotted path has a `[]` jsonata-js puts on a step, which
+    /// marks the whole path: one on any step but a sort, or in the chain a
+    /// first-step sort sorts (see `sort_chain_keeps`).
+    fn steps_keep_singleton(steps: &[PathStep]) -> bool {
+        steps.iter().any(|step| match &step.node {
+            AstNode::Sort { input, .. } => Self::sort_chain_keeps(input).0,
+            _ => step.stages.iter().any(|s| matches!(s, Stage::KeepArray)),
+        })
+    }
+
+    /// True for a block jsonata-js marks `consarray` (parser.js `case
+    /// 'block'`): one of its expressions is such a block, or a path whose
+    /// first step is an array constructor or such a block. As a path's first
+    /// step it is evaluated once against the whole input, not per item.
+    fn is_cons_block(node: &AstNode) -> bool {
+        let AstNode::Block(exprs) = node else {
+            return false;
+        };
+        exprs.iter().any(|expr| Self::starts_cons(expr, false))
+    }
+
+    /// True when `node` starts with a `consarray` first step: an array
+    /// constructor that begins a dotted path (`dotted`), or a consarray
+    /// block. A sort is a step of the path it ends in jsonata-js, so
+    /// `[3,1].$^($)` and `[3,1]^($).$` start with one too.
+    fn starts_cons(node: &AstNode, dotted: bool) -> bool {
+        match node {
+            AstNode::Array(_) => dotted,
+            AstNode::Block(_) => Self::is_cons_block(node),
+            AstNode::Sort { input, .. } => Self::starts_cons(input, dotted),
+            AstNode::Path { steps } if !Self::is_non_path(steps) => {
+                Self::starts_cons(&steps[0].node, dotted || steps.len() > 1)
+            }
+            _ => false,
+        }
+    }
+
+    /// Evaluate a sort node: its input, then the ordering. `dotted` is set
+    /// when the sort is the first step of a longer path, where jsonata-js
+    /// makes an array constructor that starts its input `consarray`. The
+    /// flag returned is set when such a consarray first step gave a single
+    /// value rather than an array, which the path's next step reads as no
+    /// items.
+    fn evaluate_sort_node(
+        &mut self,
+        input: &AstNode,
+        terms: &[(AstNode, bool)],
+        data: &JValue,
+        dotted: bool,
+    ) -> Result<(JValue, bool), EvaluatorError> {
+        // Keep the input path's tuple wrappers so the sort terms can read
+        // the carried `%`/`$focus`/`$index` bindings per element.
+        let saved = self.keep_tuple_stream;
+        let tuple_input = Self::is_tuple_path_node(input) || Self::sorts_tuples(input);
+        self.keep_tuple_stream = tuple_input;
+        let value = if tuple_input {
+            // A stream of one tuple stays a stream, not the bare tuple.
+            self.evaluate_unwrapped_later(input, data)
+                .map(|value| (value, false))
+        } else {
+            // jsonata-js sorts as a step after the input's last step,
+            // which is then not the last step: its result is
+            // flattened into a sequence, and `fn.sort` returns a
+            // sequence of zero or one item as is, so the generic
+            // unwrap applies to it (#221). The input's array, whole
+            // (the last-step rule, a constructor, a block) or a
+            // sequence, becomes a fresh sequence here, without any
+            // `[]` mark of its own.
+            self.evaluate_sort_input(input, data, dotted)
+        };
+        let (value, cons_single) = match value {
+            Ok((value, cons_single)) => (Ok(value), cons_single),
+            Err(e) => (Err(e), false),
+        };
+        // The sort terms are expressions of their own, which keep no
+        // tuple stream.
+        self.keep_tuple_stream = false;
+        let sorted = value.and_then(|value| self.evaluate_sort(&value, terms, tuple_input));
+        self.keep_tuple_stream = saved;
+        let mut sorted = sorted?;
+        if let JValue::Array(arr) = &mut sorted {
+            // Only a tuple input gives tuples; input data shaped like
+            // a wrapper is left alone.
+            if tuple_input && starts_with_tuple(arr) {
+                // A `[]` inside the input path doesn't carry over;
+                // the path's own `[]` is applied below.
+                arr.keep_singleton = false;
+                if saved {
+                    // Sorting tuples gives a plain array of them in
+                    // jsonata-js, which is no longer marked as a tuple
+                    // stream (#214). Its sort returns zero or one
+                    // item as it was, still marked.
+                    arr.sorted_tuples |= arr.len() > 1;
+                } else {
+                    // Nothing around the sort reads the tuples, so
+                    // the path ends here and gives each one's value.
+                    let mut values = arr.with_items(arr.iter().map(tuple_focus_value).collect());
+                    values.sequence = true;
+                    values.sorted_tuples = false;
+                    sorted = JValue::Array(values);
+                }
+            }
+        }
+        // jsonata-js sorts as a step of the path, so the path's own
+        // result rules apply after the sort: a tuple-stream path
+        // re-collects into a fresh sequence, and `[]` keeps it.
+        if Self::is_tuple_path_node(input) {
+            sorted.mark_sequence();
+        }
+        if Self::sort_input_keeps_singleton(input) {
+            sorted.mark_keep_singleton();
+        }
+        Ok((sorted, cons_single))
+    }
+
+    /// Evaluate a non-tuple sort input as the first step of the path
+    /// jsonata-js makes of it, collected as a step that is not the last.
+    /// A name path, a variable or a sort is evaluated once against the whole
+    /// input. Any other expression (a block, literal, function call or array
+    /// constructor) is a first step, mapped over the items of an array input
+    /// one by one; the top-level array is one item, the bare array. Its
+    /// results are flattened into a fresh sequence: jsonata-js marks an array
+    /// constructor `consarray` only on a `.` path, so one is flattened here.
+    fn evaluate_sort_input(
+        &mut self,
+        input: &AstNode,
+        data: &JValue,
+        dotted: bool,
+    ) -> Result<(JValue, bool), EvaluatorError> {
+        let first = match input {
+            AstNode::Path { steps } if !Self::is_non_path(steps) => None,
+            AstNode::Path { steps } => Some(&steps[0].node),
+            other => Some(other),
+        };
+        let whole = match first {
+            None => true,
+            Some(node) => {
+                matches!(
+                    node,
+                    AstNode::Variable(_) | AstNode::ParentVariable(_) | AstNode::Sort { .. }
+                ) || Self::starts_cons(node, dotted)
+            }
+        };
+        // A sort of a sort is one path: the inner sort's input is its first
+        // step too.
+        let pass_dotted = dotted && matches!(input, AstNode::Sort { .. });
+        let pass_dotted_path = dotted
+            && matches!(input, AstNode::Path { steps } if steps.len() == 1
+                && !steps[0].is_tuple && !Self::step_creates_tuple(&steps[0]));
+        let uncons = |value: JValue| match value {
+            JValue::Array(mut arr) if first.is_some() && arr.cons => {
+                arr.cons = false;
+                JValue::Array(arr)
+            }
+            other => other,
+        };
+        let per_item = match data {
+            JValue::Array(arr) if !whole && !arr.outer_wrapper => Some(arr.clone()),
+            _ => None,
+        };
+        let Some(items) = per_item else {
+            let item = match data {
+                JValue::Array(arr) if !whole && arr.outer_wrapper => data.bare(),
+                _ => data.clone(),
+            };
+            let mut cons_single = false;
+            let value = if whole {
+                let value = match input {
+                    AstNode::Sort {
+                        input: inner,
+                        terms,
+                    } => {
+                        let (value, inner_single) = self.with_checkpoint(|ev| {
+                            ev.evaluate_sort_node(inner, terms, &item, pass_dotted)
+                        })?;
+                        cons_single = inner_single;
+                        value
+                    }
+                    // A one-step path holding a sort (with its predicates)
+                    // is that sort's step: under `dotted` it starts the
+                    // path too.
+                    AstNode::Path { steps }
+                        if pass_dotted_path && matches!(steps[0].node, AstNode::Sort { .. }) =>
+                    {
+                        let (value, inner_single) = self.with_checkpoint(|ev| {
+                            let keep = std::mem::replace(&mut ev.keep_tuple_stream, false);
+                            let result = ev.evaluate_path_steps(steps, &item, keep, true);
+                            ev.keep_tuple_stream = keep;
+                            result
+                        })?;
+                        cons_single = inner_single;
+                        value
+                    }
+                    _ => self.evaluate_unwrapped_later(input, &item)?,
+                };
+                if dotted && first.is_some_and(|node| Self::starts_cons(node, true)) {
+                    let stages = match input {
+                        AstNode::Path { steps } => !steps[0].stages.is_empty(),
+                        _ => false,
+                    };
+                    let single = match &value {
+                        JValue::Array(arr) => {
+                            stages && arr.sequence && !arr.keep_singleton && arr.len() == 1
+                        }
+                        JValue::Undefined => false,
+                        _ => true,
+                    };
+                    cons_single |= single;
+                }
+                value
+            } else {
+                self.with_dollar_bound(&item, |ev| ev.evaluate_unwrapped_later(input, &item))?
+            };
+            let value = uncons(value);
+            // A sort step returns its sorted, filtered value as is to the
+            // next step in jsonata-js; only another step's results are
+            // flattened into a sequence.
+            let ends_in_sort = match input {
+                AstNode::Path { steps } => {
+                    matches!(
+                        steps.last().map(|step| &step.node),
+                        Some(AstNode::Sort { .. })
+                    )
+                }
+                AstNode::Sort { .. } => true,
+                _ => false,
+            };
+            let value = match value {
+                JValue::Array(arr) if !arr.outer_wrapper && !ends_in_sort => {
+                    collect_single_step_result(JValue::Array(arr), false)
+                }
+                other => other,
+            };
+            return Ok((value, cons_single));
+        };
+        let mut results = Vec::with_capacity(items.len());
+        for item in items.iter() {
+            // `$` is the item, as in any path step.
+            let value = uncons(
+                self.with_dollar_bound(item, |ev| ev.evaluate_unwrapped_later(input, item))?,
+            );
+            if !value.is_undefined() {
+                results.push(value);
+            }
+        }
+        let value = match results.len() {
+            0 => JValue::Undefined,
+            _ => collect_step_results(results, false),
+        };
+        Ok((value, false))
+    }
+
+    /// True when a sort keeps a single result as an array because its input
+    /// path has a `[]`. jsonata-js appends the sort to the input path, which
+    /// carries `keepSingletonArray` only when it is a name or a dotted chain:
+    /// a `[]` on a block, variable or constructor (`$x[]^(p)`) applies to
+    /// that value alone, which the sort step then collects anew (#221). A
+    /// `#` makes such a step a path, so a `[]` written after it
+    /// (`$#$pos[]^($)`, not `$x[]#$i^(p)`) applies to the whole path.
+    /// A sort of a sort is one path, so the inner sort's input counts.
+    fn sort_input_keeps_singleton(input: &AstNode) -> bool {
+        match input {
+            AstNode::Path { steps } if Self::is_non_path(steps) => {
+                let step = &steps[0];
+                let mut after_index = step.index_var.is_some();
+                step.stages.iter().any(|stage| {
+                    after_index |= matches!(stage, Stage::Index(_));
+                    after_index && matches!(stage, Stage::KeepArray)
+                })
+            }
+            AstNode::Path { steps } => Self::path_keeps_singleton_array(steps),
+            AstNode::Sort { input, .. } => Self::sort_input_keeps_singleton(input),
+            _ => false,
+        }
     }
 
     /// Bind a tuple wrapper's carried `$name`/`!label` keys into the current
@@ -5616,6 +6124,7 @@ impl Evaluator {
         step: &PathStep,
         input: &JValue,
         is_first_path_step: bool,
+        dotted: bool,
     ) -> Result<(Vec<JValue>, bool), EvaluatorError> {
         use std::rc::Rc;
 
@@ -5641,6 +6150,19 @@ impl Evaluator {
             }
         } else {
             let items: Vec<JValue> = match input {
+                // The top-level array's wrapper holds one item, the bare
+                // array, which a first step that is not a variable maps over
+                // as a whole (jsonata-js `outerWrapper`). An empty one keeps
+                // giving no items: a literal step, which jsonata-js reads as
+                // a field name, must not yield itself.
+                JValue::Array(arr)
+                    if arr.outer_wrapper
+                        && !arr.is_empty()
+                        && is_first_path_step
+                        && !matches!(&step.node, AstNode::Variable(_)) =>
+                {
+                    vec![input.bare()]
+                }
                 // Mirrors jsonata-js evaluatePath's inputSequence rule
                 // (`if (Array.isArray(input) && expr.steps[0].type !== 'variable')`):
                 // when the path's FIRST step is a variable reference (`$`/`$$`) the
@@ -5699,14 +6221,23 @@ impl Evaluator {
                 // evaluate_sort is tuple-aware (orders by each wrapper's `@`,
                 // with the carried keys bound), returning the wrappers in
                 // sorted order.
-                self.evaluate_sort(&stream, terms)?
+                self.evaluate_sort(&stream, terms, true)?
             } else {
                 // The sort's own input path (`arr` in `arr^($)#$i`) gives what
                 // it orders. Over a tuple path the sort returns the tuples,
                 // whose bindings carry into the new stream.
+                // Its sequence of one item is not unwrapped: the item is the
+                // one value sorted, even when it is an array.
+                // A sort starting a longer path is its input's first step
+                // there (`dotted`).
                 let saved = self.keep_tuple_stream;
                 self.keep_tuple_stream = true;
-                let value = self.evaluate_internal(&step.node, input);
+                let value = if dotted {
+                    self.with_checkpoint(|ev| ev.evaluate_sort_node(sort_input, terms, input, true))
+                        .map(|(value, _)| value)
+                } else {
+                    self.evaluate_unwrapped_later(&step.node, input)
+                };
                 self.keep_tuple_stream = saved;
                 value?
             };
@@ -8694,10 +9225,11 @@ impl Evaluator {
         &mut self,
         term_expr: &AstNode,
         element: &JValue,
+        tuples: bool,
     ) -> Result<JValue, EvaluatorError> {
         // For tuples (from index binding), extract the actual value from @ field
         let actual_element = if let JValue::Object(obj) = element {
-            if is_tuple_object(obj) {
+            if tuples && is_tuple_object(obj) {
                 obj.get("@").cloned().unwrap_or(JValue::Null)
             } else {
                 element.clone()
@@ -8722,6 +9254,12 @@ impl Evaluator {
                         JValue::LazyPyDict(lazy) => {
                             return Ok(lazy.get_field(field_name)?);
                         }
+                        // A field of an array is its items' fields, gathered
+                        // as for any path; an explicit null among them stays
+                        // null, which raises T2008 as in jsonata-js.
+                        JValue::Array(_) => {
+                            return self.evaluate_internal(term_expr, &actual_element);
+                        }
                         _ => return Ok(JValue::Undefined),
                     }
                 }
@@ -8745,11 +9283,14 @@ impl Evaluator {
         Ok(result)
     }
 
-    /// Evaluate sort operator
+    /// Evaluate sort operator. `tuples` is set when `data` is a tuple stream,
+    /// whose wrappers' `@` values are ordered with their bindings in scope;
+    /// otherwise input objects shaped like wrappers are ordinary data.
     fn evaluate_sort(
         &mut self,
         data: &JValue,
         terms: &[(AstNode, bool)],
+        tuples: bool,
     ) -> Result<JValue, EvaluatorError> {
         // If data is null, return null
         if data.is_null() {
@@ -8792,7 +9333,9 @@ impl Evaluator {
             // that collides with a live outer `:=` binding doesn't get
             // deleted once this row's sort terms are evaluated.
             let tuple_bindings = match element {
-                JValue::Object(obj) if is_tuple_object(obj) => Some(self.bind_tuple_keys(obj)),
+                JValue::Object(obj) if tuples && is_tuple_object(obj) => {
+                    Some(self.bind_tuple_keys(obj))
+                }
                 _ => None,
             };
 
@@ -8802,7 +9345,7 @@ impl Evaluator {
             // object and raise T2008. The carried focus/index/ancestor keys stay
             // reachable via the context bindings established just above.
             let term_data = match element {
-                JValue::Object(obj) if is_tuple_object(obj) => {
+                JValue::Object(obj) if tuples && is_tuple_object(obj) => {
                     obj.get("@").cloned().unwrap_or(JValue::Null)
                 }
                 other => other.clone(),
@@ -8817,7 +9360,7 @@ impl Evaluator {
                 self.context.bind("$".to_string(), term_data.clone());
 
                 // Evaluate the sort expression, distinguishing missing fields from explicit null
-                let sort_value = self.evaluate_sort_term(term_expr, element)?;
+                let sort_value = self.evaluate_sort_term(term_expr, element, tuples)?;
 
                 // Restore $ binding
                 if let Some(val) = saved_dollar {
@@ -8836,162 +9379,151 @@ impl Evaluator {
             indexed_array.push((idx, sort_keys));
         }
 
-        // Validate that all sort keys are comparable (same type, or undefined)
-        // Undefined values (missing fields) are allowed and sort to the end
-        // Null values (explicit null in data) are NOT allowed (typeof null === 'object' in JS, triggers T2008)
-        for term_idx in 0..terms.len() {
-            let mut first_valid_type: Option<&str> = None;
-
-            for (_idx, sort_keys) in &indexed_array {
-                let sort_value = &sort_keys[term_idx];
-
-                // Skip undefined markers (missing fields) - these are allowed and sort to end
-                if sort_value.is_undefined() {
-                    continue;
-                }
-
-                // Get the type name for this value
-                // Note: explicit null is NOT allowed - typeof null === 'object' in JS
-                let value_type = match sort_value {
-                    JValue::Number(_) => "number",
-                    JValue::String(_) => "string",
-                    JValue::Bool(_) => "boolean",
-                    JValue::Array(_) => "array",
-                    JValue::Object(_) => "object", // This catches non-undefined objects
-                    JValue::Null => "null",        // Explicit null from data
-                    #[cfg(feature = "python")]
-                    JValue::LazyPyDict(_) => "object",
-                    _ => "unknown",
+        // When each term's defined values are all numbers or all strings, no
+        // comparison can fail and any stable sort gives jsonata-js's order.
+        // Otherwise the keyed items go through jsonata-js's merge sort and
+        // comparator, so the type checks (T2008, T2007) apply only to the
+        // pairs it compares, after its check for undefined terms.
+        let homogeneous = (0..terms.len()).all(|term| {
+            let mut kind = None;
+            indexed_array.iter().all(|(_, keys)| {
+                let this = match &keys[term] {
+                    JValue::Undefined => return true,
+                    JValue::Number(_) => 0,
+                    JValue::String(_) => 1,
+                    _ => return false,
                 };
-
-                // Check that sort keys are only numbers or strings
-                // Null, boolean, array, and object types are not valid for sorting
-                if value_type != "number" && value_type != "string" {
-                    return Err(EvaluatorError::TypeError("T2008: The expressions within an order-by clause must evaluate to numeric or string values".to_string()));
-                }
-
-                // Check if this matches the first valid type we saw
-                if let Some(first_type) = first_valid_type {
-                    if first_type != value_type {
-                        return Err(EvaluatorError::TypeError(format!(
-                            "T2007: Type mismatch when comparing values in order-by clause: {} and {}",
-                            first_type, value_type
-                        )));
-                    }
-                } else {
-                    first_valid_type = Some(value_type);
-                }
-            }
-        }
-
-        // Sort the indexed array
-        indexed_array.sort_by(|a, b| {
-            // Compare sort keys in order
-            for (i, (_term_expr, ascending)) in terms.iter().enumerate() {
-                let left = &a.1[i];
-                let right = &b.1[i];
-
-                let cmp = self.compare_values(left, right);
-
-                if cmp != std::cmp::Ordering::Equal {
-                    return if *ascending { cmp } else { cmp.reverse() };
-                }
-            }
-
-            // If all keys are equal, maintain original order (stable sort)
-            a.0.cmp(&b.0)
+                *kind.get_or_insert(this) == this
+            })
         });
-
-        // Extract sorted elements
-        let sorted: Vec<JValue> = indexed_array
-            .iter()
-            .map(|(idx, _)| array[*idx].clone())
-            .collect();
+        let sorted: Vec<JValue> = if homogeneous {
+            indexed_array.sort_by(|(_, a), (_, b)| Self::compare_sort_keys(a, b, terms));
+            indexed_array
+                .iter()
+                .map(|(idx, _)| array[*idx].clone())
+                .collect()
+        } else {
+            let mut order: Vec<usize> = (0..indexed_array.len()).collect();
+            let mut buffer = Vec::with_capacity(order.len());
+            Self::merge_sort_keyed(&mut order, &mut buffer, &indexed_array, terms)?;
+            order.iter().map(|&idx| array[idx].clone()).collect()
+        };
 
         Ok(JValue::array(sorted))
     }
 
-    /// Compare two values for sorting (JSONata semantics)
-    fn compare_values(&self, left: &JValue, right: &JValue) -> Ordering {
-        // Handle undefined markers first - they sort to the end
-        let left_undef = left.is_undefined();
-        let right_undef = right.is_undefined();
-
-        if left_undef && right_undef {
-            return Ordering::Equal;
-        }
-        if left_undef {
-            return Ordering::Greater; // Undefined sorts last
-        }
-        if right_undef {
-            return Ordering::Less;
-        }
-
-        match (left, right) {
-            // Nulls also sort last (explicit null in data)
-            (JValue::Null, JValue::Null) => Ordering::Equal,
-            (JValue::Null, _) => Ordering::Greater,
-            (_, JValue::Null) => Ordering::Less,
-
-            // Numbers
-            (JValue::Number(a), JValue::Number(b)) => {
-                let a_f64 = *a;
-                let b_f64 = *b;
-                a_f64.partial_cmp(&b_f64).unwrap_or(Ordering::Equal)
-            }
-
-            // Strings
-            (JValue::String(a), JValue::String(b)) => a.cmp(b),
-
-            // Booleans
-            (JValue::Bool(a), JValue::Bool(b)) => a.cmp(b),
-
-            // Arrays (lexicographic comparison)
-            (JValue::Array(a), JValue::Array(b)) => {
-                for (a_elem, b_elem) in a.iter().zip(b.iter()) {
-                    let cmp = self.compare_values(a_elem, b_elem);
-                    if cmp != Ordering::Equal {
-                        return cmp;
-                    }
+    /// jsonata-js's order-by comparison of two items' keys whose terms are
+    /// known to compare without error: an undefined term sorts last in
+    /// either direction.
+    fn compare_sort_keys(a: &[JValue], b: &[JValue], terms: &[(AstNode, bool)]) -> Ordering {
+        for (index, (_, ascending)) in terms.iter().enumerate() {
+            let comp = match (&a[index], &b[index]) {
+                (JValue::Undefined, JValue::Undefined) => continue,
+                (JValue::Undefined, _) => return Ordering::Greater,
+                (_, JValue::Undefined) => return Ordering::Less,
+                (JValue::Number(x), JValue::Number(y)) => {
+                    x.partial_cmp(y).unwrap_or(Ordering::Equal)
                 }
-                a.len().cmp(&b.len())
+                (JValue::String(x), JValue::String(y)) => x.cmp(y),
+                _ => Ordering::Equal,
+            };
+            if comp != Ordering::Equal {
+                return if *ascending { comp } else { comp.reverse() };
             }
-
-            // Different types: use type ordering
-            // null < bool < number < string < array < object
-            (JValue::Bool(_), JValue::Number(_)) => Ordering::Less,
-            (JValue::Bool(_), JValue::String(_)) => Ordering::Less,
-            (JValue::Bool(_), JValue::Array(_)) => Ordering::Less,
-            (JValue::Bool(_), JValue::Object(_)) => Ordering::Less,
-            #[cfg(feature = "python")]
-            (JValue::Bool(_), JValue::LazyPyDict(_)) => Ordering::Less,
-
-            (JValue::Number(_), JValue::Bool(_)) => Ordering::Greater,
-            (JValue::Number(_), JValue::String(_)) => Ordering::Less,
-            (JValue::Number(_), JValue::Array(_)) => Ordering::Less,
-            (JValue::Number(_), JValue::Object(_)) => Ordering::Less,
-            #[cfg(feature = "python")]
-            (JValue::Number(_), JValue::LazyPyDict(_)) => Ordering::Less,
-
-            (JValue::String(_), JValue::Bool(_)) => Ordering::Greater,
-            (JValue::String(_), JValue::Number(_)) => Ordering::Greater,
-            (JValue::String(_), JValue::Array(_)) => Ordering::Less,
-            (JValue::String(_), JValue::Object(_)) => Ordering::Less,
-            #[cfg(feature = "python")]
-            (JValue::String(_), JValue::LazyPyDict(_)) => Ordering::Less,
-
-            (JValue::Array(_), JValue::Bool(_)) => Ordering::Greater,
-            (JValue::Array(_), JValue::Number(_)) => Ordering::Greater,
-            (JValue::Array(_), JValue::String(_)) => Ordering::Greater,
-            (JValue::Array(_), JValue::Object(_)) => Ordering::Less,
-            #[cfg(feature = "python")]
-            (JValue::Array(_), JValue::LazyPyDict(_)) => Ordering::Less,
-
-            (JValue::Object(_), _) => Ordering::Greater,
-            #[cfg(feature = "python")]
-            (JValue::LazyPyDict(_), _) => Ordering::Greater,
-            _ => Ordering::Equal,
         }
+        Ordering::Equal
+    }
+
+    /// jsonata-js `fn.sort`'s merge sort over item indices: split at the
+    /// middle, sort each half, and merge taking the right item only when the
+    /// comparator says the left one goes after it.
+    fn merge_sort_keyed(
+        order: &mut [usize],
+        buffer: &mut Vec<usize>,
+        keys: &[(usize, Vec<JValue>)],
+        terms: &[(AstNode, bool)],
+    ) -> Result<(), EvaluatorError> {
+        if order.len() <= 1 {
+            return Ok(());
+        }
+        let middle = order.len() / 2;
+        Self::merge_sort_keyed(&mut order[..middle], buffer, keys, terms)?;
+        Self::merge_sort_keyed(&mut order[middle..], buffer, keys, terms)?;
+        buffer.clear();
+        let (mut i, mut j) = (0, middle);
+        while i < middle && j < order.len() {
+            if Self::sort_keys_after(&keys[order[i]].1, &keys[order[j]].1, terms)? {
+                buffer.push(order[j]);
+                j += 1;
+            } else {
+                buffer.push(order[i]);
+                i += 1;
+            }
+        }
+        buffer.extend_from_slice(&order[i..middle]);
+        buffer.extend_from_slice(&order[j..]);
+        order.copy_from_slice(buffer);
+        Ok(())
+    }
+
+    /// jsonata-js's order-by comparator: true when the item with keys `a`
+    /// goes after the one with keys `b`. An undefined term sorts last in
+    /// either direction and is checked before the types; other terms must
+    /// both be numbers or both be strings.
+    fn sort_keys_after(
+        a: &[JValue],
+        b: &[JValue],
+        terms: &[(AstNode, bool)],
+    ) -> Result<bool, EvaluatorError> {
+        fn type_name(value: &JValue) -> &'static str {
+            match value {
+                JValue::Number(_) => "number",
+                JValue::String(_) => "string",
+                _ => "object",
+            }
+        }
+        let mut comp = Ordering::Equal;
+        for (index, (_, ascending)) in terms.iter().enumerate() {
+            if comp != Ordering::Equal {
+                break;
+            }
+            let (aa, bb) = (&a[index], &b[index]);
+            match (aa.is_undefined(), bb.is_undefined()) {
+                (true, true) => continue,
+                (true, false) => {
+                    comp = Ordering::Greater;
+                    continue;
+                }
+                (false, true) => {
+                    comp = Ordering::Less;
+                    continue;
+                }
+                (false, false) => {}
+            }
+            comp = match (aa, bb) {
+                (JValue::Number(x), JValue::Number(y)) => {
+                    x.partial_cmp(y).unwrap_or(Ordering::Equal)
+                }
+                (JValue::String(x), JValue::String(y)) => x.cmp(y),
+                (JValue::Number(_) | JValue::String(_), JValue::Number(_) | JValue::String(_)) => {
+                    return Err(EvaluatorError::TypeError(format!(
+                        "T2007: Type mismatch when comparing values in order-by clause: {} and {}",
+                        type_name(aa),
+                        type_name(bb)
+                    )));
+                }
+                _ => {
+                    return Err(EvaluatorError::TypeError(
+                        "T2008: The expressions within an order-by clause must evaluate to numeric or string values"
+                            .to_string(),
+                    ));
+                }
+            };
+            if !*ascending {
+                comp = comp.reverse();
+            }
+        }
+        Ok(comp == Ordering::Greater)
     }
 
     /// Check if a value is truthy (JSONata semantics).

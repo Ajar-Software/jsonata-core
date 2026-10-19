@@ -110,3 +110,16 @@ fn many_failed_evaluations_do_not_grow_the_scope_stack() {
     );
     assert_eq!(eval(&mut ev, "$v", &data), Ok(JValue::Undefined));
 }
+
+/// A sort that fails partway leaves no state for the next path (#221): a
+/// failing predicate on a first-step sort of a single consarray value once
+/// left a flag set that made the next evaluation's first path undefined.
+#[test]
+fn failed_sort_leaves_no_path_state() {
+    let data = JValue::from(serde_json::json!({"a": {"b": 1}}));
+    let mut ev = Evaluator::new();
+    assert!(eval(&mut ev, r#"[3][0]^($)[$error("boom")].$"#, &data).is_err());
+    assert_eq!(eval(&mut ev, "a.b", &data), Ok(JValue::from(1.0)));
+    assert!(eval(&mut ev, r#"([3].$)^($)[$error("boom")].$"#, &data).is_err());
+    assert_eq!(eval(&mut ev, "a.b", &data), Ok(JValue::from(1.0)));
+}
