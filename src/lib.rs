@@ -155,8 +155,11 @@ pub use expression::Expression;
 // Opt-in faster global allocator; small-allocation throughput is the floor
 // for Python→Rust data conversion. See CHANGELOG (Unreleased → Changed).
 #[cfg(feature = "mimalloc")]
+mod allocator;
+
+#[cfg(feature = "mimalloc")]
 #[global_allocator]
-static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+static GLOBAL: allocator::SmallAlignMiMalloc = allocator::SmallAlignMiMalloc;
 
 // ── Benchmarking facade (only when the "bench" feature is enabled) ────────────
 //
