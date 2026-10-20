@@ -93,6 +93,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Calling an indexed variable calls the function it gives.** `($o := [function(){1}];
+  $o[0]())` is 1 and `$string[0](1)` is `"1"`, as in jsonata-js, which evaluates a call's
+  procedure expression and calls the result; they were parse errors ("Invalid function name"),
+  and T1006 in v2.2.11, so `$exists($o) ? $o[0]() : "none"` failed to compile instead of giving
+  `"none"`. An indexed field as a path's last step is called in each context item, as `(` binds
+  tighter than `.` in jsonata-js: `$o.g[0]()` gives what `g[0]` returns (it was T1006). An
+  index that gives no function is still T1006 (T1008 for a partial application).
 - **A group-by on a leading array constructor followed by another step is undefined again**,
   as in jsonata-js and v2.2.11. jsonata-js groups on the constructor node and evaluates that
   step once, so the next step reads the grouped object as an input with no items. Since the

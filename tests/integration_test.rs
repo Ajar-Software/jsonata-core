@@ -3336,3 +3336,62 @@ fn test_group_on_leading_constructor_unchanged_cases() {
         assert!(err.contains("S0209"), "{expr}: {err}");
     }
 }
+
+// ── Calling an indexed variable or field ─────────────────────────────────────
+//
+// jsonata-js evaluates a call's procedure expression and calls what it gives,
+// so `$o[0]()` calls the first function in `$o`. A one-step path that is not a
+// bare name was a parse error ("Invalid function name"). In `$o.g[0]()` the
+// call is the last step (`(` binds tighter than `.`), so `g[0]` is called in
+// each item of `$o`.
+
+#[test]
+fn test_call_of_indexed_function() {
+    for (expr, expected) in [
+        ("($o := [function(){1}]; $o[0]())", "Ok(1)"),
+        ("$string[0](1)", r#"Ok("1")"#),
+        (r#"$exists($o) ? $o[0]() : "none""#, r#"Ok("none")"#),
+        (
+            "($o := [function($x){$x+1}, function($x){$x*2}]; $o[-1](5))",
+            "Ok(10)",
+        ),
+        ("($o := [function(){1}]; $o[0]()[0])", "Ok(1)"),
+        ("($o := [function($a,$b){$a-$b}]; $o[0](?, 1)(5))", "Ok(4)"),
+        (r#"($o := {"g": [function(){7}]}; $o.g[0]())"#, "Ok(7)"),
+        (
+            r#"($o := {"g": [function(){7}, function(){8}]}; $o.g[1]())"#,
+            "Ok(8)",
+        ),
+        (
+            r#"($o := {"g": {"h": [function(){9}]}}; $o.g.h[0]())"#,
+            "Ok(9)",
+        ),
+        (
+            r#"($o := [{"g": [function(){7}]}, {"g": [function(){8}]}]; $o.g[0]())"#,
+            "Ok([7,8])",
+        ),
+    ] {
+        let (tree_walker, default) = eval_both_engines(expr, EvaluatorOptions::default());
+        assert_eq!(tree_walker, expected, "tree-walker: {expr}");
+        assert_eq!(default, expected, "default: {expr}");
+    }
+}
+
+#[test]
+fn test_call_of_indexed_non_function_raises() {
+    for (expr, code) in [
+        ("$o[0]()", "T1006"),
+        ("($o := [1]; $o[0]())", "T1006"),
+        ("($o := [function(){1}]; $o[$]())", "T1006"),
+        ("($o := [function(){1}]; $o[]())", "T1006"),
+        (r#"($o := {"g": [1]}; $o.g[0]())"#, "T1006"),
+        ("($o := [1]; $o[0](?))", "T1008"),
+    ] {
+        let (tree_walker, default) = eval_both_engines(expr, EvaluatorOptions::default());
+        assert!(
+            tree_walker.contains(code),
+            "tree-walker: {expr} => {tree_walker}"
+        );
+        assert!(default.contains(code), "default: {expr} => {default}");
+    }
+}

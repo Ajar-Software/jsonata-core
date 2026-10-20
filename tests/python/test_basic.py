@@ -52,6 +52,28 @@ class TestCompile:
             f"Expected error to start with 'Parse error:', got: {error_msg}"
         )
 
+    @pytest.mark.parametrize(
+        "expression, expected",
+        [
+            ("($o := [function(){1}]; $o[0]())", 1),
+            ("$string[0](1)", "1"),
+            ('$exists($o) ? $o[0]() : "none"', "none"),
+            ('($o := {"g": [function(){7}]}; $o.g[0]())', 7),
+        ],
+    )
+    def test_compile_call_of_indexed_function(self, expression, expected):
+        """Calling an indexed variable or field compiles and calls what the index gives.
+
+        It was a parse error ("Invalid function name"); jsonata-js calls the
+        function the procedure expression evaluates to.
+        """
+        assert jsonatapy.compile(expression).evaluate(None) == expected
+
+    def test_call_of_indexed_non_function_raises_t1006(self):
+        """An indexed value that is not a function raises T1006 when called."""
+        with pytest.raises(ValueError, match="T1006"):
+            jsonatapy.compile("($o := [1]; $o[0]())").evaluate(None)
+
 
 class TestJsonataExpression:
     """Tests for JsonataExpression class"""
