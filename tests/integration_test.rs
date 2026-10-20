@@ -732,8 +732,9 @@ fn test_recursion_through_tail_called_partial_applications() {
         }
         out
     });
-    let u1001 =
-        "Err(Evaluation error: U1001: Stack overflow - maximum recursion depth (30000) exceeded)";
+    let u1001 = "Err(Evaluation error: U1001: Stack overflow error: evaluation nested deeper \
+                 than 30000 levels. Check for non-terminating recursive function. Consider \
+                 rewriting as tail-recursive.)";
     assert_eq!(
         outcome,
         format!(
