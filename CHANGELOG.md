@@ -93,6 +93,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`~>` into a call of an expression's value passes the left side as the first argument.**
+  `"x" ~> $uppercase[0]()` is `"X"` and `1 ~> $o[1]()` calls `$o[1]` with 1, as in
+  jsonata-js; only a call of a named function got the left side, so these called the function
+  without it (T0410) or applied its result (T2006).
 - **A called path naming a function without its `$` raises T1005**, as in jsonata-js:
   `uppercase#$i()`, `uppercase[0]()` and `($x := 1; x#$i())` suggest `$uppercase` and `$x`
   instead of raising T1006. As upstream, the hint is given when the path gives nothing and

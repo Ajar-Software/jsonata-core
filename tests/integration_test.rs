@@ -3539,3 +3539,49 @@ fn test_call_of_path_naming_a_function_is_t1005() {
         assert!(default.contains(code), "default: {expr} => {default}");
     }
 }
+
+// ── `~>` into a call of an expression's value ────────────────────────────────
+//
+// jsonata-js invokes any function call on the right of `~>` with the left
+// side as its first argument, including a call whose procedure is an
+// expression (`$uppercase[0]()`, `$o[1]()`, `$o#$i(4)`). Only a call of a
+// named function did; the others were evaluated as calls first (T0410,
+// T2006).
+
+#[test]
+fn test_chain_into_call_of_expression() {
+    for (expr, expected) in [
+        (r#""x" ~> $uppercase[0]()"#, r#"Ok("X")"#),
+        (
+            "($o := [function(){1}, function($v){$v+10}]; 1 ~> $o[1]())",
+            "Ok(11)",
+        ),
+        ("($o := [function($a,$b){$a-$b}]; 10 ~> $o[0](3))", "Ok(7)"),
+        (
+            "($o := [function($a,$b){$a-$b}]; 10 ~> $o[0](?, 3))",
+            "Ok(7)",
+        ),
+        ("($o := [function($a,$b){$a-$b}]; 10 ~> $o#$i(4))", "Ok(6)"),
+        ("($o := [function($a){[$a]}]; 10 ~> $o[0]()[])", "Ok([10])"),
+        (
+            "($o := [function($x){$count($x)}]; nope ~> $o[0]())",
+            "Ok(0)",
+        ),
+        ("1 ~> $string[0]()", r#"Ok("1")"#),
+    ] {
+        let (tree_walker, default) = eval_both_engines(expr, EvaluatorOptions::default());
+        assert_eq!(tree_walker, expected, "tree-walker: {expr}");
+        assert_eq!(default, expected, "default: {expr}");
+    }
+    for (expr, code) in [
+        ("($o := [1]; 10 ~> $o[0]())", "T1006"),
+        ("10 ~> uppercase[0]()", "T1005"),
+    ] {
+        let (tree_walker, default) = eval_both_engines(expr, EvaluatorOptions::default());
+        assert!(
+            tree_walker.contains(code),
+            "tree-walker: {expr} => {tree_walker}"
+        );
+        assert!(default.contains(code), "default: {expr} => {default}");
+    }
+}

@@ -99,6 +99,17 @@ class TestCompile:
         with pytest.raises(ValueError, match="T1005"):
             jsonatapy.compile("uppercase#$i()").evaluate(None)
 
+    @pytest.mark.parametrize(
+        "expression, expected",
+        [
+            ('"x" ~> $uppercase[0]()', "X"),
+            ("($o := [function(){1}, function($v){$v+10}]; 1 ~> $o[1]())", 11),
+        ],
+    )
+    def test_chain_into_call_of_indexed_function(self, expression, expected):
+        """`~>` passes its left side as the first argument of any call on its right."""
+        assert jsonatapy.compile(expression).evaluate(None) == expected
+
 
 class TestJsonataExpression:
     """Tests for JsonataExpression class"""

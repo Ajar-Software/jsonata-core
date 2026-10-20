@@ -5626,6 +5626,26 @@ impl Evaluator {
                 };
             }
         }
+        // A call of an expression's value, such as `$uppercase[0]()` or
+        // `$o[1]()`: as jsonata-js `evaluateFunction` with the left side as
+        // its context, which goes first among the arguments.
+        if let AstNode::Call { procedure, args } = call {
+            if !args.iter().any(|a| matches!(a, AstNode::Placeholder)) {
+                let lhs_value = self.evaluate_internal(lhs, data)?;
+                let callable = self.evaluate_internal(procedure, data)?;
+                self.check_callable(&callable, procedure)?;
+                let mut values = Vec::with_capacity(args.len() + 1);
+                values.push(lhs_value);
+                for arg in args {
+                    values.push(self.evaluate_internal(arg, data)?);
+                }
+                let result = self.call_function_value(&callable, &values, data)?;
+                return match path_steps {
+                    Some(steps) => self.finish_chained_path(steps, result),
+                    None => Ok(result.unwrap_sequence()),
+                };
+            }
+        }
 
         let lhs_value = self.evaluate_internal(lhs, data)?;
         // An inline lambda applied to a value is invoked directly, without
@@ -9430,30 +9450,38 @@ impl Evaluator {
             };
             return self.build_partial_application(target, args, data);
         }
-        if !callable.is_function() {
-            // jsonata-js `evaluateFunction`: a procedure path that gives
-            // nothing, and whose first step names something bound in the
-            // environment, was probably missing its `$` -- T1005 with the
-            // suggestion, as for `uppercase#$i()` or `uppercase[0]()`.
-            if callable.is_undefined() {
-                if let Some(name) = Self::procedure_first_name(procedure) {
-                    if self.name_is_bound_js_truthy(name) {
-                        return Err(EvaluatorError::ReferenceError(format!(
-                            "T1005: Attempted to invoke a non-function. Did you mean ${}?",
-                            name
-                        )));
-                    }
-                }
-            }
-            return Err(EvaluatorError::TypeError(
-                "T1006: Attempted to invoke a non-function".to_string(),
-            ));
-        }
+        self.check_callable(&callable, procedure)?;
         let mut evaluated_args = Vec::with_capacity(args.len());
         for arg in args.iter() {
             evaluated_args.push(self.evaluate_internal(arg, data)?);
         }
         self.call_function_value(&callable, &evaluated_args, data)
+    }
+
+    /// The error for calling `callable`, the value of `procedure`, when it
+    /// is not a function: T1006, or T1005 as jsonata-js `evaluateFunction`
+    /// raises it.
+    fn check_callable(&self, callable: &JValue, procedure: &AstNode) -> Result<(), EvaluatorError> {
+        if callable.is_function() {
+            return Ok(());
+        }
+        // A procedure path that gives nothing, and whose first step names
+        // something bound in the environment, was probably missing its `$`:
+        // T1005 with the suggestion, as for `uppercase#$i()` or
+        // `uppercase[0]()`.
+        if callable.is_undefined() {
+            if let Some(name) = Self::procedure_first_name(procedure) {
+                if self.name_is_bound_js_truthy(name) {
+                    return Err(EvaluatorError::ReferenceError(format!(
+                        "T1005: Attempted to invoke a non-function. Did you mean ${}?",
+                        name
+                    )));
+                }
+            }
+        }
+        Err(EvaluatorError::TypeError(
+            "T1006: Attempted to invoke a non-function".to_string(),
+        ))
     }
 
     /// The name of a called path's first step, which jsonata-js looks up
