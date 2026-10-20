@@ -11,6 +11,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+### Deprecated
+
+### Removed
+
+### Fixed
+
+### Security
+
+## [2.2.12] "Gymkata" - 2026-10-20
+
+### Added
+
+### Changed
+
 - **The mimalloc allocator no longer falls into its aligned slow path.** With the `mimalloc`
   feature (the published wheels), every allocation went through `mi_malloc_aligned`. There,
   once the free list of a size class whose block size is not a power of two runs dry, each
