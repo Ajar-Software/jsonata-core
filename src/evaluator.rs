@@ -5394,7 +5394,7 @@ impl Evaluator {
                 // a partial application or a composition. A `?` argument makes a
                 // partial application; anything that is not a function is T1006.
                 let callable = self.evaluate_internal(procedure, data)?;
-                self.apply_call_value(callable, args, data)
+                self.apply_call_value(callable, procedure, args, data)
             }
 
             AstNode::Conditional {
@@ -9390,7 +9390,7 @@ impl Evaluator {
                 }
                 // Not a thunk - apply the value already evaluated, so the
                 // callee is not evaluated a second time.
-                let result = self.apply_call_value(callable, args, data)?;
+                let result = self.apply_call_value(callable, procedure, args, data)?;
                 Ok(LambdaResult::JValue(result))
             }
 
@@ -9414,6 +9414,7 @@ impl Evaluator {
     fn apply_call_value(
         &mut self,
         callable: JValue,
+        procedure: &AstNode,
         args: &[AstNode],
         data: &JValue,
     ) -> Result<JValue, EvaluatorError> {
@@ -9430,6 +9431,20 @@ impl Evaluator {
             return self.build_partial_application(target, args, data);
         }
         if !callable.is_function() {
+            // jsonata-js `evaluateFunction`: a procedure path that gives
+            // nothing, and whose first step names something bound in the
+            // environment, was probably missing its `$` -- T1005 with the
+            // suggestion, as for `uppercase#$i()` or `uppercase[0]()`.
+            if callable.is_undefined() {
+                if let Some(name) = Self::procedure_first_name(procedure) {
+                    if self.name_is_bound_js_truthy(name) {
+                        return Err(EvaluatorError::ReferenceError(format!(
+                            "T1005: Attempted to invoke a non-function. Did you mean ${}?",
+                            name
+                        )));
+                    }
+                }
+            }
             return Err(EvaluatorError::TypeError(
                 "T1006: Attempted to invoke a non-function".to_string(),
             ));
@@ -9439,6 +9454,38 @@ impl Evaluator {
             evaluated_args.push(self.evaluate_internal(arg, data)?);
         }
         self.call_function_value(&callable, &evaluated_args, data)
+    }
+
+    /// The name of a called path's first step, which jsonata-js looks up
+    /// for its T1005 hint: `uppercase` in `uppercase#$i()` and in
+    /// `a.uppercase[0]()`, whose call is the path step `uppercase[0]()`.
+    fn procedure_first_name(procedure: &AstNode) -> Option<&str> {
+        match procedure {
+            AstNode::Path { steps } => match &steps.first()?.node {
+                AstNode::Name(name) => Some(name),
+                _ => None,
+            },
+            AstNode::Binary {
+                op: BinaryOp::IndexBind | BinaryOp::FocusBind,
+                lhs,
+                ..
+            } => Self::procedure_first_name(lhs),
+            _ => None,
+        }
+    }
+
+    /// Whether jsonata-js's `environment.lookup(name)` gives a JavaScript
+    /// truthy value: a builtin or host function not shadowed by a binding,
+    /// or a binding holding anything but undefined, null, false, 0, NaN or "".
+    fn name_is_bound_js_truthy(&self, name: &str) -> bool {
+        match self.context.lookup(name) {
+            Some(JValue::Undefined | JValue::Null) => false,
+            Some(JValue::Bool(b)) => *b,
+            Some(JValue::Number(n)) => *n != 0.0 && !n.is_nan(),
+            Some(JValue::String(s)) => !s.is_empty(),
+            Some(_) => true,
+            None => self.is_builtin_function(name) || self.host_fns.contains_key(name),
+        }
     }
 
     /// Call a function value, a lambda, a builtin or a regex, with `values`.

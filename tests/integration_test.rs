@@ -3512,3 +3512,30 @@ fn test_call_of_bound_step_errors() {
         assert!(default.contains(code), "default: {expr} => {default}");
     }
 }
+
+// ── T1005 for a called path that names a function ────────────────────────────
+//
+// jsonata-js raises T1005 ("Did you mean $name?") when a call's procedure
+// path gives nothing and its first step's name is bound in the environment
+// to a (JavaScript-)truthy value: a builtin, or a `$name` binding.
+
+#[test]
+fn test_call_of_path_naming_a_function_is_t1005() {
+    for (expr, code) in [
+        ("uppercase#$i()", "T1005"),
+        ("uppercase@$i()", "T1005"),
+        ("uppercase[0]()", "T1005"),
+        (r#"($a := "x"; $a.uppercase#$i())"#, "T1005"),
+        ("($x := 1; x#$i())", "T1005"),
+        ("($uppercase := 0; uppercase#$i())", "T1006"),
+        (r##""uppercase"#$i()"##, "T1006"),
+        ("foo#$i()", "T1006"),
+    ] {
+        let (tree_walker, default) = eval_both_engines(expr, EvaluatorOptions::default());
+        assert!(
+            tree_walker.contains(code),
+            "tree-walker: {expr} => {tree_walker}"
+        );
+        assert!(default.contains(code), "default: {expr} => {default}");
+    }
+}

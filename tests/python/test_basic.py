@@ -94,6 +94,11 @@ class TestCompile:
         with pytest.raises(ValueError, match="S0215"):
             jsonatapy.compile("($o := [function($x){$x}]; $o[0]@$v(3))").evaluate(None)
 
+    def test_call_of_bound_builtin_name_raises_t1005(self):
+        """A called path naming a builtin without its `$` is T1005, as in jsonata-js."""
+        with pytest.raises(ValueError, match="T1005"):
+            jsonatapy.compile("uppercase#$i()").evaluate(None)
+
 
 class TestJsonataExpression:
     """Tests for JsonataExpression class"""

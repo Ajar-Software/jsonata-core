@@ -93,6 +93,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A called path naming a function without its `$` raises T1005**, as in jsonata-js:
+  `uppercase#$i()`, `uppercase[0]()` and `($x := 1; x#$i())` suggest `$uppercase` and `$x`
+  instead of raising T1006. As upstream, the hint is given when the path gives nothing and
+  its first step names a builtin or a binding with a JavaScript-truthy value.
 - **Calling a step with an index or focus binding calls what the step gives.**
   `($o := [function($x){$x}]; $o#$i(3))` and `$o.g[0]#$i(3)` are 3, as in jsonata-js, where
   `#` and `@` bind tighter than `.` and `(` takes the bound step as its procedure; they were
