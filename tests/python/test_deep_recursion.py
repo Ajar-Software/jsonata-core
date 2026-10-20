@@ -367,3 +367,35 @@ def test_deep_python_input_read_down_is_freed(engine, form):
     )
     assert proc.returncode == 0, f"process crashed ({proc.returncode}): {proc.stderr[-2000:]}"
     assert json.loads(proc.stdout) == {"count": 1}
+
+
+TAIL_LOOP = "($loop := function($n){ $n = 0 ? 'done' : $loop($n - 1) }; $loop(%d))"
+
+
+def test_tail_loop_has_no_iteration_cap(engine):
+    # jsonata-js runs a tail loop as long as it keeps calling. It used to stop
+    # here at 100,000 iterations with "U1001: ... maximum recursion depth
+    # (500) exceeded", a depth nothing enforced (GitHub issue #251).
+    assert _evaluate_on_small_stack(engine, TAIL_LOOP % 200000) == {"ok": '"done"'}
+    mutual = (
+        "($even := function($n){ $n = 0 ? true : $odd($n - 1) };"
+        " $odd := function($n){ $n = 0 ? false : $even($n - 1) }; $odd(200001))"
+    )
+    assert _evaluate_on_small_stack(engine, mutual) == {"ok": "true"}
+
+
+def test_tail_loop_keeps_guardrails(engine):
+    # A depth limit still bounds real recursion but not a tail loop, and a
+    # timeout still stops an infinite one.
+    out = _evaluate_on_small_stack(engine, TAIL_LOOP % 150000, max_stack_depth=500)
+    assert out == {"ok": '"done"'}
+    out = _evaluate_on_small_stack(engine, RECURSION % 500, max_stack_depth=500)
+    assert out["error"].startswith("D1011")
+    out = _evaluate_on_small_stack(engine, "($inf := function(){$inf()}; $inf())", timeout=50)
+    assert out["error"].startswith("D1012")
+
+
+def test_u1001_names_the_real_limit(engine):
+    out = _evaluate_on_small_stack(engine, NO_BASE_CASE)
+    assert "30000 levels" in out["error"], out
+    assert "(500)" not in out["error"]

@@ -98,9 +98,8 @@ class TestTimeoutD1012:
         # evaluator call stack. Before the Task-11-followup fix, the
         # trampoline had NO timeout check at all -- only a hardcoded
         # 100,000-iteration cap producing U1001. Now check_loop_timeout is
-        # called every trampoline iteration, and the 100k cap is skipped
-        # entirely once a timeout is configured, so this must raise D1012,
-        # not U1001.
+        # called every trampoline iteration, and the cap is gone (#251), so
+        # the timeout is what stops this loop: D1012, not U1001.
         expr = "($inf := function(){$inf()}; $inf())"
         with pytest.raises(ValueError, match="D1012"):
             jsonatapy.evaluate(expr, None, timeout=100)
