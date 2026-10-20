@@ -2686,6 +2686,47 @@ mod composition_names {
     pub(super) const X: &str = "chain x";
 }
 
+/// How a function is being applied, for the input jsonata-js's `apply`
+/// gives it (which only a builtin it calls in tail position reads).
+#[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
+enum ApplyMode {
+    /// A direct call: the call site's input.
+    #[default]
+    Direct,
+    /// Through the closure `evaluateFunction` wraps a function argument in,
+    /// or by `~>` to a non-call: `apply(fn, args, null, env)`, a null input.
+    Callback,
+    /// The function itself, unwrapped, applied by a builtin that was a
+    /// function's tail call (jsonata-js's trampoline evaluates such a call's
+    /// arguments without wrapping them): `procedure.apply`, which applies it
+    /// with the input it was defined with.
+    Raw,
+}
+
+/// The function arguments of a builtin that is running as a function's
+/// tail call (see `ApplyMode::Raw`): its argument nodes (as an address
+/// range), and the function values it was given already evaluated.
+struct RawHof {
+    args: (usize, usize),
+    fns: Vec<usize>,
+}
+
+/// The builtins that apply functions they are given.
+fn is_hof_builtin(name: &str) -> bool {
+    matches!(
+        name,
+        "map" | "filter" | "reduce" | "single" | "sift" | "each" | "sort" | "match" | "replace"
+    )
+}
+
+/// The address of a function value's closure, to recognize it by.
+fn lambda_ptr(value: &JValue) -> Option<usize> {
+    match value {
+        JValue::Lambda(rc) => Some(Rc::as_ptr(rc) as usize),
+        _ => None,
+    }
+}
+
 /// Result of evaluating a lambda body that may be a tail call
 /// Used for trampoline-based tail call optimization
 enum LambdaResult {
@@ -4332,12 +4373,20 @@ pub struct Evaluator {
     /// wrapper). Mirrors jsonata-js keeping `path.tuple` for such a path instead
     /// of projecting each tuple's `@`.
     keep_tuple_stream: bool,
-    /// Set by `as_callback` just before a function is applied the way
-    /// jsonata-js applies a function argument of a builtin (its closure
-    /// wrapper) or the right side of `~>`: `apply(fn, args, null, env)`,
-    /// with a null input. The function entry points take it, so it marks
-    /// only that one application.
-    callback_apply: bool,
+    /// Set by `apply_with` just before a function is applied other than
+    /// directly (see `ApplyMode`). The function entry points take it, so it
+    /// marks only that one application.
+    callback_apply: ApplyMode,
+    /// Set while a builtin runs as a function's tail call: the callbacks it
+    /// applies itself are applied raw (`ApplyMode::Raw`), not as callbacks.
+    raw_hof: Option<RawHof>,
+    /// The functions passed as arguments of the direct calls of user
+    /// functions that are running, by closure address, with a count.
+    /// jsonata-js passes each wrapped in a closure that applies it with a
+    /// null input, so a call of one of them inside the callee is applied as
+    /// a callback. Recognizing them by address stands in for the wrapper; it
+    /// misses one that escapes the call.
+    wrapped_fns: HashMap<usize, usize>,
     /// The input of the running trampoline's `apply` (jsonata-js
     /// `apply(proc, args, input, env)`): null for a callback, the call
     /// site's input for a direct call. A builtin called in tail position
@@ -4428,7 +4477,9 @@ impl Evaluator {
             recursion_depth: 0,
             tuple_stream_created: false,
             keep_tuple_stream: false,
-            callback_apply: false,
+            callback_apply: ApplyMode::Direct,
+            raw_hof: None,
+            wrapped_fns: HashMap::new(),
             tail_apply_input: None,
             options: EvaluatorOptions::default(),
             start_time: None,
@@ -4443,7 +4494,9 @@ impl Evaluator {
             recursion_depth: 0,
             tuple_stream_created: false,
             keep_tuple_stream: false,
-            callback_apply: false,
+            callback_apply: ApplyMode::Direct,
+            raw_hof: None,
+            wrapped_fns: HashMap::new(),
             tail_apply_input: None,
             options: EvaluatorOptions::default(),
             start_time: None,
@@ -4460,7 +4513,9 @@ impl Evaluator {
             recursion_depth: 0,
             tuple_stream_created: false,
             keep_tuple_stream: false,
-            callback_apply: false,
+            callback_apply: ApplyMode::Direct,
+            raw_hof: None,
+            wrapped_fns: HashMap::new(),
             tail_apply_input: None,
             options,
             start_time: None,
@@ -4554,15 +4609,12 @@ impl Evaluator {
         args: &[JValue],
         data: &JValue,
     ) -> Result<JValue, EvaluatorError> {
-        let callback = std::mem::take(&mut self.callback_apply);
+        let mode = std::mem::take(&mut self.callback_apply);
         // A partial application carries its own invocation recipe; no scope,
         // signature, or body evaluation of its own.
         if let Some(partial) = &stored.partial {
             let partial = Rc::clone(partial);
-            if callback {
-                return self.as_callback(|ev| ev.invoke_partial(&partial, args, data));
-            }
-            return self.invoke_partial(&partial, args, data);
+            return self.apply_with(mode, |ev| ev.invoke_partial(&partial, args, data));
         }
         if let Some(result) = self.invoke_transform(stored, args) {
             return result;
@@ -4589,7 +4641,7 @@ impl Evaluator {
             Some(&stored.captured_env)
         };
         let captured_data = stored.captured_data.as_ref();
-        self.callback_apply = callback;
+        self.callback_apply = mode;
         self.invoke_lambda_with_env(
             &stored.params,
             &stored.body,
@@ -7811,7 +7863,7 @@ impl Evaluator {
                     return self
                         .as_callback(|ev| ev.call_function_value(&value, &evaluated_args, data));
                 }
-                return self.call_function_value(&value, &evaluated_args, data);
+                return self.call_directly(&value, &evaluated_args, data);
             }
             // Any other value, undefined included, hides a builtin or host
             // function of the same name, as a jsonata-js frame binding does:
@@ -8766,12 +8818,6 @@ impl Evaluator {
         }
     }
 
-    /// Apply a higher-order function's callback to `values`.
-    ///
-    /// `evaluate_builtin_call` has already replaced a callback that is not an
-    /// inline lambda or a variable with a variable bound to its value
-    /// (`HOF_CALLBACK`), so the callback is evaluated once, as in
-    /// jsonata-js, however many items it is applied to.
     /// Apply a function the way jsonata-js applies a function argument of a
     /// builtin (the closure `evaluateFunction` wraps it in) or the right side
     /// of `~>`: `apply(fn, args, null, environment)`, with a null input. Only
@@ -8781,12 +8827,139 @@ impl Evaluator {
         &mut self,
         call: impl FnOnce(&mut Self) -> Result<T, EvaluatorError>,
     ) -> Result<T, EvaluatorError> {
-        self.callback_apply = true;
+        self.apply_with(ApplyMode::Callback, call)
+    }
+
+    /// Run `call`, a function application, applied as `mode` says.
+    fn apply_with<T>(
+        &mut self,
+        mode: ApplyMode,
+        call: impl FnOnce(&mut Self) -> Result<T, EvaluatorError>,
+    ) -> Result<T, EvaluatorError> {
+        self.callback_apply = mode;
         let result = call(self);
-        self.callback_apply = false;
+        self.callback_apply = ApplyMode::Direct;
         result
     }
 
+    /// Apply a callback a builtin was given, at `node` (with `value`, its
+    /// function, unless it is an inline lambda): as a callback, or raw when
+    /// the builtin is a function's tail call and the function is not one
+    /// that came in wrapped. Nothing the callback runs is the builtin's own
+    /// application, so `raw_hof` is cleared while it runs.
+    fn apply_hof_callback<T>(
+        &mut self,
+        node: &AstNode,
+        value: Option<&JValue>,
+        call: impl FnOnce(&mut Self) -> Result<T, EvaluatorError>,
+    ) -> Result<T, EvaluatorError> {
+        let mode = match &self.raw_hof {
+            None => ApplyMode::Callback,
+            Some(raw) => {
+                let at = node as *const AstNode as usize;
+                let in_args = (raw.args.0..raw.args.1).contains(&at)
+                    || matches!(node, AstNode::Variable(name) if name == HOF_CALLBACK);
+                let ptr = value.and_then(lambda_ptr);
+                let listed = in_args || ptr.is_some_and(|p| raw.fns.contains(&p));
+                match (value, ptr) {
+                    _ if !listed => ApplyMode::Callback,
+                    (None, _) => ApplyMode::Raw,
+                    (Some(_), Some(p)) if !self.is_wrapped(p) => ApplyMode::Raw,
+                    _ => ApplyMode::Callback,
+                }
+            }
+        };
+        let raw = self.raw_hof.take();
+        let result = self.apply_with(mode, call);
+        self.raw_hof = raw;
+        result
+    }
+
+    /// Run `call`, a builtin applied as a function's tail call, whose
+    /// argument nodes are `args` and evaluated function arguments `values`:
+    /// it applies those functions raw (see `ApplyMode::Raw`).
+    fn as_raw_hof<T>(
+        &mut self,
+        args: &[AstNode],
+        values: &[JValue],
+        call: impl FnOnce(&mut Self) -> Result<T, EvaluatorError>,
+    ) -> Result<T, EvaluatorError> {
+        let start = args.as_ptr() as usize;
+        let raw = RawHof {
+            args: (start, start + std::mem::size_of_val(args)),
+            fns: values.iter().filter_map(lambda_ptr).collect(),
+        };
+        let outer = self.raw_hof.replace(raw);
+        let result = call(self);
+        self.raw_hof = outer;
+        result
+    }
+
+    /// Whether the function at closure address `ptr` came in as an argument
+    /// of a running direct call (see `wrapped_fns`).
+    fn is_wrapped(&self, ptr: usize) -> bool {
+        !self.wrapped_fns.is_empty() && self.wrapped_fns.contains_key(&ptr)
+    }
+
+    /// Whether `function` came in wrapped (see `wrapped_fns`).
+    fn is_wrapped_fn(&self, function: &JValue) -> bool {
+        lambda_ptr(function).is_some_and(|p| self.is_wrapped(p))
+    }
+
+    /// Run `call`, a direct call of a user function with arguments `values`,
+    /// with the functions among them marked wrapped (see `wrapped_fns`).
+    fn with_wrapped_args<T>(
+        &mut self,
+        values: &[JValue],
+        call: impl FnOnce(&mut Self) -> Result<T, EvaluatorError>,
+    ) -> Result<T, EvaluatorError> {
+        let ptrs: Vec<usize> = values.iter().filter_map(lambda_ptr).collect();
+        if ptrs.is_empty() {
+            return call(self);
+        }
+        for &p in &ptrs {
+            *self.wrapped_fns.entry(p).or_insert(0) += 1;
+        }
+        let result = call(self);
+        for p in ptrs {
+            if let Some(count) = self.wrapped_fns.get_mut(&p) {
+                *count -= 1;
+                if *count == 0 {
+                    self.wrapped_fns.remove(&p);
+                }
+            }
+        }
+        result
+    }
+
+    /// A direct call of `function` with `values`: a user function's
+    /// function arguments come in wrapped, and a function that itself came
+    /// in wrapped is applied as a callback, as its jsonata-js wrapper is.
+    fn call_directly(
+        &mut self,
+        function: &JValue,
+        values: &[JValue],
+        data: &JValue,
+    ) -> Result<JValue, EvaluatorError> {
+        if !matches!(function, JValue::Lambda(_)) {
+            return self.call_function_value(function, values, data);
+        }
+        let mode = if self.is_wrapped_fn(function) {
+            ApplyMode::Callback
+        } else {
+            ApplyMode::Direct
+        };
+        self.with_wrapped_args(values, |ev| {
+            ev.apply_with(mode, |ev| ev.call_function_value(function, values, data))
+        })
+    }
+
+    /// Apply a higher-order function's callback to `values`.
+    ///
+    /// `evaluate_builtin_call` has already replaced a callback that is not an
+    /// inline lambda or a variable with a variable bound to its value
+    /// (`HOF_CALLBACK`), so the callback is evaluated once, as in
+    /// jsonata-js, however many items it is applied to.
     fn apply_function(
         &mut self,
         func_node: &AstNode,
@@ -8801,7 +8974,7 @@ impl Evaluator {
                 thunk,
             } => {
                 // Direct lambda - invoke it
-                self.as_callback(|ev| {
+                self.apply_hof_callback(func_node, None, |ev| {
                     ev.invoke_lambda(params, body, signature.as_ref(), values, data, *thunk)
                 })
             }
@@ -8810,7 +8983,9 @@ impl Evaluator {
                     // A lambda (closure, partial application, composition,
                     // transform), a builtin reference or a regex.
                     if value.is_function() {
-                        return self.as_callback(|ev| ev.call_function_value(&value, values, data));
+                        return self.apply_hof_callback(func_node, Some(&value), |ev| {
+                            ev.call_function_value(&value, values, data)
+                        });
                     }
                     // Regular variable value - evaluate with first value as context
                     if values.is_empty() {
@@ -9060,7 +9235,7 @@ impl Evaluator {
         thunk: bool,
         self_rc: Option<&Rc<StoredLambda>>,
     ) -> Result<JValue, EvaluatorError> {
-        let callback = std::mem::take(&mut self.callback_apply);
+        let mode = std::mem::take(&mut self.callback_apply);
         // If this is a thunk (has tail calls), use TCO trampoline
         if thunk {
             let stored = match self_rc {
@@ -9080,9 +9255,14 @@ impl Evaluator {
                     def_scope: self.context.def_scope(),
                 }),
             };
-            // jsonata-js's `apply` input: null for a callback, else the
+            // jsonata-js's `apply` input: null for a callback, the input
+            // the function was defined with when applied raw, else the
             // caller's input.
-            let apply_input = if callback { JValue::Null } else { data.clone() };
+            let apply_input = match mode {
+                ApplyMode::Callback => JValue::Null,
+                ApplyMode::Raw => captured_data.cloned().unwrap_or_else(|| data.clone()),
+                ApplyMode::Direct => data.clone(),
+            };
             return self.invoke_lambda_with_tco(&stored, values, data, apply_input);
         }
 
@@ -9426,6 +9606,17 @@ impl Evaluator {
                     for arg in args {
                         evaluated_args.push(self.evaluate_internal(arg, data)?);
                     }
+                    // A function that came in wrapped is applied through its
+                    // wrapper, with a null input, not continued here.
+                    let function = JValue::Lambda(Rc::clone(&stored_lambda));
+                    if self.is_wrapped_fn(&function) {
+                        let result = self.with_checkpoint(|ev| {
+                            ev.as_callback(|ev| {
+                                ev.call_function_value(&function, &evaluated_args, data)
+                            })
+                        })?;
+                        return Ok(LambdaResult::JValue(result));
+                    }
                     if Self::composition_parts(&stored_lambda).is_some() {
                         return self.with_checkpoint(|ev| {
                             ev.tail_call_composition(stored_lambda, evaluated_args, data)
@@ -9464,7 +9655,9 @@ impl Evaluator {
                         .replace((self.context.tail_base, height));
                     let input = self.tail_input(data);
                     let result = self.with_checkpoint(|ev| {
-                        ev.call_builtin_with_values(name, &evaluated_args, &input)
+                        ev.as_raw_hof(args, &evaluated_args, |ev| {
+                            ev.call_builtin_with_values(name, &evaluated_args, &input)
+                        })
                     });
                     self.context.callback_base = outer;
                     return Ok(LambdaResult::JValue(result?));
@@ -9495,7 +9688,9 @@ impl Evaluator {
                     }
                     let input = self.tail_input(data);
                     let result = self.with_checkpoint(|ev| {
-                        ev.call_builtin_with_values(name, &evaluated_args, &input)
+                        ev.as_raw_hof(args, &evaluated_args, |ev| {
+                            ev.call_builtin_with_values(name, &evaluated_args, &input)
+                        })
                     })?;
                     return Ok(LambdaResult::JValue(result));
                 }
@@ -9507,7 +9702,17 @@ impl Evaluator {
                 // undefined, and `$map([1,2], function(){ $keys({}) })` is
                 // `[[], []]` (#250). A direct call `$f()` still unwraps it,
                 // as its own call node does.
-                let result = self.evaluate_unwrapped_later(node, data)?;
+                // A builtin applies the functions it is given raw here (see
+                // `ApplyMode::Raw`).
+                let result = if !has_placeholder
+                    && is_hof_builtin(name)
+                    && self.context.lookup(name).is_none()
+                    && self.builtin_unshadowed(name, None)
+                {
+                    self.as_raw_hof(args, &[], |ev| ev.evaluate_unwrapped_later(node, data))?
+                } else {
+                    self.evaluate_unwrapped_later(node, data)?
+                };
                 Ok(LambdaResult::JValue(result))
             }
 
@@ -9524,7 +9729,7 @@ impl Evaluator {
 
                 // Check if it's a lambda with TCO
                 if let JValue::Lambda(stored_lambda) = &callable {
-                    if stored_lambda.thunk {
+                    if stored_lambda.thunk && !self.is_wrapped_fn(&callable) {
                         let stored_lambda = Rc::clone(stored_lambda);
                         let mut evaluated_args = Vec::with_capacity(args.len());
                         for arg in args {
@@ -9619,7 +9824,7 @@ impl Evaluator {
         for arg in args.iter() {
             evaluated_args.push(self.evaluate_internal(arg, data)?);
         }
-        self.call_function_value(&callable, &evaluated_args, data)
+        self.call_directly(&callable, &evaluated_args, data)
     }
 
     /// Call a function value, a lambda, a builtin or a regex, with `values`.
@@ -10271,7 +10476,7 @@ impl Evaluator {
     ) -> Result<JValue, EvaluatorError> {
         // A builtin applied as a callback runs with a null input, as
         // jsonata-js's closure wrapper applies it.
-        let context = if std::mem::take(&mut self.callback_apply) {
+        let context = if std::mem::take(&mut self.callback_apply) == ApplyMode::Callback {
             &JValue::Null
         } else {
             context

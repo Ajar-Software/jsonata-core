@@ -120,11 +120,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `$map(["a"], function($e){ $eval("a") })` gave 5 instead of undefined, and
   `($f := function(){ $eval("a") }; {"a":7}.$f())` read the outer input instead of
   `{"a":7}`. This affects only what such a builtin reads from the context: `$eval`'s
-  focus, and a signature's `-` parameter left without an argument. Not yet covered: a
-  function passed as an argument and then called directly inside the callee still runs with
-  the call site's input rather than null (jsonata-js wraps every function argument in a
-  closure), so `($h := function($f){ $f("x") }; $h(function($e){ $eval("a", $nope) }))`
-  gives 5 instead of undefined. That needs a wrapper function value, close to #159.
+  focus, and a signature's `-` parameter left without an argument. A builtin that is
+  itself a function's tail call applies the functions it is given with the input they were
+  defined with, as jsonata-js's trampoline passes them unwrapped:
+  `($o := function(){ $map([1], function(){ $eval("a") }) }; $o())` is 5. A function passed
+  as an argument of a direct call is applied with a null input however the callee calls it,
+  as jsonata-js's wrapper closure applies it:
+  `($h := function($f){ $f("x") }; $h(function($e){ $eval("a", $nope) }))` is undefined.
+  The wrapper is recognized by the function's identity while the call runs, so a function
+  argument that escapes the call and is called later is not.
 - **A filtered array constructor inside an array constructor keeps its nesting**
   ([#249](https://github.com/txjmb/jsonata-core/issues/249)), as in jsonata-js, which pushes
   a member that is an array constructor whole, with any predicates or `[]` after it.

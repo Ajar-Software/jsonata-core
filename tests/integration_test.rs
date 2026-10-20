@@ -3756,3 +3756,86 @@ fn test_filtered_constructor_member_keeps_its_nesting() {
         assert_eq!(default, expected, "default: {expr}");
     }
 }
+
+// ── Functions a tail-position builtin applies; wrapped function arguments ────
+//
+// A builtin that is a function's tail call gets its function arguments
+// unwrapped (jsonata-js's trampoline evaluates them directly), and applies
+// each with the input it was defined with. A function passed as an argument
+// of a direct call is wrapped, so the callee applies it with a null input,
+// however it calls it.
+
+#[test]
+fn test_tail_builtin_applies_its_functions_raw() {
+    for (expr, expected) in [
+        (
+            r#"($o := function(){ $map([1], function(){ $eval("a") }) }; $o())"#,
+            "5",
+        ),
+        (
+            r#"($o := function(){ $map([1,2], function(){ $eval("a") }) }; $o())"#,
+            "[5,5]",
+        ),
+        (
+            r#"($o := function(){ $map([1], function(){ $string() }) }; $o())"#,
+            r#""{\"a\":5,\"b\":{\"a\":7}}""#,
+        ),
+        (
+            r#"($o := function(){ $filter([1], function(){ $eval("a") }) }; $o())"#,
+            "1",
+        ),
+        (
+            r#"($o := function(){ $reduce([1,2], function($a,$b){ $eval("a") }) }; $o())"#,
+            "5",
+        ),
+        (
+            r#"($g := function($x){ $eval("a") }; $o := function(){ $map([1], $g) }; $o())"#,
+            "5",
+        ),
+        (
+            r#"b.($g := function($x){ $eval("a") }; $o := function(){ $map([1], $g) }; $o())"#,
+            "7",
+        ),
+        (
+            r#"($o := function(){ $map([1], function(){ ($eval("a")) }) }; $o())"#,
+            "5",
+        ),
+        (
+            r#"($i := function($n){ $n > 0 ? $i($n-1) : $map([1], function(){ $eval("a") }) }; $i(2))"#,
+            "5",
+        ),
+        // Not a tail call, or a function that came in wrapped: a null input.
+        (
+            r#"($g := function($x){ $eval("a") }; $map([1], $g))"#,
+            "undefined",
+        ),
+        (
+            r#"($o := function(){ [$map([1], function(){ $eval("a") })] }; $o())"#,
+            "[]",
+        ),
+        (
+            r#"($o := function($f){ $map([1], $f) }; $o(function(){ $eval("a") }))"#,
+            "undefined",
+        ),
+        (
+            r#"($o := function($f){ ($g := $f; $map([1], $g)) }; $o(function(){ $eval("a") }))"#,
+            "undefined",
+        ),
+        (
+            r#"($h := function($f){ $f("x") }; $h(function($e){ $eval("a", $nope) }))"#,
+            "undefined",
+        ),
+        (
+            r#"($h := function($f){ [$f("x")] }; $h(function($e){ $eval("a") }))"#,
+            "[]",
+        ),
+        (
+            r#"($p := function($f){ $f() }; $o := function(){ $p(function(){ $map([1], function(){ $eval("a") }) }) }; $o())"#,
+            "5",
+        ),
+    ] {
+        let (tree_walker, default) = eval_both_engines_on(expr, json!({"a": 5, "b": {"a": 7}}));
+        assert_eq!(tree_walker, expected, "tree-walker: {expr}");
+        assert_eq!(default, expected, "default: {expr}");
+    }
+}
