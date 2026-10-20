@@ -5127,9 +5127,15 @@ impl Evaluator {
                 if effective_limit < MAX_EVAL_DEPTH {
                     "D1011: Stack overflow. Check for non-terminating recursive function. Consider rewriting as tail-recursive".to_string()
                 } else {
+                    // jsonata-js has no U1001 of its own; its test runner's
+                    // depth guard (`timeboxExpression`) raises one worded
+                    // "Stack overflow error: Check for non-terminating
+                    // recursive function.  Consider rewriting as
+                    // tail-recursive." This keeps that wording and names the
+                    // limit that was hit (GitHub issue #251).
                     format!(
-                        "U1001: Stack overflow - maximum recursion depth ({}) exceeded",
-                        effective_limit
+                        "U1001: Stack overflow error: evaluation nested deeper than {} levels. Check for non-terminating recursive function. Consider rewriting as tail-recursive.",
+                        MAX_EVAL_DEPTH
                     )
                 },
             ));
@@ -9296,11 +9302,6 @@ impl Evaluator {
         let mut current_args = initial_args.to_vec();
         let mut current_data = data.clone();
 
-        // Maximum number of tail call iterations to prevent infinite loops
-        // This is much higher than non-TCO depth limit since TCO doesn't grow the stack
-        const MAX_TCO_ITERATIONS: usize = 100_000;
-        let mut iterations = 0;
-
         // Push a persistent scope for the TCO trampoline loop.
         // This scope persists across all iterations so that lambdas defined
         // in one iteration (like recursive $iter) remain available in subsequent ones.
@@ -9309,39 +9310,27 @@ impl Evaluator {
         self.context.push_tail_call_scope(&stored_lambda.def_scope);
         // Frames this trampoline has pushed (see `Context::enter_tail_call`).
         let mut frames = 1;
+        let mut first = true;
 
         // Trampoline loop - keeps evaluating until we get a final value
         let result = loop {
-            iterations += 1;
-            // The hardcoded iteration cap is a backstop for when no timeout is
-            // configured; it must not preempt a configured timeout (which is the
-            // more specific, user-controlled guardrail). Without this gate, an
-            // infinite tail-recursive loop with a cheap per-iteration body hits
-            // this cap in single-digit-to-tens of milliseconds and reports the
-            // misleading "U1001: Stack overflow" (TCO does not grow the stack;
-            // there is no depth-500 stack here) instead of D1012, for *any*
-            // realistic `timeout_ms` (100ms, 1s, the docs' own 5000ms default) -
-            // defeating the purpose of the timeout guardrail for exactly the
-            // scenario it exists to catch (see jsonata-js's own `$inf := function
-            // (){$inf()}; $inf()` guardrails-documentation example).
-            if self.options.timeout_ms.is_none() && iterations > MAX_TCO_ITERATIONS {
-                for _ in 0..frames {
-                    self.context.pop_scope();
-                }
-                return Err(EvaluatorError::EvaluationError(
-                    "U1001: Stack overflow - maximum recursion depth (500) exceeded".to_string(),
-                ));
-            }
+            // No iteration cap: a tail call reuses this loop, not the stack,
+            // so like jsonata-js's trampoline (`apply` in jsonata.js) a tail
+            // loop runs as long as it keeps calling (GitHub issue #251). It
+            // used to stop at 100,000 iterations with a U1001 naming a depth
+            // of 500 that nothing enforced. A runaway tail loop is stopped by
+            // the configured timeout (D1012), checked on every pass.
             if let Err(e) = check_loop_timeout(&self.options, self.start_time) {
                 for _ in 0..frames {
                     self.context.pop_scope();
                 }
                 return Err(e);
             }
-            if iterations > 1 {
+            if !first {
                 self.context
                     .enter_tail_call(&current_lambda.def_scope, &mut frames);
             }
+            first = false;
 
             // Evaluate the lambda body within the trampoline's frame
             let result =

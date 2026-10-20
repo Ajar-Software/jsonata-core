@@ -97,7 +97,8 @@ the corresponding limit.
 
 **Note:** `U1001` and `U1002` are separate, always-on safety nets (not configurable) with no
 jsonata-js equivalent. `U1001` is raised when evaluation nests deeper than 30,000 levels (about
-10,000 non-tail recursive calls; tail calls do not count), and `U1002` when an expression is
+10,000 non-tail recursive calls; tail calls do not count, and a tail-recursive loop runs without
+any iteration limit, as in jsonata-js, so set `timeout` to stop a runaway one), and `U1002` when an expression is
 nested too deeply to parse. They exist independently of any guardrail you configure and cannot be
 disabled.
 

@@ -163,8 +163,16 @@ def test_unverified_error_cases_do_not_grow():
         else:
             data = None
         bindings = spec.get("bindings", {})
+        # Under the reference runner's guard, as in `test_reference_suite`:
+        # without its time limit a runaway tail loop (tail-recursion/case006)
+        # would never end, since tail calls have no iteration cap (#251).
+        guarded = "timelimit" in spec and "depth" in spec
         try:
-            compiled = jsonatapy.compile(expr)
+            compiled = jsonatapy.compile(
+                expr,
+                max_stack_depth=spec["depth"] if guarded else None,
+                timeout=spec["timelimit"] if guarded else None,
+            )
             if data is None:
                 (
                     compiled.evaluate_json_or_none(None, bindings)
@@ -268,15 +276,17 @@ def test_reference_suite(test_id: str, group_name: str, spec: dict[str, Any], en
     # runner's own guard (`timeboxExpression` in run-test-suite.js), which
     # raises U1001 once evaluation nests deeper than `depth`. jsonata-js itself
     # has no depth limit, so the case's U1001 comes from the runner, not the
-    # library. Mirror it with `max_stack_depth`, whose D1011 stands in for the
-    # runner's U1001 below. (The time limit is not mirrored: a runaway tail
-    # recursion already stops at the trampoline's iteration cap.)
+    # library. Mirror it with `max_stack_depth` and `timeout`, whose D1011 and
+    # D1012 stand in for the runner's U1001 below. The time limit matters: a
+    # runaway tail recursion (tail-recursion/case006) has no iteration cap,
+    # in jsonata-js or here (GitHub issue #251), so only the timeout ends it.
     runner_depth = spec.get("depth") if "timelimit" in spec else None
+    runner_timeout = spec.get("timelimit") if runner_depth is not None else None
 
     # Execute test
     try:
         # Compile expression
-        compiled = jsonatapy.compile(expr, max_stack_depth=runner_depth)
+        compiled = jsonatapy.compile(expr, max_stack_depth=runner_depth, timeout=runner_timeout)
 
         # Evaluate with optional bindings
         if data is None:
@@ -330,8 +340,8 @@ def test_reference_suite(test_id: str, group_name: str, spec: dict[str, Any], en
             # Expected an error with specific code
             expected_code = spec["code"]
             actual_code = extract_error_code(error_msg)
-            if runner_depth is not None and actual_code == "D1011":
-                actual_code = "U1001"  # the runner's depth guard, see above
+            if runner_depth is not None and actual_code in ("D1011", "D1012"):
+                actual_code = "U1001"  # the runner's depth and time guard, see above
 
             if actual_code is None:
                 # Error occurred but no code in message

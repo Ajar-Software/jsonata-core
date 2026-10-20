@@ -93,6 +93,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A tail-recursive loop no longer stops at 100,000 iterations**
+  ([#251](https://github.com/txjmb/jsonata-core/issues/251)). The tail-call trampoline had a
+  hardcoded 100,000-iteration cap when no timeout was set, so
+  `($loop := function($n){ $n = 0 ? "done" : $loop($n - 1) }; $loop(200000))` raised
+  "U1001: Stack overflow - maximum recursion depth (500) exceeded" on both engines, naming a
+  depth nothing enforced. jsonata-js has no such cap and returns `"done"`. Tail calls now run
+  without any limit: a tail loop keeps one frame, so a million iterations take about 0.4s
+  with no memory growth. `max_stack_depth` (D1011) and the 30,000-level U1001 backstop still
+  bound non-tail recursion, and a `timeout` (D1012) is what stops a runaway tail loop. The
+  U1001 message now names its real limit and follows the wording of the jsonata-js test
+  runner's U1001: "Stack overflow error: evaluation nested deeper than 30000 levels. Check for
+  non-terminating recursive function. Consider rewriting as tail-recursive."
 - **`$eval` with an undefined focus evaluates against the current input**, as in jsonata-js
   ([#247](https://github.com/txjmb/jsonata-core/issues/247)). `$eval("a", $v)` with `$v`
   unbound used the undefined focus as its input and was undefined; it now reads `a` from
