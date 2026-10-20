@@ -100,6 +100,15 @@ class TestCompile:
             jsonatapy.compile("uppercase#$i()").evaluate(None)
 
     @pytest.mark.parametrize(
+        "expression",
+        ['arr."uppercase"[0]()', 'a."uppercase"#$i()', '($o := {"f": $uppercase}; $o."f"("a"))'],
+    )
+    def test_call_of_quoted_step_after_dot_raises_t1006(self, expression):
+        """A called quoted string step is the string, as in jsonata-js: T1006, not T1005."""
+        with pytest.raises(ValueError, match="T1006"):
+            jsonatapy.compile(expression).evaluate({"arr": [{"x": 1}], "a": {}})
+
+    @pytest.mark.parametrize(
         "expression, expected",
         [
             ('"x" ~> $uppercase[0]()', "X"),

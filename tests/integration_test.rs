@@ -3640,3 +3640,67 @@ fn test_string_literal_heading_path_is_name_step() {
         assert_eq!(default, expected, "default: {expr}");
     }
 }
+
+// ── Calling a quoted string step after `.` ───────────────────────────────────
+//
+// In jsonata-js, `(` takes `"f"[0]`, `"f"#$i` or `"f"` as the procedure
+// before `.` turns the path's string steps into names, so the procedure is
+// the string: calling it is T1006, never the T1005 `$`-hint a called name
+// gets, and never a call of the field it would name.
+
+#[test]
+fn test_call_of_quoted_step_after_dot_is_t1006() {
+    let data = JValue::from_json_str(r#"{"arr":[{"x":1}],"a":{}}"#).unwrap();
+    for (expr, code) in [
+        (r##"arr."uppercase"[0]()"##, "T1006"),
+        (r##"a."uppercase"[0]()"##, "T1006"),
+        (r##"arr."uppercase"#$i()"##, "T1006"),
+        (r##"a."uppercase"#$i()"##, "T1006"),
+        (r##"arr."uppercase"@$v()"##, "T1006"),
+        (r##"arr."string"[0]()"##, "T1006"),
+        (r##""z" ~> a."uppercase"[0]()"##, "T1006"),
+        (r##"($foo := function(){1}; arr."foo"[0]())"##, "T1006"),
+        (r##"($foo := 1; a."foo"@$v())"##, "T1006"),
+        (r##"arr."uppercase"()"##, "T1006"),
+        (r##"arr."uppercase"{"k":1}()"##, "T1006"),
+        (r##"($o := {"f": $uppercase}; $o."f"("a"))"##, "T1006"),
+        (r##"($o := {"f": [$uppercase]}; $o."f"#$i("a"))"##, "T1006"),
+        // A backquoted or bare name is a name: T1005 suggests `$uppercase`.
+        ("`uppercase`[0]()", "T1005"),
+        ("arr.`uppercase`[0]()", "T1005"),
+        ("arr.uppercase[0]()", "T1005"),
+        ("a.uppercase#$i()", "T1005"),
+    ] {
+        let ast = parse(expr).unwrap();
+        let tree_walker = match Evaluator::new().evaluate(&ast, &data) {
+            Ok(v) => format!("Ok({})", v.to_json_string().unwrap()),
+            Err(e) => format!("Err({e})"),
+        };
+        let default = match jsonata_core::Expression::compile(expr)
+            .unwrap()
+            .evaluate(&data)
+        {
+            Ok(v) => format!("Ok({})", v.to_json_string().unwrap()),
+            Err(e) => format!("Err({e})"),
+        };
+        assert!(
+            tree_walker.contains(code),
+            "tree-walker: {expr} => {tree_walker}"
+        );
+        assert!(default.contains(code), "default: {expr} => {default}");
+    }
+    // An unquoted name step calls the function its field holds.
+    for expr in [
+        r##"($o := {"f": $uppercase}; $o.f("a"))"##,
+        r##"($o := {"f": $uppercase}; $o.`f`("a"))"##,
+    ] {
+        let ast = parse(expr).unwrap();
+        let tree_walker = Evaluator::new().evaluate(&ast, &data).unwrap();
+        let default = jsonata_core::Expression::compile(expr)
+            .unwrap()
+            .evaluate(&data)
+            .unwrap();
+        assert_eq!(tree_walker, JValue::from(json!("A")), "tree-walker: {expr}");
+        assert_eq!(default, JValue::from(json!("A")), "default: {expr}");
+    }
+}

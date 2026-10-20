@@ -3,8 +3,9 @@
 
 #![allow(clippy::approx_constant)]
 
-use crate::ast::{AstNode, BinaryOp, PathStep, Stage, UnaryOp};
+use crate::ast::{AstNode, BinaryOp, PathStep, Stage, StepId, UnaryOp};
 use crate::signature::SignatureError;
+use std::collections::HashSet;
 use thiserror::Error;
 
 /// Parser errors
@@ -1012,6 +1013,10 @@ pub struct Parser {
     /// Raising it inline made us answer S0213 there. Deferring restores the
     /// ordering without moving the check itself into a post-parse pass.
     pending_literal_step: Option<String>,
+    /// The ids of the name steps made from a quoted string after `.`
+    /// (`a."f"`), so that a call of such a step can make it a string again:
+    /// see `requote_called_step`.
+    quoted_steps: HashSet<u64>,
 }
 
 impl Parser {
@@ -1023,7 +1028,37 @@ impl Parser {
             current_token,
             depth: 0,
             pending_literal_step: None,
+            quoted_steps: HashSet::new(),
         })
+    }
+
+    /// Makes the step a call's `procedure` names a string again when it was
+    /// a quoted string after `.`: in `a."f"[0]()` and `a."f"#$i()`,
+    /// jsonata-js's `(` takes `"f"[0]` or `"f"#$i` as its procedure before
+    /// `.` turns the path's string steps into names, so the procedure is the
+    /// string, whose value is not a function: T1006, never the T1005 that
+    /// suggests `$f` for a called name. `procedure` is a one-step path, or
+    /// such a path under `#`/`@` bindings.
+    fn requote_called_step(&self, procedure: &mut AstNode) {
+        match procedure {
+            AstNode::Path { steps } if steps.len() == 1 => {
+                let step = &mut steps[0];
+                if !self.quoted_steps.contains(&step.id.get()) {
+                    return;
+                }
+                if let AstNode::Name(name) = &mut step.node {
+                    step.node = AstNode::String(std::mem::take(name));
+                    // A step with a new node is a new step (see `PathStep::id`).
+                    step.id = StepId::default();
+                }
+            }
+            AstNode::Binary {
+                op: BinaryOp::IndexBind | BinaryOp::FocusBind,
+                lhs,
+                ..
+            } => self.requote_called_step(lhs),
+            _ => {}
+        }
     }
 
     fn advance(&mut self) -> Result<(), ParserError> {
@@ -1671,7 +1706,9 @@ impl Parser {
                             // Convert string literals to field names when they appear after a dot
                             // e.g., $."Field.Name" should access a property named "Field.Name"
                             AstNode::String(field_name) => {
-                                steps.push(PathStep::new(AstNode::Name(field_name)));
+                                let step = PathStep::new(AstNode::Name(field_name));
+                                self.quoted_steps.insert(step.id.get());
+                                steps.push(step);
                             }
                             _ => steps.push(PathStep::new(rhs)),
                         }
@@ -1854,17 +1891,20 @@ impl Parser {
                                         // `$o.g[0]()` calls what `g[0]` gives in
                                         // each context item, as jsonata-js's `(`
                                         // binds tighter than `.`.
-                                        let func_call = if last.stages.is_empty() {
+                                        let quoted = self.quoted_steps.contains(&last.id.get());
+                                        let func_call = if last.stages.is_empty() && !quoted {
                                             AstNode::Function {
                                                 name: func_name.clone(),
                                                 args,
                                                 is_builtin: false,
                                             }
                                         } else {
+                                            let mut procedure = AstNode::Path {
+                                                steps: vec![last.clone()],
+                                            };
+                                            self.requote_called_step(&mut procedure);
                                             AstNode::Call {
-                                                procedure: Box::new(AstNode::Path {
-                                                    steps: vec![last.clone()],
-                                                }),
+                                                procedure: Box::new(procedure),
                                                 args,
                                             }
                                         };
@@ -1931,8 +1971,9 @@ impl Parser {
                                     ..
                                 } => {
                                     let bound = std::mem::replace(&mut lhs, AstNode::Undefined);
-                                    let (mut context_steps, procedure) =
+                                    let (mut context_steps, mut procedure) =
                                         split_bound_last_step(bound);
+                                    self.requote_called_step(&mut procedure);
                                     let call = AstNode::Call {
                                         procedure: Box::new(procedure),
                                         args,
