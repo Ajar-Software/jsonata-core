@@ -3967,3 +3967,47 @@ fn test_call_of_bound_literal_and_filter_on_nothing() {
         assert_eq!(default, expected, "default: {expr}");
     }
 }
+
+// ── No filter on nothing after a sort or a `~>` call ─────────────────────────
+//
+// jsonata-js's evaluatePath stops at a step that gives nothing, so a sort
+// step's filters do not run when the sort's input is undefined; and `~>`
+// never filters its call's result, so an undefined one is not filtered.
+
+#[test]
+fn test_no_filter_on_nothing_after_sort_or_chain() {
+    let data = JValue::from_json_str(r##"{"a":{"b":[1,2]}}"##).unwrap();
+    let undefined = format!("Ok({})", JValue::Undefined.to_json_string().unwrap());
+    for (expr, expected) in [
+        (r##"x^(a)[$error("e")]"##, undefined.as_str()),
+        (r##"(x)^(a)[$error("e")]"##, undefined.as_str()),
+        (r##"x^(a)^(b)[$error("e")]"##, undefined.as_str()),
+        (r##"$exists(x^(c)[$error("e")])"##, "Ok(false)"),
+        (r##"$lookup({},"a")^($)[$error("e")]"##, undefined.as_str()),
+        (r##"a.x^(c)[$error("e")]"##, undefined.as_str()),
+        (
+            r##"($f:=function($x){()}; 1 ~> $f()[$error("e")])"##,
+            undefined.as_str(),
+        ),
+        (r##"x ~> $string()[$error("e")]"##, undefined.as_str()),
+        // The documented divergence: a defined call result is filtered.
+        (r##""z" ~> $append([1])[0]"##, r##"Ok("z")"##),
+    ] {
+        let (tree_walker, default) = eval_both_engines_on(expr, EvaluatorOptions::default(), &data);
+        assert_eq!(tree_walker, expected, "tree-walker: {expr}");
+        assert_eq!(default, expected, "default: {expr}");
+    }
+    // A filter on a value that is not a path step still runs on nothing.
+    for (expr, code) in [
+        (r##"(x)[$error("e")]"##, "D3137"),
+        (r##"$x[$error("e")]"##, "D3137"),
+        ("a.(x)[$string(1,2,3)]", "T0410"),
+    ] {
+        let (tree_walker, default) = eval_both_engines_on(expr, EvaluatorOptions::default(), &data);
+        assert!(
+            tree_walker.contains(code),
+            "tree-walker: {expr} => {tree_walker}"
+        );
+        assert!(default.contains(code), "default: {expr} => {default}");
+    }
+}

@@ -2188,17 +2188,16 @@ fn field_values(
     items: &[JValue],
     options: &EvaluatorOptions,
 ) -> Result<Vec<JValue>, EvaluatorError> {
-    field_values_of(field, items, options, false)
+    field_values_of::<false>(field, items, options)
 }
 
 /// `field_values`, keeping an undefined value for each item without the
-/// field when `keep_undefined` is set: a step's filter stages still run on
+/// field when `KEEP_UNDEFINED` is set: a step's filter stages still run on
 /// those, as in jsonata-js (see `apply_filter_stages`).
-fn field_values_of(
+fn field_values_of<const KEEP_UNDEFINED: bool>(
     field: &str,
     items: &[JValue],
     options: &EvaluatorOptions,
-    keep_undefined: bool,
 ) -> Result<Vec<JValue>, EvaluatorError> {
     let mut position: Option<usize> = None;
     let mut values = Vec::with_capacity(items.len());
@@ -2218,7 +2217,7 @@ fn field_values_of(
             }
             _ => compiled_field_step(field, item, options)?,
         };
-        if keep_undefined || !value.is_undefined() {
+        if KEEP_UNDEFINED || !value.is_undefined() {
             values.push(value);
         }
     }
@@ -5838,7 +5837,8 @@ impl Evaluator {
 
     /// Finish a `~>` whose right side is a call with a filter or `[]`
     /// (`x ~> $f()[0]`), given that call's result: the call step's filter
-    /// stages, then `[]`, as for any path.
+    /// stages, then `[]`, as for any path. jsonata-js does not filter the
+    /// call's result at all, so an undefined one is not filtered either.
     fn finish_chained_path(
         &mut self,
         steps: &[PathStep],
@@ -5935,7 +5935,12 @@ impl Evaluator {
         // sequence.
         if Self::is_non_path(steps) && !Self::step_creates_tuple(first) && !first.is_tuple {
             let value = self.evaluate_unwrapped_later(&first.node, data)?;
-            let mut value = self.apply_filter_stages(value, &first.stages)?;
+            // jsonata-js filters an undefined value too (`$x[$f()]`).
+            let mut value = if value.is_undefined() && Self::filters_run_on_nothing(&first.stages) {
+                self.filter_undefined(&first.stages)?
+            } else {
+                self.apply_filter_stages(value, &first.stages)?
+            };
             if Self::path_keeps_singleton_array(steps) {
                 keep_if_sequence(&mut value);
             }
@@ -6215,6 +6220,8 @@ impl Evaluator {
         });
         self.keep_tuple_stream = saved;
         let (value, cons_single) = sorted?;
+        // jsonata-js's evaluatePath stops at a step that gives nothing, so
+        // the sort step's stages do not run then (`x^(a)[$error("e")]`).
         let value = self.apply_filter_stages(value, &step.stages)?;
         // A sort of a consarray first step's single value gives it
         // back as is, which the next step reads as no items, as for
@@ -6282,24 +6289,51 @@ impl Evaluator {
         items: &[JValue],
         last_step: bool,
     ) -> Result<JValue, EvaluatorError> {
+        let run_on_nothing = Self::filters_run_on_nothing(&step.stages);
         let values = match &step.node {
             // A field step looks the field up in each item, reusing its
             // position across a homogeneous array.
-            // Filter stages run on an item without the field too.
-            AstNode::Name(field) => {
-                let filtered = step
-                    .stages
-                    .iter()
-                    .any(|stage| matches!(stage, Stage::Filter(_)));
-                field_values_of(field, items, &self.options, filtered)?
+            // Filter stages run on an item without the field too, where
+            // that can raise an error (see `filters_run_on_nothing`).
+            AstNode::Name(field) if run_on_nothing => {
+                field_values_of::<true>(field, items, &self.options)?
             }
+            AstNode::Name(field) => field_values(field, items, &self.options)?,
             // `$` is each item itself.
             AstNode::Variable(name) if name.is_empty() => items.to_vec(),
             _ => self.evaluate_step_node_per_item(step, items)?,
         };
+        if run_on_nothing {
+            return self.filter_step_values(step, values, last_step);
+        }
         let mut results = Vec::with_capacity(values.len());
         for value in values {
             let value = self.apply_filter_stages(value, &step.stages)?;
+            if !value.is_undefined() {
+                results.push(value);
+            }
+        }
+        check_sequence_length(results.len(), &self.options)?;
+        Ok(collect_step_results(results, last_step))
+    }
+
+    /// The end of `evaluate_step_items` for filter stages that run on an
+    /// undefined value too (`filter_undefined`). Kept out of line, off the
+    /// hot path.
+    #[inline(never)]
+    fn filter_step_values(
+        &mut self,
+        step: &PathStep,
+        values: Vec<JValue>,
+        last_step: bool,
+    ) -> Result<JValue, EvaluatorError> {
+        let mut results = Vec::with_capacity(values.len());
+        for value in values {
+            let value = if value.is_undefined() {
+                self.filter_undefined(&step.stages)?
+            } else {
+                self.apply_filter_stages(value, &step.stages)?
+            };
             if !value.is_undefined() {
                 results.push(value);
             }
@@ -6426,6 +6460,78 @@ impl Evaluator {
             }
         }
         Ok(JValue::object(result))
+    }
+
+    /// Whether a field step's filter `stages` are run on an item without
+    /// the field (see `apply_filter_stages`): not when the first is a
+    /// position, which selects nothing there and stops the rest (`x[0]`),
+    /// or when none calls anything (`x[$ > 5]`). Those keep the faster
+    /// lookup that drops such items, as the compiled path does.
+    #[inline(never)]
+    fn filters_run_on_nothing(stages: &[Stage]) -> bool {
+        let first_selects = stages
+            .iter()
+            .find_map(|stage| match stage {
+                Stage::Filter(predicate) => Some(numeric_literal(predicate).is_none()),
+                _ => None,
+            })
+            .unwrap_or(false);
+        first_selects
+            && stages.iter().any(
+                |stage| matches!(stage, Stage::Filter(predicate) if Self::may_raise_on_nothing(predicate)),
+            )
+    }
+
+    /// False when `node` makes no call (of a function, lambda or `~>`), the
+    /// only way a filter evaluated with nothing as its context raises an
+    /// error that matters here: operators on undefined give undefined.
+    /// Unknown kinds of node count as calling.
+    fn may_raise_on_nothing(node: &AstNode) -> bool {
+        match node {
+            AstNode::String(_)
+            | AstNode::Name(_)
+            | AstNode::Number(_)
+            | AstNode::Boolean(_)
+            | AstNode::Null
+            | AstNode::Undefined
+            | AstNode::Regex { .. }
+            | AstNode::ParentVariable(_)
+            | AstNode::Parent(_)
+            | AstNode::Wildcard
+            | AstNode::Descendant
+            | AstNode::Variable(_) => false,
+            AstNode::Path { steps } => steps.iter().any(|step| {
+                Self::may_raise_on_nothing(&step.node)
+                    || step.stages.iter().any(|stage| match stage {
+                        Stage::Filter(expr) => Self::may_raise_on_nothing(expr),
+                        _ => false,
+                    })
+            }),
+            AstNode::Binary { op, lhs, rhs } => {
+                *op == BinaryOp::ChainPipe
+                    || Self::may_raise_on_nothing(lhs)
+                    || Self::may_raise_on_nothing(rhs)
+            }
+            AstNode::Unary { operand, .. } => Self::may_raise_on_nothing(operand),
+            AstNode::Array(items) | AstNode::ArrayGroup(items) | AstNode::Block(items) => {
+                items.iter().any(Self::may_raise_on_nothing)
+            }
+            AstNode::Object(pairs) => pairs.iter().any(|(key, value)| {
+                Self::may_raise_on_nothing(key) || Self::may_raise_on_nothing(value)
+            }),
+            AstNode::Conditional {
+                condition,
+                then_branch,
+                else_branch,
+            } => {
+                Self::may_raise_on_nothing(condition)
+                    || Self::may_raise_on_nothing(then_branch)
+                    || else_branch
+                        .as_deref()
+                        .is_some_and(Self::may_raise_on_nothing)
+            }
+            _ => true,
+        }
     }
 
     /// False when evaluating `node` cannot read the `$` binding, so an
@@ -6570,13 +6676,9 @@ impl Evaluator {
     }
 
     /// Apply a step's filter stages, in order, to one item's result. `[]`
-    /// changes nothing here; it is handled once the path has a result.
-    ///
-    /// An undefined result is still filtered, as in jsonata-js, whose
-    /// `evaluateFilter` makes it the one-item sequence `[undefined]`: each
-    /// predicate is evaluated once with an undefined context, so its errors
-    /// surface (`x[$string(1,2,3)]` is T0410 where `x` is missing), until
-    /// one selects nothing. The result stays undefined.
+    /// changes nothing here; it is handled once the path has a result. An
+    /// undefined value stays undefined, its filters not run; see
+    /// `filter_undefined` for where jsonata-js runs them.
     fn apply_filter_stages(
         &mut self,
         mut value: JValue,
@@ -6584,23 +6686,36 @@ impl Evaluator {
     ) -> Result<JValue, EvaluatorError> {
         for stage in stages {
             if let Stage::Filter(predicate) = stage {
-                if value.is_undefined() {
-                    if !self.filter_selects_undefined(predicate)? {
-                        break;
-                    }
-                    continue;
-                }
                 value = self.evaluate_filter(predicate, value)?;
             }
         }
         Ok(value)
     }
 
+    /// A step's filter stages on an undefined value, as jsonata-js's
+    /// `evaluateStep` runs them on an item the step gives nothing for: its
+    /// `evaluateFilter` makes that value the one-item sequence
+    /// `[undefined]`, so each predicate is evaluated once with an undefined
+    /// context and its errors surface (`x[$string(1,2,3)]` is T0410 where
+    /// `x` is missing), until one selects nothing. The value stays
+    /// undefined. Only for stages `filters_run_on_nothing` accepts.
+    #[cold]
+    #[inline(never)]
+    fn filter_undefined(&mut self, stages: &[Stage]) -> Result<JValue, EvaluatorError> {
+        for stage in stages {
+            if let Stage::Filter(predicate) = stage {
+                if !self.filter_selects_undefined(predicate)? {
+                    break;
+                }
+            }
+        }
+        Ok(JValue::Undefined)
+    }
+
     /// Whether jsonata-js's `evaluateFilter` keeps the item of its input
     /// `[undefined]`: a numeric literal or a numeric selector picks the
     /// undefined item, which it drops; any other selector keeps it when
     /// truthy. The predicate is evaluated (not a literal) for its errors.
-    #[inline(never)]
     fn filter_selects_undefined(&mut self, predicate: &AstNode) -> Result<bool, EvaluatorError> {
         if numeric_literal(predicate).is_some() {
             return Ok(false);

@@ -125,7 +125,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **A filter on a step that gives nothing is still evaluated once**, as in jsonata-js, whose
   `evaluateFilter` filters `[undefined]` there: `x[$string(1,2,3)]` raises T0410 and
   `x[[a()]]` T1006 when `x` is missing (they gave undefined). The result is still undefined,
-  and a filter that selects nothing (`x[false]`, `x[0]`) stops the later ones.
+  and a filter that selects nothing (`x[false]`, `x[0]`) stops the later ones. As there, a
+  sort step's filters do not run when the sort gives nothing (`x^(a)[$error("e")]`), nor do
+  those on the call after `~>`. A filter that calls nothing (`x[$ > 5]`) is not run on an
+  item without the field, as it cannot raise an error there.
 - **Calling a bound literal is the same T1006 as calling the literal.** `"f"@$v()`,
   `a.1@$v()` and `a.true#$i()` raise T1006 while parsing, as `"f"()` and `a.1()` do, ahead of
   a literal-step S0213 or another member's error (`[$string(1,2,3), "f"@$v()]`). A bound
