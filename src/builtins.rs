@@ -177,6 +177,22 @@ pub(crate) fn builtin_arity(name: &str) -> Option<usize> {
     builtin_spec(name).and_then(|s| s.arity)
 }
 
+/// Whether a call of builtin `name` with `argc` arguments may read the
+/// context: `$eval` (its focus defaults to it), or a signature with a `-`
+/// parameter and fewer arguments than parameters, which jsonata-js fills
+/// from the context. A conservative test; it only picks the path that
+/// passes the context explicitly.
+pub(crate) fn builtin_may_read_context(name: &str, argc: usize) -> bool {
+    match builtin_spec(name) {
+        Some(spec) if spec.name == "eval" => true,
+        Some(spec) => {
+            spec.signature.is_some_and(|sig| sig.contains('-'))
+                && spec.arity.is_some_and(|arity| argc < arity)
+        }
+        None => false,
+    }
+}
+
 /// Shared body for the unary string→string encoding builtins
 /// ($base64encode/$base64decode/$encodeUrl*/$decodeUrl*): arity check, null
 /// and undefined passthrough, then `f` on the string, type error otherwise.
@@ -465,7 +481,11 @@ pub(crate) fn dispatch_pure(
                 ));
             }
             match &args[0] {
-                JValue::Null | JValue::Undefined => Ok(JValue::Null),
+                // "undefined inputs always return undefined" (jsonata-js
+                // `split`), not null: `[$split(nothing, " ")]` is `[]` and a
+                // callback returning it adds nothing to `$map` (#250).
+                // Validation has already rejected an explicit null.
+                JValue::Undefined => Ok(JValue::Undefined),
                 JValue::String(s) => {
                     // Validate the optional limit argument — must be a positive number.
                     let limit = match args.get(2) {
@@ -997,8 +1017,14 @@ pub(crate) fn dispatch_pure(
             //
             // The keys are a sequence (`this.createSequence()`): the generic
             // unwrap at the expression boundary makes no keys undefined and
-            // one key that key.
-            None | Some(JValue::Undefined) => Ok(JValue::Undefined),
+            // one key that key. Where there is no such unwrap (a function's
+            // tail call, as a `$map` callback), the empty sequence stays a
+            // value: `$map([1], function(){ $keys(nothing) })` is `[[]]`,
+            // as jsonata-js's `keys` starts from `createSequence()` for an
+            // undefined argument too (#250).
+            None | Some(JValue::Undefined) => {
+                crate::evaluator::hof_result_sequence(vec![], options)
+            }
             Some(JValue::Object(obj)) => {
                 let keys: Vec<JValue> = obj.keys().map(|k| JValue::string(k.clone())).collect();
                 crate::evaluator::hof_result_sequence(keys, options)
@@ -1054,9 +1080,16 @@ pub(crate) fn dispatch_pure(
             // jsonata-js `$lookup` is `fn.lookup`, the function that also
             // evaluates a field name: over an array it looks the key up in each
             // item, flattening array values one level into a sequence.
-            Ok(crate::evaluator::compiled_field_step(
-                key, &args[0], options,
-            )?)
+            // Over an array the result is a sequence even when nothing
+            // matched (`createSequence()` in jsonata-js), which a function's
+            // tail call returns as is (#250); the field step itself gives
+            // undefined there, as a path step's result is unwrapped anyway.
+            match crate::evaluator::compiled_field_step(key, &args[0], options)? {
+                JValue::Undefined if matches!(args[0], JValue::Array(_)) => {
+                    crate::evaluator::hof_result_sequence(vec![], options)
+                }
+                result => Ok(result),
+            }
         }
         "spread" => {
             if args.len() != 1 {

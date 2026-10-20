@@ -103,6 +103,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   step, so a recursion through it bypassed both the native-stack guard and the depth limit.
   It now runs under both: deep recursion evaluates, and with no base case it raises U1001 at
   the 30,000-level limit.
+- **`$eval` with an undefined focus evaluates against the current input**, as in jsonata-js
+  ([#247](https://github.com/txjmb/jsonata-core/issues/247)). `$eval("a", $v)` with `$v`
+  unbound used the undefined focus as its input and was undefined; it now reads `a` from
+  the input, as `$eval("a")` does. A defined focus still replaces the input.
+- **A builtin called in a function's tail position returns its result as jsonata-js does**
+  ([#250](https://github.com/txjmb/jsonata-core/issues/250)). jsonata-js runs such a call
+  from its trampoline, which never unwraps the result, but it was unwrapped here, so an
+  empty sequence became undefined: `$map([1,2], function($v){ $keys({}) })` was undefined
+  instead of `[[], []]`, and `$keys({"a":1})` there gave `"a"` instead of `["a"]`. A direct
+  call such as `$f()` still unwraps it. With this, `$keys` of undefined and `$lookup` over
+  an array that matches nothing give an empty sequence, as in jsonata-js; a conditional
+  without an else in that position is undefined, not null; and `$sort` tests its
+  comparator's result with JavaScript truthiness, so a comparator returning `[]` or `{}`
+  swaps. `$split` of undefined is undefined, not null, so
+  `$map([1,2], function($v){ $split(nothing, " ") })` is undefined instead of
+  `[null, null]` and `[$split(nothing, " ")]` is `[]`; `$sift(nothing, $f)` is undefined
+  instead of an error.
+- **A builtin called in a function's tail position runs with the input jsonata-js gives it**
+  ([#247](https://github.com/txjmb/jsonata-core/issues/247),
+  [#250](https://github.com/txjmb/jsonata-core/issues/250)). jsonata-js's trampoline applies
+  it with the input of the function's own application: null when the function is a
+  callback of a builtin such as `$map` or is applied by `~>` to a non-call, and the call
+  site's input for a direct call. It used the function body's input instead, so
+  `$map(["a"], function($e){ $string() })` gave the input instead of `"null"`,
+  `$map(["a"], function($e){ $eval("a") })` gave 5 instead of undefined, and
+  `($f := function(){ $eval("a") }; {"a":7}.$f())` read the outer input instead of
+  `{"a":7}`. This affects only what such a builtin reads from the context: `$eval`'s
+  focus, and a signature's `-` parameter left without an argument. A builtin that is
+  itself a function's tail call applies the functions it is given with the input they were
+  defined with, as jsonata-js's trampoline passes them unwrapped:
+  `($o := function(){ $map([1], function(){ $eval("a") }) }; $o())` is 5. Known gap
+  ([#254](https://github.com/txjmb/jsonata-core/issues/254)): jsonata-js wraps a function
+  passed as an argument of a direct call in a closure that applies it with a null input,
+  which is not modelled yet, so
+  `($h := function($f){ $f("x") }; $h(function($e){ $eval("a", $nope) }))` gives 5 instead
+  of undefined.
 - **A filtered array constructor inside an array constructor keeps its nesting**
   ([#249](https://github.com/txjmb/jsonata-core/issues/249)), as in jsonata-js, which pushes
   a member that is an array constructor whole, with any predicates or `[]` after it.
