@@ -3839,3 +3839,53 @@ fn test_filtered_constructor_member_keeps_its_nesting() {
         assert_eq!(default, expected, "default: {expr}");
     }
 }
+
+// ── A misplaced `@` beats a literal step ─────────────────────────────────────
+//
+// jsonata-js's `processAST` checks a `@` step (S0215 after a predicate,
+// S0216 after a sort) while processing an operand, before the `.` around it
+// checks for literal steps (S0213). `#`, `@` and `[...]` bind tighter than
+// `.` there, so `1.a[0]@$v` is S0215 too, while a group-by or sort, which
+// bind looser, leave the `.` first.
+
+#[test]
+fn test_focus_binding_error_precedes_literal_step() {
+    for (expr, code) in [
+        ("1[0]@$v.**.q", "S0215"),
+        ("null[0]@$v.$append(a.c.$, n[])", "S0215"),
+        ("1[0]@$v.a", "S0215"),
+        ("true[0]@$v.a", "S0215"),
+        ("a[0]@$v.1", "S0215"),
+        ("$x[0]@$v.true", "S0215"),
+        ("[1][0]@$v.2", "S0215"),
+        ("1[0]#$i@$v.a", "S0215"),
+        ("1^(x)@$v.a", "S0216"),
+        ("a^(x)@$v.null", "S0216"),
+        ("b[0]@$v + 1.a", "S0215"),
+        ("1.a[0]@$v", "S0215"),
+        ("a.1[0]@$v", "S0215"),
+        ("a.null[0]@$v", "S0215"),
+        ("1.a[0]#$i@$v", "S0215"),
+        ("1.a@$u[0]@$v", "S0215"),
+        ("1.(a)[0]@$v", "S0215"),
+        ("1.a[0]@$v.2", "S0215"),
+        // The `.` comes first.
+        ("1.a + b[0]@$v", "S0213"),
+        ("(1.a)[0]@$v", "S0213"),
+        ("1.a.b[0]@$v", "S0213"),
+        ("1.a^(x)@$v", "S0213"),
+        (r#"1.a[0]{"k":1}@$v"#, "S0213"),
+        ("1[]@$v.a", "S0213"),
+    ] {
+        let tree_walker = parse(expr).unwrap_err().to_string();
+        let default = jsonata_core::Expression::compile(expr)
+            .err()
+            .unwrap_or_else(|| panic!("{expr} compiled"))
+            .to_string();
+        assert!(
+            tree_walker.contains(code),
+            "tree-walker: {expr} => {tree_walker}"
+        );
+        assert!(default.contains(code), "default: {expr} => {default}");
+    }
+}

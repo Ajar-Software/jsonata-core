@@ -1006,11 +1006,92 @@ pub struct Parser {
     /// unexpected trailing `a`, even though the `7` step is also invalid.
     /// Raising it inline made us answer S0213 there. Deferring restores the
     /// ordering without moving the check itself into a post-parse pass.
-    pending_literal_step: Option<String>,
+    pending_step_error: Option<ParserError>,
+    /// Set when a misplaced `@` (S0215/S0216, which ast_transform raises)
+    /// comes before the pending S0213 in jsonata-js's `processAST` order,
+    /// which checks a node after its operands as the parser finishes it
+    /// after them: `1[0]@$v.a` is S0215, not the S0213 of the `.`. The
+    /// S0213 then waits for ast_transform, which raises the S0215 or any
+    /// error it meets first (`$[%.id]@$v` is S0217), and is raised only if
+    /// ast_transform raises nothing.
+    focus_bind_first: bool,
+    /// When `pending_step_error` is set, the id of the step that the `.`
+    /// that noticed it added last. Postfix `[...]`, `#` and `@` after it
+    /// extend that step here, but in jsonata-js they bind tighter than `.`
+    /// and belong to its right-hand operand, which `processAST` checks
+    /// first: a misplaced `@` on that step goes before the S0213
+    /// (`1.a[0]@$v` is S0215).
+    pending_dot_step: Option<u64>,
     /// The ids of the name steps made from a quoted string after `.`
     /// (`a."f"`), so that a call of such a step can make it a string again:
     /// see `requote_called_step`.
     quoted_steps: HashSet<u64>,
+}
+
+/// Whether jsonata-js's `@` case raises S0215 or S0216 for binding `lhs`,
+/// the raw node before `@`, as ast_transform's `check_focus_bind_target`
+/// does: see `focus_bind_misplaced`. A `#` binding before it leaves the
+/// step's predicates as they are (`1[0]#$i@$v` is S0215).
+fn focus_bind_lhs_misplaced(lhs: &AstNode) -> bool {
+    match lhs {
+        AstNode::Path { steps } => steps
+            .last()
+            .is_some_and(|last| focus_bind_misplaced(&last.stages, &last.node)),
+        AstNode::Binary {
+            op: BinaryOp::IndexBind,
+            lhs,
+            ..
+        } => focus_bind_lhs_misplaced(lhs),
+        other => focus_bind_misplaced(&[], other),
+    }
+}
+
+/// Whether a `@` on a step with these `stages` and this `node` is an error:
+/// S0215 for a step with predicates (`[]` is not one), S0216 for a sort
+/// step, looking through a group-by to the step it groups.
+fn focus_bind_misplaced(stages: &[Stage], node: &AstNode) -> bool {
+    if stages
+        .iter()
+        .any(|stage| !matches!(stage, Stage::KeepArray))
+    {
+        return true;
+    }
+    match node {
+        AstNode::ObjectTransform { input, .. } => match &**input {
+            AstNode::Path { steps } => steps
+                .last()
+                .is_some_and(|last| focus_bind_misplaced(&last.stages, &last.node)),
+            other => focus_bind_misplaced(&[], other),
+        },
+        AstNode::Sort { .. } => true,
+        _ => false,
+    }
+}
+
+/// The id of the last step of `lhs`, a path under any `#`/`@` bindings: the
+/// step a `@` after them binds. Not through a group-by or sort, which bind
+/// looser than `.` in jsonata-js.
+fn bound_last_step_id(lhs: &AstNode) -> Option<u64> {
+    match lhs {
+        AstNode::Path { steps } => {
+            let last = steps.last()?;
+            match &last.node {
+                // A predicate after a binding makes the bound node a step
+                // of its own (`1.a@$u[0]`).
+                bound @ AstNode::Binary {
+                    op: BinaryOp::IndexBind | BinaryOp::FocusBind,
+                    ..
+                } => bound_last_step_id(bound),
+                _ => Some(last.id.get()),
+            }
+        }
+        AstNode::Binary {
+            op: BinaryOp::IndexBind | BinaryOp::FocusBind,
+            lhs,
+            ..
+        } => bound_last_step_id(lhs),
+        _ => None,
+    }
 }
 
 /// One step of `check_path_literal_steps`: the literal's text when `node`
@@ -1075,7 +1156,9 @@ impl Parser {
             lexer,
             current_token,
             depth: 0,
-            pending_literal_step: None,
+            pending_step_error: None,
+            pending_dot_step: None,
+            focus_bind_first: false,
             quoted_steps: HashSet::new(),
         })
     }
@@ -2151,6 +2234,20 @@ impl Parser {
                     };
                     self.advance()?; // skip variable
 
+                    // jsonata-js's `@` case checks its step before any `.`
+                    // around it checks for literal steps, so a misplaced `@`
+                    // noticed before any S0213, or on the step the `.` that
+                    // noticed it added last, goes first (`1[0]@$v.a`,
+                    // `1.a[0]@$v`): see `focus_bind_first`. A group-by
+                    // lifted off `lhs` binds looser than `.` in jsonata-js,
+                    // so there the `.` came first (`1.a[0]{k: v}@$v`).
+                    if !self.focus_bind_first && focus_bind_lhs_misplaced(&lhs) {
+                        let on_dot_step = path_group.is_none()
+                            && self.pending_dot_step.is_some()
+                            && self.pending_dot_step == bound_last_step_id(&lhs);
+                        self.focus_bind_first = self.pending_step_error.is_none() || on_dot_step;
+                    }
+
                     self.bump_parse_depth()?;
                     lhs = AstNode::Binary {
                         op: BinaryOp::FocusBind,
@@ -2266,17 +2363,19 @@ impl Parser {
     ///   `true`/`false`/`null` (`null.$`, `2#$q.a`, `a.2`), and
     /// - turns a string step into a field name (`"a"[0].b`, `"a".(b)`).
     ///
-    /// The S0213 is recorded rather than raised (see `pending_literal_step`).
+    /// The S0213 is recorded rather than raised (see `pending_step_error`).
     /// A unary minus on a number counts as a number: jsonata-js folds `-2`
     /// into the number `-2` before this check runs.
     fn check_path_literal_steps(&mut self, steps: &mut [PathStep]) {
+        let last_step = steps.last().map(|last| last.id.get());
         for step in steps.iter_mut() {
             if let Some(literal) = check_literal_step(&mut step.node) {
-                if self.pending_literal_step.is_none() {
-                    self.pending_literal_step = Some(format!(
+                if self.pending_step_error.is_none() {
+                    self.pending_step_error = Some(ParserError::InvalidSyntax(format!(
                         "S0213: The literal value {} cannot be used as a step within a path expression",
                         literal
-                    ));
+                    )));
+                    self.pending_dot_step = last_step;
                 }
                 // jsonata-js throws at the first one, so no later step matters.
                 return;
@@ -2297,8 +2396,10 @@ impl Parser {
             )));
         }
 
-        if let Some(message) = self.pending_literal_step.take() {
-            return Err(ParserError::InvalidSyntax(message));
+        if !self.focus_bind_first {
+            if let Some(error) = self.pending_step_error.take() {
+                return Err(error);
+            }
         }
 
         Ok(ast)
@@ -2368,11 +2469,16 @@ impl Parser {
 pub fn parse(expression: &str) -> Result<AstNode, ParserError> {
     let mut parser = Parser::new(expression.to_string())?;
     let raw_ast = parser.parse()?;
-    crate::ast_transform::resolve_ancestry(raw_ast).map_err(|e| match e {
+    let ast = crate::ast_transform::resolve_ancestry(raw_ast).map_err(|e| match e {
         crate::ast_transform::AstTransformError::Coded { code, message } => {
             ParserError::Coded { code, message }
         }
-    })
+    })?;
+    // An S0213 left for ast_transform to go first (see `focus_bind_first`).
+    match parser.pending_step_error.take() {
+        Some(error) => Err(error),
+        None => Ok(ast),
+    }
 }
 
 #[cfg(test)]

@@ -122,6 +122,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `[0,2,4,6,8]` and `[3,4]`), and so for `[[1,2][]]`, `[[[1,2]][0]]`, `[1,[2,3][$>0]]` and
   a constructor in an object value; `$count([[1,2][$>0]])` is 1 (it was 2). A member that is
   a path is still spliced in: `[([1,2])[$>0]]`, `[[1,2]#$i]` and `[[3,1,2]^($)]` are flat.
+- **A misplaced `@` binding is reported before a literal path step**, as in jsonata-js,
+  whose `processAST` checks a `@` step before the `.` around it checks its steps:
+  `1[0]@$v.**.q`, `null[0]@$v.$append(a.c.$, n[])` and `1.a[0]@$v` are S0215 and
+  `1^(x)@$v.a` is S0216 (they were S0213 since the S0213 check below covered every step).
 - **A literal used as a path step is S0213 wherever it is in the path**
   ([#248](https://github.com/txjmb/jsonata-core/issues/248)), as in jsonata-js, which checks
   every step of a path built by `.`. Only a literal right of a dot was rejected, so `null.$`,

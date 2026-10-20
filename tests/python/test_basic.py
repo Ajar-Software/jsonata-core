@@ -100,6 +100,15 @@ class TestCompile:
             jsonatapy.compile("uppercase#$i()").evaluate(None)
 
     @pytest.mark.parametrize(
+        "expression, code",
+        [("1[0]@$v.**.q", "S0215"), ("1.a[0]@$v", "S0215"), ("1.a.b[0]@$v", "S0213")],
+    )
+    def test_focus_binding_error_precedes_literal_step(self, expression, code):
+        """A misplaced `@` in an operand of `.` is raised before its literal step."""
+        with pytest.raises(ValueError, match=code):
+            jsonatapy.compile(expression)
+
+    @pytest.mark.parametrize(
         "expression",
         ['arr."uppercase"[0]()', 'a."uppercase"#$i()', '($o := {"f": $uppercase}; $o."f"("a"))'],
     )
