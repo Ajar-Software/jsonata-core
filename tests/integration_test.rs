@@ -649,8 +649,8 @@ fn test_unbounded_recursion_raises_u1001() {
     });
     assert_eq!(
         outcome,
-        "Err(Evaluation error: U1001: Stack overflow - maximum recursion depth (30000) exceeded)\n\
-         Err(Evaluation error: U1001: Stack overflow - maximum recursion depth (30000) exceeded)"
+        "Err(Evaluation error: U1001: Stack overflow error: evaluation nested deeper than 30000 levels. Check for non-terminating recursive function. Consider rewriting as tail-recursive.)\n\
+         Err(Evaluation error: U1001: Stack overflow error: evaluation nested deeper than 30000 levels. Check for non-terminating recursive function. Consider rewriting as tail-recursive.)"
     );
 }
 
@@ -672,7 +672,7 @@ fn test_recursion_through_expression_calls() {
         out
     });
     let u1001 =
-        "Err(Evaluation error: U1001: Stack overflow - maximum recursion depth (30000) exceeded)";
+        "Err(Evaluation error: U1001: Stack overflow error: evaluation nested deeper than 30000 levels. Check for non-terminating recursive function. Consider rewriting as tail-recursive.)";
     assert_eq!(
         outcome,
         format!("Ok(5000) | Ok(5000)\nOk(3000) | Ok(3000)\n{u1001} | {u1001}\n")
@@ -707,12 +707,50 @@ fn test_recursion_through_tail_called_builtin_callbacks() {
         out
     });
     let u1001 =
-        "Err(Evaluation error: U1001: Stack overflow - maximum recursion depth (30000) exceeded)";
+        "Err(Evaluation error: U1001: Stack overflow error: evaluation nested deeper than 30000 levels. Check for non-terminating recursive function. Consider rewriting as tail-recursive.)";
     assert_eq!(
         outcome,
         format!(
             "Ok(0) | Ok(0)\nOk(0) | Ok(0)\nOk(1) | Ok(1)\nOk(1) | Ok(1)\nOk(1) | Ok(1)\n\
              Ok(1) | Ok(1)\nOk(0) | Ok(0)\n{u1001} | {u1001}\n{u1001} | {u1001}\n{u1001} | {u1001}\n"
+        )
+    );
+}
+
+/// The same through a tail call of a value that is not a thunk function: a
+/// partial application (`$f($n - 1, ?)()`, also when returned from another
+/// call), a partial application of a builtin, and a builtin called as a value
+/// (`($reduce)(...)`). These run outside the trampoline's ordinary evaluation
+/// step and used to overflow the native stack at about 2,000 levels (#255);
+/// each level is guarded now, so deep recursion evaluates and with no base
+/// case it is U1001, not a crash.
+#[test]
+fn test_recursion_through_tail_called_partial_applications() {
+    let outcome = on_small_stack(|| {
+        let mut out = String::new();
+        for expr in [
+            "($f := function($n){ $n <= 0 ? 1 : $f($n - 1, ?)() }; $f(5000))",
+            "($g := function($n){ $f($n - 1, ?) }; \
+              $f := function($n){ $n <= 0 ? 1 : $g($n)() }; $f(5000))",
+            "($f := function($n){ $n <= 0 ? 1 : $reduce(?, function($a, $b){ $f($b) }, 0)([$n - 1]) }; $f(5000))",
+            "($f := function($n){ $n <= 0 ? 1 : ($reduce)([$n - 1], function($a, $b){ $f($b) }, 0) }; $f(5000))",
+            "($f := function($n){ $n <= 0 ? 1 : $eval(?)('$f(' & ($n - 1) & ')') }; $f(5000))",
+            "($f := function($n){ $f($n + 1, ?)() }; $f(0))",
+            "($f := function($n){ ($reduce)([$n + 1], function($a, $b){ $f($b) }, 0) }; $f(0))",
+        ] {
+            let (tree_walker, default) = eval_both_engines(expr, EvaluatorOptions::default());
+            out.push_str(&format!("{tree_walker} | {default}\n"));
+        }
+        out
+    });
+    let u1001 = "Err(Evaluation error: U1001: Stack overflow error: evaluation nested deeper \
+                 than 30000 levels. Check for non-terminating recursive function. Consider \
+                 rewriting as tail-recursive.)";
+    assert_eq!(
+        outcome,
+        format!(
+            "Ok(1) | Ok(1)\nOk(1) | Ok(1)\nOk(1) | Ok(1)\nOk(1) | Ok(1)\nOk(1) | Ok(1)\n\
+             {u1001} | {u1001}\n{u1001} | {u1001}\n"
         )
     );
 }
@@ -986,9 +1024,9 @@ fn test_no_timeout_configured_never_raises_d1012() {
 
 /// jsonata-js's own canonical guardrails-documentation example: an infinite
 /// tail-recursive call. `invoke_lambda_with_tco`'s trampoline loop previously
-/// had no timeout check at all -- only the hardcoded `MAX_TCO_ITERATIONS`
-/// iteration cap -- so this expression ran up to 100,000 iterations
-/// completely ignoring `timeout_ms` and failed with U1001 instead of D1012.
+/// had no timeout check at all -- only a hardcoded 100,000-iteration cap,
+/// since removed (#251) -- so this expression ignored `timeout_ms` and failed
+/// with U1001 instead of D1012. Now the timeout is all that stops it.
 #[test]
 fn test_tco_trampoline_infinite_recursion_raises_d1012_timeout() {
     let data = JValue::Null;
@@ -1012,9 +1050,8 @@ fn test_tco_trampoline_infinite_recursion_raises_d1012_timeout() {
 /// call in the TCO trampoline must remain a no-op (it early-returns when
 /// `options.timeout_ms` is `None`), so a bounded tail-recursive loop still
 /// completes normally and produces the correct result. Uses a moderate bound
-/// (not 100,000 iterations) to keep the test suite fast; the pre-existing
-/// U1001-at-100k-iterations behavior is unchanged and not the target of this
-/// regression guard.
+/// to keep the test suite fast; `test_tail_loop_has_no_iteration_cap` covers
+/// long loops.
 #[test]
 fn test_tco_trampoline_no_timeout_configured_completes_normally() {
     let data = JValue::Null;
@@ -1028,25 +1065,78 @@ fn test_tco_trampoline_no_timeout_configured_completes_normally() {
     assert_eq!(result, JValue::from(json!(1000.0)));
 }
 
-/// Without a configured timeout, the `MAX_TCO_ITERATIONS` hardcoded backstop
-/// must still apply to genuinely infinite tail recursion -- the timeout gate
-/// added to `invoke_lambda_with_tco` (`timeout_ms.is_none() && iterations >
-/// MAX_TCO_ITERATIONS`) must not disable the cap when there is no timeout to
-/// take over as the exit condition, or this would hang forever. Takes on the
-/// order of tens of milliseconds (100,000 trivial trampoline iterations); not
-/// a bounded/fast variant, since the whole point is exercising the cap itself.
+/// A tail loop has no iteration cap, as in jsonata-js (GitHub issue #251):
+/// it used to stop at 100,000 iterations with "U1001: ... maximum recursion
+/// depth (500) exceeded", a depth nothing enforced. 200,000 iterations, a
+/// mutually tail-recursive pair, and a tail loop under a configured (but
+/// generous) timeout all finish, on both engines, on a 1MB stack.
 #[test]
-fn test_tco_trampoline_no_timeout_configured_still_hits_iteration_cap() {
-    let data = JValue::Null;
-    let expr_str = "($inf := function(){$inf()}; $inf())";
-    let ast = parse(expr_str).unwrap();
-    let mut evaluator = Evaluator::new();
-    let err = evaluator
-        .evaluate(&ast, &data)
-        .expect_err("expected U1001 at the iteration cap");
+fn test_tail_loop_has_no_iteration_cap() {
+    let outcome = on_small_stack(|| {
+        let mut out = String::new();
+        for (expr, options) in [
+            (
+                "($loop := function($n){ $n = 0 ? \"done\" : $loop($n - 1) }; $loop(200000))",
+                EvaluatorOptions::default(),
+            ),
+            (
+                "($even := function($n){ $n = 0 ? true : $odd($n - 1) };\
+                  $odd := function($n){ $n = 0 ? false : $even($n - 1) }; $odd(200001))",
+                EvaluatorOptions::default(),
+            ),
+            (
+                "($loop := function($n){ $n = 0 ? \"done\" : $loop($n - 1) }; $loop(200000))",
+                EvaluatorOptions {
+                    timeout_ms: Some(600_000),
+                    ..Default::default()
+                },
+            ),
+        ] {
+            let (tree_walker, default) = eval_both_engines(expr, options);
+            out.push_str(&format!("{tree_walker} {default}\n"));
+        }
+        out
+    });
+    assert_eq!(
+        outcome,
+        "Ok(\"done\") Ok(\"done\")\nOk(true) Ok(true)\nOk(\"done\") Ok(\"done\")\n"
+    );
+}
+
+/// With no cap on tail calls, the guardrails still hold around them: a
+/// `max_stack_depth` still raises D1011 for real (non-tail) recursion, even
+/// inside a long tail loop, and a timeout still stops an infinite tail loop
+/// (D1012) on both engines.
+#[test]
+fn test_tail_loop_guardrails_still_apply() {
+    let outcome = on_small_stack(|| {
+        let depth = EvaluatorOptions {
+            max_stack_depth: Some(500),
+            ..Default::default()
+        };
+        // 150,000 tail iterations within a depth limit of 500 levels...
+        let (tw_tail, vm_tail) = eval_both_engines(
+            "($loop := function($n){ $n = 0 ? \"done\" : $loop($n - 1) }; $loop(150000))",
+            depth.clone(),
+        );
+        // ...while 500 nested non-tail calls exceed it.
+        let (tw_deep, vm_deep) = eval_both_engines(&NON_TAIL_RECURSION.replace('N', "500"), depth);
+        let timeout = EvaluatorOptions {
+            timeout_ms: Some(50),
+            ..Default::default()
+        };
+        let (tw_inf, vm_inf) = eval_both_engines("($inf := function(){$inf()}; $inf())", timeout);
+        format!("{tw_tail} {vm_tail}\n{tw_deep}\n{vm_deep}\n{tw_inf}\n{vm_inf}")
+    });
+    let lines: Vec<&str> = outcome.lines().collect();
+    assert_eq!(lines[0], "Ok(\"done\") Ok(\"done\")", "got: {outcome}");
     assert!(
-        err.to_string().contains("U1001"),
-        "expected U1001, got: {err}"
+        lines[1].contains("D1011") && lines[2].contains("D1011"),
+        "got: {outcome}"
+    );
+    assert!(
+        lines[3].contains("D1012") && lines[4].contains("D1012"),
+        "got: {outcome}"
     );
 }
 

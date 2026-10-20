@@ -106,6 +106,32 @@ def test_unbounded_recursion_through_tail_called_builtin_callback(engine):
     assert out["error"][:5] in ("U1001", "D1012")
 
 
+TAIL_CALLED_PARTIALS = [
+    # The expression from #255.
+    "($f := function($n){ $n <= 0 ? 1 : $f($n-1, ?)() }; $f(2000))",
+    "($f := function($n){ $n <= 0 ? 1 : $f($n - 1, ?)() }; $f(9000))",
+    "($g := function($n){ $f($n - 1, ?) }; $f := function($n){ $n <= 0 ? 1 : $g($n)() }; $f(5000))",
+    "($f := function($n){ $n <= 0 ? 1 :"
+    " $reduce(?, function($a, $b){ $f($b) }, 0)([$n - 1]) }; $f(5000))",
+    "($f := function($n){ $n <= 0 ? 1 :"
+    " ($reduce)([$n - 1], function($a, $b){ $f($b) }, 0) }; $f(5000))",
+]
+
+
+@pytest.mark.parametrize("expr", TAIL_CALLED_PARTIALS)
+def test_recursion_through_tail_called_partial_application(engine, expr):
+    # A partial application, or a builtin called as a value, in tail position
+    # is applied by the trampoline without an ordinary evaluation step;
+    # recursing through it used to overflow the native stack at about 2,000
+    # levels and crash the process (#255).
+    assert _evaluate_on_small_stack(engine, expr) == {"ok": "1"}
+
+
+def test_unbounded_recursion_through_tail_called_partial_application(engine):
+    out = _evaluate_on_small_stack(engine, "($f := function($n){ $f($n + 1, ?)() }; $f(0))")
+    assert out["error"].startswith("U1001")
+
+
 def test_recursion_without_base_case_raises_u1001(engine):
     out = _evaluate_on_small_stack(engine, NO_BASE_CASE)
     assert out["error"].startswith("U1001")
@@ -367,3 +393,35 @@ def test_deep_python_input_read_down_is_freed(engine, form):
     )
     assert proc.returncode == 0, f"process crashed ({proc.returncode}): {proc.stderr[-2000:]}"
     assert json.loads(proc.stdout) == {"count": 1}
+
+
+TAIL_LOOP = "($loop := function($n){ $n = 0 ? 'done' : $loop($n - 1) }; $loop(%d))"
+
+
+def test_tail_loop_has_no_iteration_cap(engine):
+    # jsonata-js runs a tail loop as long as it keeps calling. It used to stop
+    # here at 100,000 iterations with "U1001: ... maximum recursion depth
+    # (500) exceeded", a depth nothing enforced (GitHub issue #251).
+    assert _evaluate_on_small_stack(engine, TAIL_LOOP % 200000) == {"ok": '"done"'}
+    mutual = (
+        "($even := function($n){ $n = 0 ? true : $odd($n - 1) };"
+        " $odd := function($n){ $n = 0 ? false : $even($n - 1) }; $odd(200001))"
+    )
+    assert _evaluate_on_small_stack(engine, mutual) == {"ok": "true"}
+
+
+def test_tail_loop_keeps_guardrails(engine):
+    # A depth limit still bounds real recursion but not a tail loop, and a
+    # timeout still stops an infinite one.
+    out = _evaluate_on_small_stack(engine, TAIL_LOOP % 150000, max_stack_depth=500)
+    assert out == {"ok": '"done"'}
+    out = _evaluate_on_small_stack(engine, RECURSION % 500, max_stack_depth=500)
+    assert out["error"].startswith("D1011")
+    out = _evaluate_on_small_stack(engine, "($inf := function(){$inf()}; $inf())", timeout=50)
+    assert out["error"].startswith("D1012")
+
+
+def test_u1001_names_the_real_limit(engine):
+    out = _evaluate_on_small_stack(engine, NO_BASE_CASE)
+    assert "30000 levels" in out["error"], out
+    assert "(500)" not in out["error"]
