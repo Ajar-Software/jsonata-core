@@ -3447,6 +3447,181 @@ fn test_null_from_non_simple_sort_term_without_comparison() {
     }
 }
 
+// ── `$eval` with an undefined focus; a function's tail builtin result ────────
+//
+// `$eval(expr, focus)` with an undefined focus used the undefined focus as
+// its input, so it was undefined; jsonata-js keeps the current input (#247).
+// A builtin called in a function's tail position returns its raw result in
+// jsonata-js, never unwrapped, so an empty sequence such as `$keys({})` stays
+// a value for `$map` and its siblings; and `$split` of undefined is
+// undefined, not null (#250).
+
+/// `eval_both_engines` with `input` as the input.
+fn eval_both_engines_on(expr: &str, input: serde_json::Value) -> (String, String) {
+    fn show(r: Result<JValue, jsonata_core::evaluator::EvaluatorError>) -> String {
+        match r {
+            Ok(JValue::Undefined) => "undefined".to_string(),
+            Ok(v) => v.to_json_string().unwrap(),
+            Err(e) => format!("Err({e})"),
+        }
+    }
+    let input = JValue::from(input);
+    let ast = parse(expr).unwrap();
+    let tree_walker = show(Evaluator::new().evaluate(&ast, &input));
+    let default = show(
+        jsonata_core::Expression::compile(expr)
+            .unwrap()
+            .evaluate(&input),
+    );
+    (tree_walker, default)
+}
+
+#[test]
+fn test_eval_with_undefined_focus_uses_the_input() {
+    for (expr, input, expected) in [
+        (r#"$eval("a", $v)"#, json!({"a": 5}), "5"),
+        (r#"$eval("a", nothing)"#, json!({"a": 5}), "5"),
+        (r#"$eval("$", $v)"#, json!([1, 2]), "[1,2]"),
+        (r#"$eval("a", missing.deep)"#, json!({"a": 5}), "5"),
+        (r#"($x := 3; $eval("$x + a", $v))"#, json!({"a": 5}), "8"),
+        (
+            r#"items.$eval("x", $u)"#,
+            json!({"items": [{"x": 1}, {"x": 2}]}),
+            "[1,2]",
+        ),
+        (r#"$eval(nothing, $v)"#, json!({"a": 5}), "undefined"),
+        // A defined focus still replaces the input.
+        (r#"$eval("a", {"a": 7})"#, json!({"a": 5}), "7"),
+    ] {
+        let (tree_walker, default) = eval_both_engines_on(expr, input);
+        assert_eq!(tree_walker, expected, "tree-walker: {expr}");
+        assert_eq!(default, expected, "default: {expr}");
+    }
+}
+
+#[test]
+fn test_tail_builtin_result_is_not_unwrapped() {
+    for (expr, expected) in [
+        (r#"$map([1,2], function($v){ $keys({}) })"#, "[[],[]]"),
+        (r#"$map([1,2], function($v){ ($keys({})) })"#, "[[],[]]"),
+        (
+            r#"$map([1,2], function($v){ $v>1 ? $keys({}) : 0 })"#,
+            "[0,[]]",
+        ),
+        (r#"$map([1,2], function($v){ $keys(nothing) })"#, "[[],[]]"),
+        (
+            r#"$map([1,2], function($v){ $keys({"a":1}) })"#,
+            r#"[["a"],["a"]]"#,
+        ),
+        (
+            r#"$map([1,2], function($v){ $lookup([{}], "x") })"#,
+            "[[],[]]",
+        ),
+        (
+            r#"$map([{}, {"q":1}], function($x){ $lookup([$x], "q") })"#,
+            "[[],[1]]",
+        ),
+        (
+            r#"$map([1,2], function($v){ $match("abc", /z/) })"#,
+            "[[],[]]",
+        ),
+        (
+            r#"$each({"a":1,"b":2}, function($v){ $keys({}) })"#,
+            "[[],[]]",
+        ),
+        (r#"$count($map([1,2], function($v){ $keys({}) }))"#, "2"),
+        (
+            r#"$map([1,2], function($v){ $map([1], function(){ $keys({}) }) })"#,
+            "[[[]],[[]]]",
+        ),
+        // A direct call unwraps the result, as its call node does.
+        (r#"(function(){ $keys({}) })()"#, "undefined"),
+        (r#"[(function(){ $keys({}) })()]"#, "[]"),
+        (r#"($f := function(){ $keys({}) }; [$f(), $f()])"#, "[]"),
+        // An undefined callback result adds nothing.
+        (
+            r#"$map([1,2], function($v){ $split(nothing, " ") })"#,
+            "undefined",
+        ),
+        (r#"[$split(nothing, " ")]"#, "[]"),
+        (
+            r#"$map([1,2], function($v){ $sift(nothing, function(){true}) })"#,
+            "undefined",
+        ),
+        (
+            r#"$map([1,2,3], function($v){ $v>1 ? $string($v) })"#,
+            r#"["2","3"]"#,
+        ),
+        (
+            r#"$map([1,2], function($v){ $v>1 ? $keys({"a":1}) })"#,
+            r#"["a"]"#,
+        ),
+        // `$sort` tests its comparator's result as JavaScript does: an
+        // array or object, even an empty one, is true.
+        (r#"$sort([2,1], function($a,$b){ $keys({}) })"#, "[1,2]"),
+        (r#"$sort([2,1], function($a,$b){ [] })"#, "[1,2]"),
+        (r#"$sort([2,1], function($a,$b){ {} })"#, "[1,2]"),
+        (r#"$sort([3,1,2], function($a,$b){ $a > $b })"#, "[1,2,3]"),
+    ] {
+        let (tree_walker, default) = eval_both_engines_on(expr, json!({"a": 5}));
+        assert_eq!(tree_walker, expected, "tree-walker: {expr}");
+        assert_eq!(default, expected, "default: {expr}");
+    }
+}
+
+// ── The input of a builtin called in tail position ───────────────────────────
+//
+// jsonata-js applies a builtin called in a function's tail position from its
+// trampoline, with the input `apply` was given: null when the function is a
+// callback of a builtin (`$map`, ...) or applied by `~>` to a non-call, the
+// call site's input for a direct call. The builtin reads it where it reads
+// the context: `$eval`'s focus, or a signature's `-` parameter.
+
+#[test]
+fn test_tail_builtin_runs_with_the_apply_input() {
+    for (expr, expected) in [
+        (
+            r#"$map(["a"], function($e){ $eval($e, $nope) })"#,
+            "undefined",
+        ),
+        (
+            r#"$map([1,2], function($v){ $eval("a", $v.nope) })"#,
+            "undefined",
+        ),
+        (r#"$map(["a"], function($e){ $eval("a") })"#, "undefined"),
+        (
+            r#"$map(["a"], function($e){ $e ? $eval("a") : 0 })"#,
+            "undefined",
+        ),
+        (r#"$filter([1], function($e){ $eval("a") })"#, "undefined"),
+        (r#"$map(["a"], function($e){ $string() })"#, r#""null""#),
+        (r#""x" ~> function($e){ $eval("a") }"#, "undefined"),
+        (
+            r#"($f := function($e){ $eval("a") }; "x" ~> $f)"#,
+            "undefined",
+        ),
+        (
+            r#"($f := function($e){ $eval("a", $nope) }; ($f ~> $string)("x"))"#,
+            "undefined",
+        ),
+        // A direct call: the call site's input.
+        (r#"($f := function($e){ $eval("a") }; $f("x"))"#, "5"),
+        (r#"($f := function(){ $eval("a") }; {"a":7}.$f())"#, "7"),
+        (
+            r#"($f := function(){ $string() }; {"a":7}.$f())"#,
+            r#""{\"a\":7}""#,
+        ),
+        (r#"($c := $string ~> $eval; $c("a"))"#, "5"),
+        // Not in tail position: the function's own input.
+        (r#"$map(["a"], function($e){ $v := $eval("a") })"#, "5"),
+        (r#"$map(["a"], function($e){ $sum([$eval("a")]) })"#, "5"),
+    ] {
+        let (tree_walker, default) = eval_both_engines_on(expr, json!({"a": 5}));
+        assert_eq!(tree_walker, expected, "tree-walker: {expr}");
+        assert_eq!(default, expected, "default: {expr}");
+    }
+}
+
 // ── Literal path steps (#248) ────────────────────────────────────────────────
 //
 // jsonata-js's `processAST` (parser.js, binary `.`) checks every step of a
@@ -3577,6 +3752,78 @@ fn test_filtered_constructor_member_keeps_its_nesting() {
         (r#"[[1,2][$>0]{"k":$}]"#, r#"Ok([{"k":[1,2]}])"#),
     ] {
         let (tree_walker, default) = eval_both_engines(expr, EvaluatorOptions::default());
+        assert_eq!(tree_walker, expected, "tree-walker: {expr}");
+        assert_eq!(default, expected, "default: {expr}");
+    }
+}
+
+// ── Functions a tail-position builtin applies ────────────────────────────────
+//
+// A builtin that is a function's tail call gets its function arguments
+// unwrapped (jsonata-js's trampoline evaluates them directly), and applies
+// each with the input it was defined with. (A function that came in as an
+// argument of a direct call is wrapped in jsonata-js and gets a null input;
+// that is not told apart yet, #254.)
+
+#[test]
+fn test_tail_builtin_applies_its_functions_raw() {
+    for (expr, expected) in [
+        (
+            r#"($o := function(){ $map([1], function(){ $eval("a") }) }; $o())"#,
+            "5",
+        ),
+        (
+            r#"($o := function(){ $map([1,2], function(){ $eval("a") }) }; $o())"#,
+            "[5,5]",
+        ),
+        (
+            r#"($o := function(){ $map([1], function(){ $string() }) }; $o())"#,
+            r#""{\"a\":5,\"b\":{\"a\":7}}""#,
+        ),
+        (
+            r#"($o := function(){ $filter([1], function(){ $eval("a") }) }; $o())"#,
+            "1",
+        ),
+        (
+            r#"($o := function(){ $reduce([1,2], function($a,$b){ $eval("a") }) }; $o())"#,
+            "5",
+        ),
+        (
+            r#"($g := function($x){ $eval("a") }; $o := function(){ $map([1], $g) }; $o())"#,
+            "5",
+        ),
+        (
+            r#"b.($g := function($x){ $eval("a") }; $o := function(){ $map([1], $g) }; $o())"#,
+            "7",
+        ),
+        (
+            r#"($o := function(){ $map([1], function(){ ($eval("a")) }) }; $o())"#,
+            "5",
+        ),
+        (
+            r#"($i := function($n){ $n > 0 ? $i($n-1) : $map([1], function(){ $eval("a") }) }; $i(2))"#,
+            "5",
+        ),
+        // Not a tail call: a null input.
+        (
+            r#"($g := function($x){ $eval("a") }; $map([1], $g))"#,
+            "undefined",
+        ),
+        (
+            r#"($o := function(){ [$map([1], function(){ $eval("a") })] }; $o())"#,
+            "[]",
+        ),
+        // A function also called by its own name while it is an argument.
+        (
+            r#"($f := function($x){ $string() }; $c := function($g){ $f(1) }; $c($f))"#,
+            r#""{\"a\":5,\"b\":{\"a\":7}}""#,
+        ),
+        (
+            r#"($p := function($f){ $f() }; $o := function(){ $p(function(){ $map([1], function(){ $eval("a") }) }) }; $o())"#,
+            "5",
+        ),
+    ] {
+        let (tree_walker, default) = eval_both_engines_on(expr, json!({"a": 5, "b": {"a": 7}}));
         assert_eq!(tree_walker, expected, "tree-walker: {expr}");
         assert_eq!(default, expected, "default: {expr}");
     }
