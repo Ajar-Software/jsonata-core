@@ -3395,3 +3395,54 @@ fn test_call_of_indexed_non_function_raises() {
         assert!(default.contains(code), "default: {expr} => {default}");
     }
 }
+
+// ── A null sort term from a non-simple term ──────────────────────────────────
+//
+// A sort term that is not a plain field (`a.b`, `$.a`, a function call)
+// treated a null result as undefined, so it sorted last instead of raising
+// T2008. jsonata-js's comparator raises T2008 whenever it compares a null
+// term with another defined one; a null beside only undefined terms, or in a
+// one-item sort, is never compared and sorts before the undefined ones.
+
+#[test]
+fn test_null_from_non_simple_sort_term_raises_t2008() {
+    for expr in [
+        r#"[{"a":{"b":2}},{"a":{"b":null}}]^(a.b)"#,
+        r#"[{"a":{"b":2}},{"a":{"b":null}}]^(>a.b)"#,
+        r#"[{"a":2},{"a":null}]^($.a)"#,
+        r#"[{"a":null},{"a":null}]^($.a)"#,
+        r#"[{"a":true},{"a":null}]^($.a)"#,
+        r#"[{"a":2},{"a":null}]^($lookup($, "a"))"#,
+        r#"[{"a":null},{"a":1}]^($.a, b)"#,
+        r#"[{"a":1, "b":null},{"a":1,"b":2}]^(a, $.b)"#,
+    ] {
+        let (tree_walker, default) = eval_both_engines(expr, EvaluatorOptions::default());
+        assert!(
+            tree_walker.contains("T2008"),
+            "tree-walker: {expr} => {tree_walker}"
+        );
+        assert!(default.contains("T2008"), "default: {expr} => {default}");
+    }
+}
+
+#[test]
+fn test_null_from_non_simple_sort_term_without_comparison() {
+    for (expr, expected) in [
+        (r#"[{},{"a":null}]^($.a)"#, r#"Ok([{"a":null},{}])"#),
+        (r#"[{"a":null},{}]^($.a)"#, r#"Ok([{"a":null},{}])"#),
+        (
+            r#"[{"a":{"b":null}},{"a":{}},{"a":{}}]^(a.b)"#,
+            r#"Ok([{"a":{"b":null}},{"a":{}},{"a":{}}])"#,
+        ),
+        (r#"[{"a":null}]^($.a)"#, r#"Ok({"a":null})"#),
+        // The first term already orders the pair, so the null is never compared.
+        (
+            r#"[{"a":2,"b":null},{"a":1,"b":2}]^(a, $.b)"#,
+            r#"Ok([{"a":1,"b":2},{"a":2,"b":null}])"#,
+        ),
+    ] {
+        let (tree_walker, default) = eval_both_engines(expr, EvaluatorOptions::default());
+        assert_eq!(tree_walker, expected, "tree-walker: {expr}");
+        assert_eq!(default, expected, "default: {expr}");
+    }
+}

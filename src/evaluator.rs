@@ -10372,17 +10372,10 @@ impl Evaluator {
         // real element), not the wrapper. The tuple's carried focus/index/ancestor
         // bindings are reachable via context (bound by evaluate_sort), so a term
         // like `$`, `%.Price`, or `$pos` still resolves correctly.
-        let result = self.evaluate_internal(term_expr, &actual_element)?;
-
-        // If the result is null from a complex expression, we can't easily tell if it's
-        // "missing field" or "explicit null". For now, treat null results as undefined
-        // to maintain compatibility with existing tests.
-        // TODO: For full JS compatibility, would need deeper analysis of the expression
-        if result.is_null() {
-            return Ok(JValue::Undefined);
-        }
-
-        Ok(result)
+        // A null result is a value, as for a simple field: jsonata-js's
+        // comparator raises T2008 when it compares it with another defined
+        // term, and only an undefined term sorts last.
+        self.evaluate_internal(term_expr, &actual_element)
     }
 
     /// Evaluate sort operator. `tuples` is set when `data` is a tuple stream,

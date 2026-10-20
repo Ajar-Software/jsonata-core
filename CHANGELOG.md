@@ -93,6 +93,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A null sort term raises T2008 whatever the term's form**, as in jsonata-js. A term that is
+  not a plain field name (`a.b`, `$.a`, a function call) turned a null result into undefined,
+  so `[{"a":{"b":2}},{"a":{"b":null}}]^(a.b)` and `[{"a":2},{"a":null}]^($.a)` returned the
+  input unsorted; a plain field such as `^(a)` already raised T2008. The null is now kept, and
+  jsonata-js's comparator raises T2008 when it compares it with another defined term. A null
+  beside only undefined terms, or in a one-item sort, is never compared, so it does not raise
+  and sorts before the undefined ones: `[{},{"a":null}]^($.a)` is `[{"a":null},{}]` (it was
+  `[{},{"a":null}]`).
 - **Calling an indexed variable calls the function it gives.** `($o := [function(){1}];
   $o[0]())` is 1 and `$string[0](1)` is `"1"`, as in jsonata-js, which evaluates a call's
   procedure expression and calls the result; they were parse errors ("Invalid function name"),
