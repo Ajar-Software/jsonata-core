@@ -98,7 +98,7 @@ def test_lazy_two_step_var_field(force_tree_walker):
 
 
 def test_lazy_dynamic_key_lookup(force_tree_walker):
-    # evaluate_path_step (Object, String) arm
+    # a path step over an object whose expression yields a string
     expr = 'products[0].("na" & "me")'
     assert lazy_eval(expr, PRODUCTS) == eager_eval(expr, PRODUCTS)
 

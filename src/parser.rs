@@ -1727,20 +1727,33 @@ impl Parser {
                             // Extract function name from lhs
                             match other_lhs {
                                 // Handle bare function names: uppercase()
-                                AstNode::Path { steps } if steps.len() == 1 => {
-                                    let name = match &steps[0].node {
-                                        AstNode::Name(s) => s.clone(),
-                                        _ => {
-                                            return Err(ParserError::InvalidSyntax(
-                                                "Invalid function name".to_string(),
-                                            ))
-                                        }
+                                AstNode::Path { steps }
+                                    if steps.len() == 1
+                                        && matches!(steps[0].node, AstNode::Name(_))
+                                        && steps[0].stages.is_empty()
+                                        && steps[0].focus.is_none()
+                                        && steps[0].index_var.is_none() =>
+                                {
+                                    let AstNode::Name(name) = &steps[0].node else {
+                                        unreachable!()
                                     };
+                                    let name = name.clone();
                                     self.bump_parse_depth()?;
                                     lhs = AstNode::Function {
                                         name,
                                         args,
                                         is_builtin: false,
+                                    };
+                                }
+                                // Any other one-step path, such as `$o[0]()` or
+                                // `$string[0](1)`: jsonata-js evaluates the
+                                // procedure expression and calls what it gives,
+                                // raising T1006 when that is not a function.
+                                AstNode::Path { steps } if steps.len() == 1 => {
+                                    self.bump_parse_depth()?;
+                                    lhs = AstNode::Call {
+                                        procedure: Box::new(lhs),
+                                        args,
                                     };
                                 }
                                 // Handle path ending with $function: foo.bar.$lowercase(args)
@@ -1775,18 +1788,27 @@ impl Parser {
                                     // field, as `next()` does on its own.
                                     else if let AstNode::Name(func_name) = last_step {
                                         let last = &steps[steps.len() - 1];
-                                        if !last.stages.is_empty()
-                                            || last.focus.is_some()
-                                            || last.index_var.is_some()
-                                        {
+                                        if last.focus.is_some() || last.index_var.is_some() {
                                             return Err(ParserError::InvalidSyntax(
                                                 invalid_call_message(&args),
                                             ));
                                         }
-                                        let func_call = AstNode::Function {
-                                            name: func_name.clone(),
-                                            args,
-                                            is_builtin: false,
+                                        // `$o.g[0]()` calls what `g[0]` gives in
+                                        // each context item, as jsonata-js's `(`
+                                        // binds tighter than `.`.
+                                        let func_call = if last.stages.is_empty() {
+                                            AstNode::Function {
+                                                name: func_name.clone(),
+                                                args,
+                                                is_builtin: false,
+                                            }
+                                        } else {
+                                            AstNode::Call {
+                                                procedure: Box::new(AstNode::Path {
+                                                    steps: vec![last.clone()],
+                                                }),
+                                                args,
+                                            }
                                         };
                                         let mut context_steps = steps.clone();
                                         context_steps.pop();

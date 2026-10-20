@@ -52,24 +52,27 @@ class TestCompile:
             f"Expected error to start with 'Parse error:', got: {error_msg}"
         )
 
+    @pytest.mark.parametrize(
+        "expression, expected",
+        [
+            ("($o := [function(){1}]; $o[0]())", 1),
+            ("$string[0](1)", "1"),
+            ('$exists($o) ? $o[0]() : "none"', "none"),
+            ('($o := {"g": [function(){7}]}; $o.g[0]())', 7),
+        ],
+    )
+    def test_compile_call_of_indexed_function(self, expression, expected):
+        """Calling an indexed variable or field compiles and calls what the index gives.
 
-class TestEvaluate:
-    """Tests for evaluate() function"""
+        It was a parse error ("Invalid function name"); jsonata-js calls the
+        function the procedure expression evaluates to.
+        """
+        assert jsonatapy.compile(expression).evaluate(None) == expected
 
-    @pytest.mark.skip(reason="Not yet implemented")
-    def test_evaluate_simple_path(self):
-        """Test simple path evaluation"""
-        data = {"name": "Alice"}
-        result = jsonatapy.evaluate("name", data)
-        assert result == "Alice"
-
-    @pytest.mark.skip(reason="Not yet implemented")
-    def test_evaluate_with_bindings(self):
-        """Test evaluation with variable bindings"""
-        data = {"value": 10}
-        bindings = {"multiplier": 2}
-        result = jsonatapy.evaluate("value * $multiplier", data, bindings)
-        assert result == 20
+    def test_call_of_indexed_non_function_raises_t1006(self):
+        """An indexed value that is not a function raises T1006 when called."""
+        with pytest.raises(ValueError, match="T1006"):
+            jsonatapy.compile("($o := [1]; $o[0]())").evaluate(None)
 
 
 class TestJsonataExpression:
@@ -79,25 +82,6 @@ class TestJsonataExpression:
         """Test that expression can be created"""
         expr = jsonatapy.compile("$.name")
         assert expr is not None
-
-    @pytest.mark.skip(reason="Not yet implemented")
-    def test_expression_evaluate(self):
-        """Test expression evaluation"""
-        expr = jsonatapy.compile("name")
-        data = {"name": "Bob"}
-        result = expr.evaluate(data)
-        assert result == "Bob"
-
-    @pytest.mark.skip(reason="Not yet implemented")
-    def test_expression_reuse(self):
-        """Test that compiled expressions can be reused"""
-        expr = jsonatapy.compile("count(items)")
-
-        result1 = expr.evaluate({"items": [1, 2, 3]})
-        assert result1 == 3
-
-        result2 = expr.evaluate({"items": [1, 2, 3, 4, 5]})
-        assert result2 == 5
 
 
 class TestMetadata:

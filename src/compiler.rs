@@ -124,10 +124,6 @@ impl BytecodeCompiler {
                     self.emit(Instr::GetVar(idx));
                 }
             }
-            CompiledExpr::ContextVar(name) => {
-                let idx = self.intern_str(name);
-                self.emit(Instr::GetVar(idx));
-            }
             CompiledExpr::FieldLookup(field) => {
                 // Peephole opportunity: `PushData; GetField` → `GetDataField`
                 // We emit `PushData` then `GetField`; the peephole pass folds them.

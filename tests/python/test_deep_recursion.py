@@ -139,6 +139,19 @@ def test_deeply_nested_expression_inside_recursion(engine):
     assert _evaluate_on_small_stack(engine, expr) == {"ok": "3000"}
 
 
+def test_deeply_nested_lambda_body_inside_recursion(engine):
+    # Creating a lambda clones its body, which here is 800 levels deep; that
+    # clone used to run unguarded on the red zone left by a deep recursion,
+    # and crashed once its frame grew.
+    inner = "(" * 800 + "$x" + ")" * 800
+    expr = (
+        "($f := function($n){ $n <= 0 ? 0 : 1 + $f($n - $count($map([$n], function($x){"
+        + inner
+        + "}))) }; $f(2000))"
+    )
+    assert _evaluate_on_small_stack(engine, expr) == {"ok": "2000"}
+
+
 def test_too_deeply_nested_expression_raises_u1002(engine):
     out = _evaluate_on_small_stack(engine, "[" * 5000 + "1" + "]" * 5000)
     assert out["error"].startswith("U1002")

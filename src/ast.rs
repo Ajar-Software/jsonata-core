@@ -105,7 +105,10 @@ impl std::fmt::Debug for StepId {
 /// This enum represents all possible node types in a JSONata expression AST.
 /// The structure closely mirrors the JavaScript implementation to facilitate
 /// maintenance and upstream synchronization.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+///
+/// `Clone` is implemented by hand (below) so that a deep tree is cloned
+/// without overflowing the native stack.
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
 pub enum AstNode {
     /// String literal (e.g., "hello", 'world')
     String(String),
@@ -253,6 +256,104 @@ pub enum AstNode {
         /// Optional array of field names to delete
         delete: Option<Box<AstNode>>,
     },
+}
+
+/// A clone of a tree as deep as the parser allows (about 1000 levels) needs
+/// more native stack than a red zone leaves: a lambda's body is cloned each
+/// time the lambda is created, which can happen deep inside a recursion with
+/// only `EVAL_RED_ZONE` (src/evaluator.rs) of stack left, and the derived
+/// `Clone`'s frame is a few hundred bytes per level (more on Windows). So
+/// each level moves to a new stack segment when the current one runs low
+/// (`value::with_stack`), as the value walkers do. Every variant is listed
+/// with no wildcard, so a new variant must be added here to compile.
+impl Clone for AstNode {
+    fn clone(&self) -> Self {
+        crate::value::with_stack(|| match self {
+            AstNode::String(s) => AstNode::String(s.clone()),
+            AstNode::Name(s) => AstNode::Name(s.clone()),
+            AstNode::Number(n) => AstNode::Number(*n),
+            AstNode::Boolean(b) => AstNode::Boolean(*b),
+            AstNode::Null => AstNode::Null,
+            AstNode::Undefined => AstNode::Undefined,
+            AstNode::Placeholder => AstNode::Placeholder,
+            AstNode::Regex { pattern, flags } => AstNode::Regex {
+                pattern: pattern.clone(),
+                flags: flags.clone(),
+            },
+            AstNode::Variable(s) => AstNode::Variable(s.clone()),
+            AstNode::ParentVariable(s) => AstNode::ParentVariable(s.clone()),
+            AstNode::Path { steps } => AstNode::Path {
+                steps: steps.clone(),
+            },
+            AstNode::Binary { op, lhs, rhs } => AstNode::Binary {
+                op: *op,
+                lhs: lhs.clone(),
+                rhs: rhs.clone(),
+            },
+            AstNode::Unary { op, operand } => AstNode::Unary {
+                op: *op,
+                operand: operand.clone(),
+            },
+            AstNode::Function {
+                name,
+                args,
+                is_builtin,
+            } => AstNode::Function {
+                name: name.clone(),
+                args: args.clone(),
+                is_builtin: *is_builtin,
+            },
+            AstNode::Call { procedure, args } => AstNode::Call {
+                procedure: procedure.clone(),
+                args: args.clone(),
+            },
+            AstNode::Lambda {
+                params,
+                body,
+                signature,
+                thunk,
+            } => AstNode::Lambda {
+                params: params.clone(),
+                body: body.clone(),
+                signature: signature.clone(),
+                thunk: *thunk,
+            },
+            AstNode::Array(items) => AstNode::Array(items.clone()),
+            AstNode::Object(pairs) => AstNode::Object(pairs.clone()),
+            AstNode::ObjectTransform { input, pattern } => AstNode::ObjectTransform {
+                input: input.clone(),
+                pattern: pattern.clone(),
+            },
+            AstNode::Block(items) => AstNode::Block(items.clone()),
+            AstNode::Conditional {
+                condition,
+                then_branch,
+                else_branch,
+            } => AstNode::Conditional {
+                condition: condition.clone(),
+                then_branch: then_branch.clone(),
+                else_branch: else_branch.clone(),
+            },
+            AstNode::Wildcard => AstNode::Wildcard,
+            AstNode::Descendant => AstNode::Descendant,
+            AstNode::Parent(label) => AstNode::Parent(label.clone()),
+            AstNode::ArrayGroup(items) => AstNode::ArrayGroup(items.clone()),
+            AstNode::FunctionApplication(inner) => AstNode::FunctionApplication(inner.clone()),
+            AstNode::Sort { input, terms } => AstNode::Sort {
+                input: input.clone(),
+                terms: terms.clone(),
+            },
+            AstNode::Transform {
+                location,
+                update,
+                delete,
+            } => AstNode::Transform {
+                location: location.clone(),
+                update: update.clone(),
+                delete: delete.clone(),
+            },
+        })
+    }
 }
 
 /// Binary operators

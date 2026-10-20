@@ -3279,3 +3279,170 @@ fn test_match_no_match_exists_count_and_array() {
         assert_eq!(result, JValue::from(expected), "{expr}");
     }
 }
+
+// ── Group-by on a leading array constructor ──────────────────────────────────
+//
+// jsonata-js puts the group on the constructor node itself (parser.js `{`), so
+// a path's first step evaluates once to the grouped object, which has no
+// items for the next step to read: the path is undefined, as in v2.2.11.
+
+/// Assert that `expr` is undefined (not null) with the tree-walker and with
+/// the default dispatch.
+fn assert_undefined_in_both_engines(expr: &str) {
+    let ast = parse(expr).unwrap();
+    let tree_walker = Evaluator::new().evaluate(&ast, &JValue::Null).unwrap();
+    assert!(
+        tree_walker.is_undefined(),
+        "tree-walker: {expr} => {tree_walker:?}"
+    );
+    let default = jsonata_core::Expression::compile(expr)
+        .unwrap()
+        .evaluate(&JValue::Null)
+        .unwrap();
+    assert!(default.is_undefined(), "default: {expr} => {default:?}");
+}
+
+#[test]
+fn test_group_on_leading_constructor_then_step_is_undefined() {
+    for expr in [
+        r#"[1,2]{"k": $}.k"#,
+        r#"[1,2]{"k": $}.{"z": $}"#,
+        r#"[1,2]{$string($): $}.[nothing]"#,
+        r#"[1,2][]{"k": $}.k"#,
+        r#"[1,2][$>1]{"k": $}.k"#,
+        r#"[1]{"k": $}.k"#,
+        r#"[[1,2],[3]]{"k": $}.k"#,
+        r#"([1,2].$){"k": $}.k"#,
+    ] {
+        assert_undefined_in_both_engines(expr);
+    }
+}
+
+#[test]
+fn test_group_on_leading_constructor_unchanged_cases() {
+    for (expr, expected) in [
+        (r#"[1,2]{"k":$}"#, r#"Ok({"k":[1,2]})"#),
+        (r#"([1,2]){"k":$}.[5]"#, "Ok([5])"),
+        (r#"([1,2]){"k": $}.k"#, "Ok([1,2])"),
+        (r#"[1,2]{"k": $}^(k)"#, r#"Ok({"k":[1,2]})"#),
+        (r#"$count([1,2]{"k": $}.k)"#, "Ok(0)"),
+    ] {
+        let (tree_walker, default) = eval_both_engines(expr, EvaluatorOptions::default());
+        assert_eq!(tree_walker, expected, "tree-walker: {expr}");
+        assert_eq!(default, expected, "default: {expr}");
+    }
+    for expr in [r#"[1,2]{"k":$}[0]"#, r#"[1,2]{"k":$}[0].k"#] {
+        let err = parse(expr).unwrap_err().to_string();
+        assert!(err.contains("S0209"), "{expr}: {err}");
+    }
+}
+
+// ── Calling an indexed variable or field ─────────────────────────────────────
+//
+// jsonata-js evaluates a call's procedure expression and calls what it gives,
+// so `$o[0]()` calls the first function in `$o`. A one-step path that is not a
+// bare name was a parse error ("Invalid function name"). In `$o.g[0]()` the
+// call is the last step (`(` binds tighter than `.`), so `g[0]` is called in
+// each item of `$o`.
+
+#[test]
+fn test_call_of_indexed_function() {
+    for (expr, expected) in [
+        ("($o := [function(){1}]; $o[0]())", "Ok(1)"),
+        ("$string[0](1)", r#"Ok("1")"#),
+        (r#"$exists($o) ? $o[0]() : "none""#, r#"Ok("none")"#),
+        (
+            "($o := [function($x){$x+1}, function($x){$x*2}]; $o[-1](5))",
+            "Ok(10)",
+        ),
+        ("($o := [function(){1}]; $o[0]()[0])", "Ok(1)"),
+        ("($o := [function($a,$b){$a-$b}]; $o[0](?, 1)(5))", "Ok(4)"),
+        (r#"($o := {"g": [function(){7}]}; $o.g[0]())"#, "Ok(7)"),
+        (
+            r#"($o := {"g": [function(){7}, function(){8}]}; $o.g[1]())"#,
+            "Ok(8)",
+        ),
+        (
+            r#"($o := {"g": {"h": [function(){9}]}}; $o.g.h[0]())"#,
+            "Ok(9)",
+        ),
+        (
+            r#"($o := [{"g": [function(){7}]}, {"g": [function(){8}]}]; $o.g[0]())"#,
+            "Ok([7,8])",
+        ),
+    ] {
+        let (tree_walker, default) = eval_both_engines(expr, EvaluatorOptions::default());
+        assert_eq!(tree_walker, expected, "tree-walker: {expr}");
+        assert_eq!(default, expected, "default: {expr}");
+    }
+}
+
+#[test]
+fn test_call_of_indexed_non_function_raises() {
+    for (expr, code) in [
+        ("$o[0]()", "T1006"),
+        ("($o := [1]; $o[0]())", "T1006"),
+        ("($o := [function(){1}]; $o[$]())", "T1006"),
+        ("($o := [function(){1}]; $o[]())", "T1006"),
+        (r#"($o := {"g": [1]}; $o.g[0]())"#, "T1006"),
+        ("($o := [1]; $o[0](?))", "T1008"),
+    ] {
+        let (tree_walker, default) = eval_both_engines(expr, EvaluatorOptions::default());
+        assert!(
+            tree_walker.contains(code),
+            "tree-walker: {expr} => {tree_walker}"
+        );
+        assert!(default.contains(code), "default: {expr} => {default}");
+    }
+}
+
+// ── A null sort term from a non-simple term ──────────────────────────────────
+//
+// A sort term that is not a plain field (`a.b`, `$.a`, a function call)
+// treated a null result as undefined, so it sorted last instead of raising
+// T2008. jsonata-js's comparator raises T2008 whenever it compares a null
+// term with another defined one; a null beside only undefined terms, or in a
+// one-item sort, is never compared and sorts before the undefined ones.
+
+#[test]
+fn test_null_from_non_simple_sort_term_raises_t2008() {
+    for expr in [
+        r#"[{"a":{"b":2}},{"a":{"b":null}}]^(a.b)"#,
+        r#"[{"a":{"b":2}},{"a":{"b":null}}]^(>a.b)"#,
+        r#"[{"a":2},{"a":null}]^($.a)"#,
+        r#"[{"a":null},{"a":null}]^($.a)"#,
+        r#"[{"a":true},{"a":null}]^($.a)"#,
+        r#"[{"a":2},{"a":null}]^($lookup($, "a"))"#,
+        r#"[{"a":null},{"a":1}]^($.a, b)"#,
+        r#"[{"a":1, "b":null},{"a":1,"b":2}]^(a, $.b)"#,
+    ] {
+        let (tree_walker, default) = eval_both_engines(expr, EvaluatorOptions::default());
+        assert!(
+            tree_walker.contains("T2008"),
+            "tree-walker: {expr} => {tree_walker}"
+        );
+        assert!(default.contains("T2008"), "default: {expr} => {default}");
+    }
+}
+
+#[test]
+fn test_null_from_non_simple_sort_term_without_comparison() {
+    for (expr, expected) in [
+        (r#"[{},{"a":null}]^($.a)"#, r#"Ok([{"a":null},{}])"#),
+        (r#"[{"a":null},{}]^($.a)"#, r#"Ok([{"a":null},{}])"#),
+        (
+            r#"[{"a":{"b":null}},{"a":{}},{"a":{}}]^(a.b)"#,
+            r#"Ok([{"a":{"b":null}},{"a":{}},{"a":{}}])"#,
+        ),
+        (r#"[{"a":null}]^($.a)"#, r#"Ok({"a":null})"#),
+        // The first term already orders the pair, so the null is never compared.
+        (
+            r#"[{"a":2,"b":null},{"a":1,"b":2}]^(a, $.b)"#,
+            r#"Ok([{"a":1,"b":2},{"a":2,"b":null}])"#,
+        ),
+    ] {
+        let (tree_walker, default) = eval_both_engines(expr, EvaluatorOptions::default());
+        assert_eq!(tree_walker, expected, "tree-walker: {expr}");
+        assert_eq!(default, expected, "default: {expr}");
+    }
+}

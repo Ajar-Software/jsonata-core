@@ -266,13 +266,6 @@ pub(crate) enum CompiledExpr {
     ArrayConstruct(Vec<(CompiledExpr, bool)>),
 
     // ── Phase 2 extensions ──────────────────────────────────────────────
-    /// Named variable lookup from context scope (any `$name` not in lambda params).
-    /// Compiled when a named variable is encountered and no allowed_vars list is
-    /// provided (top-level compilation). At runtime, returns the value from the vars
-    /// map (lambda params or captured env), or Undefined if not present.
-    #[allow(dead_code)]
-    ContextVar(String),
-
     /// Multi-step field path with optional per-step filters: `a.b[pred].c`,
     /// evaluated as jsonata-js evaluates a path of field steps (see
     /// `compiled_eval_field_path`). `from_dollar` is set for `$.a...`: the
@@ -369,8 +362,7 @@ fn compiled_builtin_names(expr: &CompiledExpr, out: &mut Vec<&'static str>) {
         CompiledExpr::Literal(_)
         | CompiledExpr::FieldLookup(_)
         | CompiledExpr::NestedFieldLookup(..)
-        | CompiledExpr::VariableLookup(_)
-        | CompiledExpr::ContextVar(_) => {}
+        | CompiledExpr::VariableLookup(_) => {}
         CompiledExpr::Compare { lhs, rhs, .. }
         | CompiledExpr::Arithmetic { lhs, rhs, .. }
         | CompiledExpr::Concat(lhs, rhs)
@@ -564,8 +556,7 @@ fn compiled_expr_node_count_exceeds(expr: &CompiledExpr, limit: usize) -> bool {
             CompiledExpr::Literal(_)
             | CompiledExpr::FieldLookup(_)
             | CompiledExpr::NestedFieldLookup(_, _)
-            | CompiledExpr::VariableLookup(_)
-            | CompiledExpr::ContextVar(_) => false,
+            | CompiledExpr::VariableLookup(_) => false,
 
             // ── Binary ────────────────────────────────────────────────
             CompiledExpr::Compare { lhs, rhs, .. }
@@ -684,8 +675,7 @@ fn try_compile_node(node: &AstNode, allowed_vars: Option<&[&str]>) -> Option<Com
         // $ (empty name) always refers to the current element.
         // Named variables: in HOF mode (allowed_vars=Some), only compile if the
         // variable is in the allowed set (lambda params supplied via vars map).
-        // In top-level mode (allowed_vars=None), compile unknown variables as
-        // ContextVar — they return Undefined at runtime when no bindings are passed.
+        // Otherwise they fall back to the tree-walker (see below).
         AstNode::Variable(var) if var.is_empty() => Some(CompiledExpr::VariableLookup(var.clone())),
         AstNode::Variable(var) => {
             if let Some(allowed) = allowed_vars {
@@ -1366,27 +1356,6 @@ fn eval_compiled_node(
         }
 
         // ── Phase 2 new variants ─────────────────────────────────────────
-
-        // ContextVar: named variable lookup from context scope.
-        // In top-level mode (ctx=None, no bindings), returns Undefined.
-        // In HOF mode, ctx is None too (HOF call sites pass no ctx), so this
-        // is only ever populated for top-level calls — always Undefined there.
-        CompiledExpr::ContextVar(name) => {
-            // Check vars map first (for lambda params that might shadow context)
-            if let Some(vars) = vars {
-                if let Some(val) = vars.get(name.as_str()) {
-                    return Ok((*val).clone());
-                }
-            }
-            // Then check context scope
-            if let Some(ctx) = ctx {
-                if let Some(val) = ctx.lookup(name) {
-                    return Ok(val.clone());
-                }
-            }
-            Ok(JValue::Undefined)
-        }
-
         CompiledExpr::FieldPath { steps, from_dollar } => {
             compiled_eval_field_path(steps, *from_dollar, data, vars, ctx, options, start_time)
         }
@@ -5561,7 +5530,7 @@ impl Evaluator {
             // Parent-reference operator (%): ast_transform has already resolved
             // this to a synthetic ancestor label ("!0", "!1", ...). The enclosing
             // tuple step binds that label into scope (create_tuple_stream +
-            // needs_tuple_context_binding), so resolving it is an ordinary scope
+            // bind_tuple_keys), so resolving it is an ordinary scope
             // lookup, mirroring jsonata-js's
             // `case 'parent': result = environment.lookup(expr.slot.label);`.
             AstNode::Parent(label) => {
@@ -6012,7 +5981,9 @@ impl Evaluator {
             };
 
             result = if index == 0
-                && (matches!(step.node, AstNode::Array(_)) || Self::is_cons_block(&step.node))
+                && (matches!(step.node, AstNode::Array(_))
+                    || Self::is_cons_block(&step.node)
+                    || Self::is_cons_group(&step.node))
             {
                 self.evaluate_cons_first_step(step, steps, data)?
             } else if let (0, AstNode::Sort { input, terms }) = (index, &step.node) {
@@ -6141,15 +6112,16 @@ impl Evaluator {
             }
         }
         // jsonata-js takes the value as the next step's input sequence
-        // as is, so a block's single value gives that step no items,
-        // and the path no result; a sort still orders it.
+        // as is, so a block's single value, or the object a group-by on
+        // the step makes, gives that step no items, and the path no
+        // result; a sort still orders it.
         let next_reads_items = steps
             .get(1)
             .is_some_and(|next| !matches!(next.node, AstNode::Sort { .. }));
         Ok(
             if next_reads_items
                 && !matches!(value, JValue::Array(_))
-                && Self::is_cons_block(&step.node)
+                && (Self::is_cons_block(&step.node) || Self::is_cons_group(&step.node))
             {
                 JValue::Undefined
             } else {
@@ -6731,6 +6703,22 @@ impl Evaluator {
         exprs.iter().any(|expr| Self::starts_cons(expr, false))
     }
 
+    /// True for a group-by on a `consarray` step: an array constructor
+    /// (with any predicates or `[]`) or a consarray block. jsonata-js
+    /// groups on that node itself (parser.js `{`), so a path's first step
+    /// evaluates once to the grouped object, as `evaluate_cons_first_step`
+    /// does, rather than once per input item.
+    fn is_cons_group(node: &AstNode) -> bool {
+        let AstNode::ObjectTransform { input, .. } = node else {
+            return false;
+        };
+        let input = match input.as_ref() {
+            AstNode::Path { steps } if steps.len() == 1 => &steps[0].node,
+            other => other,
+        };
+        matches!(input, AstNode::Array(_)) || Self::is_cons_block(input)
+    }
+
     /// True when `node` starts with a `consarray` first step: an array
     /// constructor that begins a dotted path (`dotted`), or a consarray
     /// block. A sort is a step of the path it ends in jsonata-js, so
@@ -6993,7 +6981,6 @@ impl Evaluator {
     /// This is the single shared implementation of the
     /// "iterate a tuple wrapper's carried keys, bind, evaluate, then undo"
     /// pattern that recurs across `create_tuple_stream`,
-    /// `needs_tuple_context_binding`'s handling in `evaluate_path`,
     /// `apply_tuple_stages`, and `evaluate_sort` -- it exists specifically so
     /// none of those call sites can regress to a blind `unbind` (which
     /// deletes rather than restores a same-named outer `:=` binding that was
@@ -8683,7 +8670,7 @@ impl Evaluator {
     ///
     /// `evaluate_builtin_call` has already replaced a callback that is not an
     /// inline lambda or a variable with a variable bound to its value
-    /// (`bind_hof_callback`), so the callback is evaluated once, as in
+    /// (`HOF_CALLBACK`), so the callback is evaluated once, as in
     /// jsonata-js, however many items it is applied to.
     fn apply_function(
         &mut self,
@@ -9902,7 +9889,15 @@ impl Evaluator {
         free_vars
     }
 
+    /// Runs on every lambda creation, possibly deep in a recursion with only
+    /// `EVAL_RED_ZONE` of stack left, over a body that can be about 1000
+    /// levels deep: each level moves to a new stack segment when the current
+    /// one runs low, as `AstNode::clone` does.
     fn collect_free_vars_walk(node: &AstNode, bound: &HashSet<&str>, free: &mut HashSet<String>) {
+        crate::value::with_stack(|| Self::collect_free_vars_node(node, bound, free))
+    }
+
+    fn collect_free_vars_node(node: &AstNode, bound: &HashSet<&str>, free: &mut HashSet<String>) {
         match node {
             AstNode::Variable(name) => {
                 if !bound.contains(name.as_str()) {
@@ -10385,17 +10380,10 @@ impl Evaluator {
         // real element), not the wrapper. The tuple's carried focus/index/ancestor
         // bindings are reachable via context (bound by evaluate_sort), so a term
         // like `$`, `%.Price`, or `$pos` still resolves correctly.
-        let result = self.evaluate_internal(term_expr, &actual_element)?;
-
-        // If the result is null from a complex expression, we can't easily tell if it's
-        // "missing field" or "explicit null". For now, treat null results as undefined
-        // to maintain compatibility with existing tests.
-        // TODO: For full JS compatibility, would need deeper analysis of the expression
-        if result.is_null() {
-            return Ok(JValue::Undefined);
-        }
-
-        Ok(result)
+        // A null result is a value, as for a simple field: jsonata-js's
+        // comparator raises T2008 when it compares it with another defined
+        // term, and only an undefined term sorts last.
+        self.evaluate_internal(term_expr, &actual_element)
     }
 
     /// Evaluate sort operator. `tuples` is set when `data` is a tuple stream,
