@@ -50,6 +50,15 @@ CASES = [
     ('[$split(nothing, " ")]', None, []),
     ("$map([1,2], function($v){ $sift(nothing, function(){true}) })", None, UNDEFINED),
     ("$map([1,2,3], function($v){ $v>1 ? $string($v) })", None, ["2", "3"]),
+    # a builtin in tail position runs with jsonata-js's apply input: null
+    # for a callback, the call site's input for a direct call
+    ('$map(["a"], function($e){ $eval($e, $nope) })', {"a": 5}, UNDEFINED),
+    ('$map(["a"], function($e){ $eval("a") })', {"a": 5}, UNDEFINED),
+    ('$map(["a"], function($e){ $string() })', {"a": 5}, "null"),
+    ('"x" ~> function($e){ $eval("a") }', {"a": 5}, UNDEFINED),
+    ('($f := function($e){ $eval("a") }; $f("x"))', {"a": 5}, 5),
+    ('($f := function(){ $eval("a") }; {"a":7}.$f())', {"a": 5}, 7),
+    ('$map(["a"], function($e){ $sum([$eval("a")]) })', {"a": 5}, 5),
 ]
 
 

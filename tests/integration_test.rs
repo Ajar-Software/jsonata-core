@@ -3568,3 +3568,56 @@ fn test_tail_builtin_result_is_not_unwrapped() {
         assert_eq!(default, expected, "default: {expr}");
     }
 }
+
+// ── The input of a builtin called in tail position ───────────────────────────
+//
+// jsonata-js applies a builtin called in a function's tail position from its
+// trampoline, with the input `apply` was given: null when the function is a
+// callback of a builtin (`$map`, ...) or applied by `~>` to a non-call, the
+// call site's input for a direct call. The builtin reads it where it reads
+// the context: `$eval`'s focus, or a signature's `-` parameter.
+
+#[test]
+fn test_tail_builtin_runs_with_the_apply_input() {
+    for (expr, expected) in [
+        (
+            r#"$map(["a"], function($e){ $eval($e, $nope) })"#,
+            "undefined",
+        ),
+        (
+            r#"$map([1,2], function($v){ $eval("a", $v.nope) })"#,
+            "undefined",
+        ),
+        (r#"$map(["a"], function($e){ $eval("a") })"#, "undefined"),
+        (
+            r#"$map(["a"], function($e){ $e ? $eval("a") : 0 })"#,
+            "undefined",
+        ),
+        (r#"$filter([1], function($e){ $eval("a") })"#, "undefined"),
+        (r#"$map(["a"], function($e){ $string() })"#, r#""null""#),
+        (r#""x" ~> function($e){ $eval("a") }"#, "undefined"),
+        (
+            r#"($f := function($e){ $eval("a") }; "x" ~> $f)"#,
+            "undefined",
+        ),
+        (
+            r#"($f := function($e){ $eval("a", $nope) }; ($f ~> $string)("x"))"#,
+            "undefined",
+        ),
+        // A direct call: the call site's input.
+        (r#"($f := function($e){ $eval("a") }; $f("x"))"#, "5"),
+        (r#"($f := function(){ $eval("a") }; {"a":7}.$f())"#, "7"),
+        (
+            r#"($f := function(){ $string() }; {"a":7}.$f())"#,
+            r#""{\"a\":7}""#,
+        ),
+        (r#"($c := $string ~> $eval; $c("a"))"#, "5"),
+        // Not in tail position: the function's own input.
+        (r#"$map(["a"], function($e){ $v := $eval("a") })"#, "5"),
+        (r#"$map(["a"], function($e){ $sum([$eval("a")]) })"#, "5"),
+    ] {
+        let (tree_walker, default) = eval_both_engines_on(expr, json!({"a": 5}));
+        assert_eq!(tree_walker, expected, "tree-walker: {expr}");
+        assert_eq!(default, expected, "default: {expr}");
+    }
+}

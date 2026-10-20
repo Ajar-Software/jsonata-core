@@ -177,6 +177,22 @@ pub(crate) fn builtin_arity(name: &str) -> Option<usize> {
     builtin_spec(name).and_then(|s| s.arity)
 }
 
+/// Whether a call of builtin `name` with `argc` arguments may read the
+/// context: `$eval` (its focus defaults to it), or a signature with a `-`
+/// parameter and fewer arguments than parameters, which jsonata-js fills
+/// from the context. A conservative test; it only picks the path that
+/// passes the context explicitly.
+pub(crate) fn builtin_may_read_context(name: &str, argc: usize) -> bool {
+    match builtin_spec(name) {
+        Some(spec) if spec.name == "eval" => true,
+        Some(spec) => {
+            spec.signature.is_some_and(|sig| sig.contains('-'))
+                && spec.arity.is_some_and(|arity| argc < arity)
+        }
+        None => false,
+    }
+}
+
 /// Shared body for the unary string→string encoding builtins
 /// ($base64encode/$base64decode/$encodeUrl*/$decodeUrl*): arity check, null
 /// and undefined passthrough, then `f` on the string, type error otherwise.

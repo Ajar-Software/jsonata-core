@@ -110,6 +110,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `$map([1,2], function($v){ $split(nothing, " ") })` is undefined instead of
   `[null, null]` and `[$split(nothing, " ")]` is `[]`; `$sift(nothing, $f)` is undefined
   instead of an error.
+- **A builtin called in a function's tail position runs with the input jsonata-js gives it**
+  ([#247](https://github.com/txjmb/jsonata-core/issues/247),
+  [#250](https://github.com/txjmb/jsonata-core/issues/250)). jsonata-js's trampoline applies
+  it with the input of the function's own application: null when the function is a
+  callback of a builtin such as `$map` or is applied by `~>` to a non-call, and the call
+  site's input for a direct call. It used the function body's input instead, so
+  `$map(["a"], function($e){ $string() })` gave the input instead of `"null"`,
+  `$map(["a"], function($e){ $eval("a") })` gave 5 instead of undefined, and
+  `($f := function(){ $eval("a") }; {"a":7}.$f())` read the outer input instead of
+  `{"a":7}`. This affects only what such a builtin reads from the context: `$eval`'s
+  focus, and a signature's `-` parameter left without an argument. Not yet covered: a
+  function passed as an argument and then called directly inside the callee still runs with
+  the call site's input rather than null (jsonata-js wraps every function argument in a
+  closure), so `($h := function($f){ $f("x") }; $h(function($e){ $eval("a", $nope) }))`
+  gives 5 instead of undefined. That needs a wrapper function value, close to #159.
 - **Creating a function with a deeply nested body no longer crashes deep in a recursion.**
   Creating a function clones its body and collects its free variables, two recursive walks
   over the body that ran without the stack guard deep evaluation uses. A body nested a few
