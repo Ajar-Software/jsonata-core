@@ -5530,7 +5530,7 @@ impl Evaluator {
             // Parent-reference operator (%): ast_transform has already resolved
             // this to a synthetic ancestor label ("!0", "!1", ...). The enclosing
             // tuple step binds that label into scope (create_tuple_stream +
-            // needs_tuple_context_binding), so resolving it is an ordinary scope
+            // bind_tuple_keys), so resolving it is an ordinary scope
             // lookup, mirroring jsonata-js's
             // `case 'parent': result = environment.lookup(expr.slot.label);`.
             AstNode::Parent(label) => {
@@ -6962,7 +6962,6 @@ impl Evaluator {
     /// This is the single shared implementation of the
     /// "iterate a tuple wrapper's carried keys, bind, evaluate, then undo"
     /// pattern that recurs across `create_tuple_stream`,
-    /// `needs_tuple_context_binding`'s handling in `evaluate_path`,
     /// `apply_tuple_stages`, and `evaluate_sort` -- it exists specifically so
     /// none of those call sites can regress to a blind `unbind` (which
     /// deletes rather than restores a same-named outer `:=` binding that was
@@ -8652,7 +8651,7 @@ impl Evaluator {
     ///
     /// `evaluate_builtin_call` has already replaced a callback that is not an
     /// inline lambda or a variable with a variable bound to its value
-    /// (`bind_hof_callback`), so the callback is evaluated once, as in
+    /// (`HOF_CALLBACK`), so the callback is evaluated once, as in
     /// jsonata-js, however many items it is applied to.
     fn apply_function(
         &mut self,

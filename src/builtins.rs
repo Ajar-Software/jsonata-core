@@ -1031,8 +1031,8 @@ pub(crate) fn dispatch_pure(
             }
             // jsonata-js's $lookup has no null-vs-undefined subject distinction:
             // any non-object subject (including an explicit null) yields
-            // undefined, since lookup_recursive below returns no results for
-            // it either way.
+            // undefined, since the field lookup below finds nothing in it
+            // either way.
             if args[0].is_null() || args[0].is_undefined() {
                 return Ok(JValue::Undefined);
             }
