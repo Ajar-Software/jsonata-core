@@ -3279,3 +3279,60 @@ fn test_match_no_match_exists_count_and_array() {
         assert_eq!(result, JValue::from(expected), "{expr}");
     }
 }
+
+// ── Group-by on a leading array constructor ──────────────────────────────────
+//
+// jsonata-js puts the group on the constructor node itself (parser.js `{`), so
+// a path's first step evaluates once to the grouped object, which has no
+// items for the next step to read: the path is undefined, as in v2.2.11.
+
+/// Assert that `expr` is undefined (not null) with the tree-walker and with
+/// the default dispatch.
+fn assert_undefined_in_both_engines(expr: &str) {
+    let ast = parse(expr).unwrap();
+    let tree_walker = Evaluator::new().evaluate(&ast, &JValue::Null).unwrap();
+    assert!(
+        tree_walker.is_undefined(),
+        "tree-walker: {expr} => {tree_walker:?}"
+    );
+    let default = jsonata_core::Expression::compile(expr)
+        .unwrap()
+        .evaluate(&JValue::Null)
+        .unwrap();
+    assert!(default.is_undefined(), "default: {expr} => {default:?}");
+}
+
+#[test]
+fn test_group_on_leading_constructor_then_step_is_undefined() {
+    for expr in [
+        r#"[1,2]{"k": $}.k"#,
+        r#"[1,2]{"k": $}.{"z": $}"#,
+        r#"[1,2]{$string($): $}.[nothing]"#,
+        r#"[1,2][]{"k": $}.k"#,
+        r#"[1,2][$>1]{"k": $}.k"#,
+        r#"[1]{"k": $}.k"#,
+        r#"[[1,2],[3]]{"k": $}.k"#,
+        r#"([1,2].$){"k": $}.k"#,
+    ] {
+        assert_undefined_in_both_engines(expr);
+    }
+}
+
+#[test]
+fn test_group_on_leading_constructor_unchanged_cases() {
+    for (expr, expected) in [
+        (r#"[1,2]{"k":$}"#, r#"Ok({"k":[1,2]})"#),
+        (r#"([1,2]){"k":$}.[5]"#, "Ok([5])"),
+        (r#"([1,2]){"k": $}.k"#, "Ok([1,2])"),
+        (r#"[1,2]{"k": $}^(k)"#, r#"Ok({"k":[1,2]})"#),
+        (r#"$count([1,2]{"k": $}.k)"#, "Ok(0)"),
+    ] {
+        let (tree_walker, default) = eval_both_engines(expr, EvaluatorOptions::default());
+        assert_eq!(tree_walker, expected, "tree-walker: {expr}");
+        assert_eq!(default, expected, "default: {expr}");
+    }
+    for expr in [r#"[1,2]{"k":$}[0]"#, r#"[1,2]{"k":$}[0].k"#] {
+        let err = parse(expr).unwrap_err().to_string();
+        assert!(err.contains("S0209"), "{expr}: {err}");
+    }
+}

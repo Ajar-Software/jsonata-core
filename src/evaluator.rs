@@ -5981,7 +5981,9 @@ impl Evaluator {
             };
 
             result = if index == 0
-                && (matches!(step.node, AstNode::Array(_)) || Self::is_cons_block(&step.node))
+                && (matches!(step.node, AstNode::Array(_))
+                    || Self::is_cons_block(&step.node)
+                    || Self::is_cons_group(&step.node))
             {
                 self.evaluate_cons_first_step(step, steps, data)?
             } else if let (0, AstNode::Sort { input, terms }) = (index, &step.node) {
@@ -6110,15 +6112,16 @@ impl Evaluator {
             }
         }
         // jsonata-js takes the value as the next step's input sequence
-        // as is, so a block's single value gives that step no items,
-        // and the path no result; a sort still orders it.
+        // as is, so a block's single value, or the object a group-by on
+        // the step makes, gives that step no items, and the path no
+        // result; a sort still orders it.
         let next_reads_items = steps
             .get(1)
             .is_some_and(|next| !matches!(next.node, AstNode::Sort { .. }));
         Ok(
             if next_reads_items
                 && !matches!(value, JValue::Array(_))
-                && Self::is_cons_block(&step.node)
+                && (Self::is_cons_block(&step.node) || Self::is_cons_group(&step.node))
             {
                 JValue::Undefined
             } else {
@@ -6698,6 +6701,22 @@ impl Evaluator {
             return false;
         };
         exprs.iter().any(|expr| Self::starts_cons(expr, false))
+    }
+
+    /// True for a group-by on a `consarray` step: an array constructor
+    /// (with any predicates or `[]`) or a consarray block. jsonata-js
+    /// groups on that node itself (parser.js `{`), so a path's first step
+    /// evaluates once to the grouped object, as `evaluate_cons_first_step`
+    /// does, rather than once per input item.
+    fn is_cons_group(node: &AstNode) -> bool {
+        let AstNode::ObjectTransform { input, .. } = node else {
+            return false;
+        };
+        let input = match input.as_ref() {
+            AstNode::Path { steps } if steps.len() == 1 => &steps[0].node,
+            other => other,
+        };
+        matches!(input, AstNode::Array(_)) || Self::is_cons_block(input)
     }
 
     /// True when `node` starts with a `consarray` first step: an array

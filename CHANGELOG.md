@@ -93,6 +93,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A group-by on a leading array constructor followed by another step is undefined again**,
+  as in jsonata-js and v2.2.11. jsonata-js groups on the constructor node and evaluates that
+  step once, so the next step reads the grouped object as an input with no items. Since the
+  path-group change for [#208](https://github.com/txjmb/jsonata-core/issues/208) the step ran
+  once per item instead: `[1,2]{"k": $}.k` gave `[1,2]` and `[1,2]{$string($): $}.[nothing]`
+  gave `[]`. These, `[1,2]{"k": $}.{"z": $}`, `[1,2][]{"k": $}.k` and a group on a block
+  starting with a constructor (`([1,2].$){"k": $}.k`) are undefined. `[1,2]{"k":$}` is still
+  `{"k":[1,2]}`, `([1,2]){"k":$}.[5]` is still `[5]` and `[1,2]{"k":$}[0]` is still S0209.
 - **Freeing a very deeply nested value no longer overflows the stack**
   ([#233](https://github.com/txjmb/jsonata-core/issues/233)). A value was dropped by plain
   recursion, one stack frame per level, so an array or object nested more than about 10,000
