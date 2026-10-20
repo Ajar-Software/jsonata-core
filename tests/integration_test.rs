@@ -3446,3 +3446,138 @@ fn test_null_from_non_simple_sort_term_without_comparison() {
         assert_eq!(default, expected, "default: {expr}");
     }
 }
+
+// ── Literal path steps (#248) ────────────────────────────────────────────────
+//
+// jsonata-js's `processAST` (parser.js, binary `.`) checks every step of a
+// path built by `.`, the left-hand ones included: a number or `true`/`false`/
+// `null` is S0213, and a string becomes a field name.
+
+#[test]
+fn test_literal_path_step_is_s0213() {
+    for (expr, literal) in [
+        ("null.$", "null"),
+        ("true.$", "true"),
+        ("false.$", "false"),
+        ("2#$q.a", "2"),
+        ("2.a", "2"),
+        ("1.5.a", "1.5"),
+        ("1e2.a", "100"),
+        ("-2.a", "2"),
+        ("a.-2", "-2"),
+        ("a.--2", "2"),
+        ("null[0].a", "null"),
+        ("2[0].a", "2"),
+        ("true.$[0]", "true"),
+        ("null@$x.a", "null"),
+        ("null[0]#$i.a", "null"),
+        ("true@$v#$i.b", "true"),
+        ("null^(x).a", "null"),
+        (r#"2{"k":1}.a"#, "2"),
+        ("null.(1)", "null"),
+        ("null.[1]", "null"),
+        ("null.()", "null"),
+        ("a#$i.2", "2"),
+        ("a.null@$v", "null"),
+        ("a.b#$i.c#$j.null", "null"),
+        // Already S0213: a literal right-hand step.
+        ("a.2", "2"),
+        ("a.null", "null"),
+        ("$.2", "2"),
+        // The first literal in the path is the one reported.
+        ("2.a.b.c.null", "2"),
+        ("null.(2.a)", "2"),
+    ] {
+        let err = parse(expr).unwrap_err().to_string();
+        assert!(
+            err.contains(&format!("S0213: The literal value {literal} cannot")),
+            "{expr} => {err}"
+        );
+        let err = jsonata_core::Expression::compile(expr)
+            .err()
+            .unwrap_or_else(|| panic!("{expr} compiled"))
+            .to_string();
+        assert!(err.contains("S0213"), "compile {expr} => {err}");
+    }
+}
+
+#[test]
+fn test_literal_outside_a_dotted_path_is_evaluated() {
+    for (expr, expected) in [
+        ("2#$q", "Ok(2)"),
+        ("$.(2)", "Ok(2)"),
+        ("[0..2]", "Ok([0,1,2])"),
+        // A string step is a field name, wherever it is in the path.
+        (r#"({"a":[{"b":1},{"b":2}]}).("a"[0].b)"#, "Ok(1)"),
+        (r#"({"a":[{"b":1},{"b":2}]}).("a".(b))"#, "Ok([1,2])"),
+        (r#"({"a":[{"b":1},{"b":2}]}).("a".[b])"#, "Ok([[1],[2]])"),
+        (r##"({"a":[{"b":1},{"b":2}]}).("a"#$i.b)"##, "Ok([1,2])"),
+        (r##"({"a":[{"b":1},{"b":2}]}).("a"#$i[0].b)"##, "Ok(1)"),
+        (r#"({"s":{"t":5}}).("s".t)"#, "Ok(5)"),
+    ] {
+        let (tree_walker, default) = eval_both_engines(expr, EvaluatorOptions::default());
+        assert_eq!(tree_walker, expected, "tree-walker: {expr}");
+        assert_eq!(default, expected, "default: {expr}");
+    }
+    // A parenthesised literal is a block, not a literal step.
+    for expr in ["(2).a", "-(2).a"] {
+        assert_undefined_in_both_engines(expr);
+    }
+}
+
+// ── Filtered array constructor inside an array constructor (#249) ────────────
+//
+// jsonata-js keeps a constructor's predicates and `[]` on the constructor
+// node (parser.js `[`), and an array constructor pushes a member that is an
+// array constructor whole instead of splicing it in (`evaluateUnary`,
+// `item.value === '['`). A `#$i`/`@$v`, a sort or a following step makes a
+// path, whose value is spliced.
+
+#[test]
+fn test_filtered_constructor_member_keeps_its_nesting() {
+    for (expr, expected) in [
+        ("[[0..9][$ % 2 = 0]]", "Ok([[0,2,4,6,8]])"),
+        ("[[1, 2, [3, 4]][-1]]", "Ok([[3,4]])"),
+        ("[[1,2][$>0]]", "Ok([[1,2]])"),
+        ("[[1,2][true]]", "Ok([[1,2]])"),
+        ("[[1,2][[0,1]]]", "Ok([[1,2]])"),
+        ("[[1,2][]]", "Ok([[1,2]])"),
+        ("[[1,2][$>0][]]", "Ok([[1,2]])"),
+        ("[[1,2][$>1][]]", "Ok([[2]])"),
+        ("[[[1,2]][0]]", "Ok([[1,2]])"),
+        ("[[[1,2],[3]][0]]", "Ok([[1,2]])"),
+        ("[[[1]][0]]", "Ok([[1]])"),
+        ("[1,[2,3][$>0]]", "Ok([1,[2,3]])"),
+        ("[[1,2][$>0], 5]", "Ok([[1,2],5])"),
+        ("[[[1,2][$>0]]]", "Ok([[[1,2]]])"),
+        (r#"{"x":[[1,2][$>0]]}"#, r#"Ok({"x":[[1,2]]})"#),
+        (r#"[[{"a":1},{"a":2}][a>0]]"#, r#"Ok([[{"a":1},{"a":2}]])"#),
+        ("$count([[1,2][$>0]])", "Ok(1)"),
+        ("([[1,2][$>0]])[0]", "Ok([1,2])"),
+        ("[[1,2][$>0]][0]", "Ok([1,2])"),
+        ("[[1,2][$>0]][]", "Ok([[1,2]])"),
+        ("$.[[1,2][$>0], 3]", "Ok([[1,2],3])"),
+        // A one-item result is a single value, so these were already right.
+        ("[[1,2][0]]", "Ok([1])"),
+        ("[[1,2][$>1]]", "Ok([2])"),
+        ("[[1,2][0][0]]", "Ok([1])"),
+        ("[[1,2][$>5]]", "Ok([])"),
+        // A path, not a constructor: its value is spliced.
+        ("[([1,2])[0]]", "Ok([1])"),
+        ("[([1,2])[$>0]]", "Ok([1,2])"),
+        ("[[1,2]#$i]", "Ok([1,2])"),
+        ("[[1,2][$>0]#$i]", "Ok([1,2])"),
+        ("[[1,2][$>0].$]", "Ok([1,2])"),
+        ("[[3,1,2]^($)]", "Ok([1,2,3])"),
+        ("[[3,1,2][$>1]^($)]", "Ok([2,3])"),
+        ("[[2,1][$>0]^($), 5]", "Ok([1,2,5])"),
+        // `@$v` stays on the constructor in jsonata-js; `#$i` makes a path.
+        ("[[1,2]@$v]", "Ok([[1,2]])"),
+        // A group-by gives an object, pushed either way.
+        (r#"[[1,2][$>0]{"k":$}]"#, r#"Ok([{"k":[1,2]}])"#),
+    ] {
+        let (tree_walker, default) = eval_both_engines(expr, EvaluatorOptions::default());
+        assert_eq!(tree_walker, expected, "tree-walker: {expr}");
+        assert_eq!(default, expected, "default: {expr}");
+    }
+}
