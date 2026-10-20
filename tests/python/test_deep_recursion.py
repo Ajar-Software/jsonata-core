@@ -110,8 +110,7 @@ TAIL_CALLED_PARTIALS = [
     # The expression from #255.
     "($f := function($n){ $n <= 0 ? 1 : $f($n-1, ?)() }; $f(2000))",
     "($f := function($n){ $n <= 0 ? 1 : $f($n - 1, ?)() }; $f(9000))",
-    "($g := function($n){ $f($n - 1, ?) };"
-    " $f := function($n){ $n <= 0 ? 1 : $g($n)() }; $f(5000))",
+    "($g := function($n){ $f($n - 1, ?) }; $f := function($n){ $n <= 0 ? 1 : $g($n)() }; $f(5000))",
     "($f := function($n){ $n <= 0 ? 1 :"
     " $reduce(?, function($a, $b){ $f($b) }, 0)([$n - 1]) }; $f(5000))",
     "($f := function($n){ $n <= 0 ? 1 :"
