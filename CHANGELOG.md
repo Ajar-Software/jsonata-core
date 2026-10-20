@@ -105,6 +105,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   U1001 message now names its real limit and follows the wording of the jsonata-js test
   runner's U1001: "Stack overflow error: evaluation nested deeper than 30000 levels. Check for
   non-terminating recursive function. Consider rewriting as tail-recursive."
+- **A filtered array constructor inside an array constructor keeps its nesting**
+  ([#249](https://github.com/txjmb/jsonata-core/issues/249)), as in jsonata-js, which pushes
+  a member that is an array constructor whole, with any predicates or `[]` after it.
+  `[[0..9][$ % 2 = 0]]` is `[[0,2,4,6,8]]` and `[[1, 2, [3, 4]][-1]]` is `[[3,4]]` (they were
+  `[0,2,4,6,8]` and `[3,4]`), and so for `[[1,2][]]`, `[[[1,2]][0]]`, `[1,[2,3][$>0]]` and
+  a constructor in an object value; `$count([[1,2][$>0]])` is 1 (it was 2). A member that is
+  a path is still spliced in: `[([1,2])[$>0]]`, `[[1,2]#$i]` and `[[3,1,2]^($)]` are flat.
+- **A literal used as a path step is S0213 wherever it is in the path**
+  ([#248](https://github.com/txjmb/jsonata-core/issues/248)), as in jsonata-js, which checks
+  every step of a path built by `.`. Only a literal right of a dot was rejected, so `null.$`,
+  `true.$`, `2#$q.a`, `null@$x.a`, `2[0].a`, `null^(x).a` and `null.(1)` were evaluated, and
+  `a.-2` gave `[-2,-2]` (jsonata-js folds `-2` into a number first). A number followed by `.`
+  and no digit is now the number and a path step, as in jsonata-js's tokenizer, so `2.a` and
+  `1.5.a` are S0213 too (`2.a` was "Invalid number"), and an exponent with no digits (`2e`)
+  is S0201. The same check turns a string step into a field name anywhere in the path:
+  `"a"[0].b`, `"a".(b)`, `"a".[b]` and `"a"#$i.b` read the field `a` (they used the string).
 - **Creating a function with a deeply nested body no longer crashes deep in a recursion.**
   Creating a function clones its body and collects its free variables, two recursive walks
   over the body that ran without the stack guard deep evaluation uses. A body nested a few
