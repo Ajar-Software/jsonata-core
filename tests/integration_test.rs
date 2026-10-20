@@ -3524,3 +3524,60 @@ fn test_literal_outside_a_dotted_path_is_evaluated() {
         assert_undefined_in_both_engines(expr);
     }
 }
+
+// ── Filtered array constructor inside an array constructor (#249) ────────────
+//
+// jsonata-js keeps a constructor's predicates and `[]` on the constructor
+// node (parser.js `[`), and an array constructor pushes a member that is an
+// array constructor whole instead of splicing it in (`evaluateUnary`,
+// `item.value === '['`). A `#$i`/`@$v`, a sort or a following step makes a
+// path, whose value is spliced.
+
+#[test]
+fn test_filtered_constructor_member_keeps_its_nesting() {
+    for (expr, expected) in [
+        ("[[0..9][$ % 2 = 0]]", "Ok([[0,2,4,6,8]])"),
+        ("[[1, 2, [3, 4]][-1]]", "Ok([[3,4]])"),
+        ("[[1,2][$>0]]", "Ok([[1,2]])"),
+        ("[[1,2][true]]", "Ok([[1,2]])"),
+        ("[[1,2][[0,1]]]", "Ok([[1,2]])"),
+        ("[[1,2][]]", "Ok([[1,2]])"),
+        ("[[1,2][$>0][]]", "Ok([[1,2]])"),
+        ("[[1,2][$>1][]]", "Ok([[2]])"),
+        ("[[[1,2]][0]]", "Ok([[1,2]])"),
+        ("[[[1,2],[3]][0]]", "Ok([[1,2]])"),
+        ("[[[1]][0]]", "Ok([[1]])"),
+        ("[1,[2,3][$>0]]", "Ok([1,[2,3]])"),
+        ("[[1,2][$>0], 5]", "Ok([[1,2],5])"),
+        ("[[[1,2][$>0]]]", "Ok([[[1,2]]])"),
+        (r#"{"x":[[1,2][$>0]]}"#, r#"Ok({"x":[[1,2]]})"#),
+        (r#"[[{"a":1},{"a":2}][a>0]]"#, r#"Ok([[{"a":1},{"a":2}]])"#),
+        ("$count([[1,2][$>0]])", "Ok(1)"),
+        ("([[1,2][$>0]])[0]", "Ok([1,2])"),
+        ("[[1,2][$>0]][0]", "Ok([1,2])"),
+        ("[[1,2][$>0]][]", "Ok([[1,2]])"),
+        ("$.[[1,2][$>0], 3]", "Ok([[1,2],3])"),
+        // A one-item result is a single value, so these were already right.
+        ("[[1,2][0]]", "Ok([1])"),
+        ("[[1,2][$>1]]", "Ok([2])"),
+        ("[[1,2][0][0]]", "Ok([1])"),
+        ("[[1,2][$>5]]", "Ok([])"),
+        // A path, not a constructor: its value is spliced.
+        ("[([1,2])[0]]", "Ok([1])"),
+        ("[([1,2])[$>0]]", "Ok([1,2])"),
+        ("[[1,2]#$i]", "Ok([1,2])"),
+        ("[[1,2][$>0]#$i]", "Ok([1,2])"),
+        ("[[1,2][$>0].$]", "Ok([1,2])"),
+        ("[[3,1,2]^($)]", "Ok([1,2,3])"),
+        ("[[3,1,2][$>1]^($)]", "Ok([2,3])"),
+        ("[[2,1][$>0]^($), 5]", "Ok([1,2,5])"),
+        // `@$v` stays on the constructor in jsonata-js; `#$i` makes a path.
+        ("[[1,2]@$v]", "Ok([[1,2]])"),
+        // A group-by gives an object, pushed either way.
+        (r#"[[1,2][$>0]{"k":$}]"#, r#"Ok([{"k":[1,2]}])"#),
+    ] {
+        let (tree_walker, default) = eval_both_engines(expr, EvaluatorOptions::default());
+        assert_eq!(tree_walker, expected, "tree-walker: {expr}");
+        assert_eq!(default, expected, "default: {expr}");
+    }
+}

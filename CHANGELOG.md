@@ -93,6 +93,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A filtered array constructor inside an array constructor keeps its nesting**
+  ([#249](https://github.com/txjmb/jsonata-core/issues/249)), as in jsonata-js, which pushes
+  a member that is an array constructor whole, with any predicates or `[]` after it.
+  `[[0..9][$ % 2 = 0]]` is `[[0,2,4,6,8]]` and `[[1, 2, [3, 4]][-1]]` is `[[3,4]]` (they were
+  `[0,2,4,6,8]` and `[3,4]`), and so for `[[1,2][]]`, `[[[1,2]][0]]`, `[1,[2,3][$>0]]` and
+  a constructor in an object value; `$count([[1,2][$>0]])` is 1 (it was 2). A member that is
+  a path is still spliced in: `[([1,2])[$>0]]`, `[[1,2]#$i]` and `[[3,1,2]^($)]` are flat.
 - **A literal used as a path step is S0213 wherever it is in the path**
   ([#248](https://github.com/txjmb/jsonata-core/issues/248)), as in jsonata-js, which checks
   every step of a path built by `.`. Only a literal right of a dot was rejected, so `null.$`,
