@@ -628,6 +628,7 @@ dependencies = [
  "clap",
  "criterion",
  "indexmap",
+ "libmimalloc-sys",
  "mimalloc",
  "num-traits",
  "percent-encoding",

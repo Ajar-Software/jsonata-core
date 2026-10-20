@@ -11,6 +11,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **The mimalloc allocator no longer falls into its aligned slow path.** With the `mimalloc`
+  feature (the published wheels), every allocation went through `mi_malloc_aligned`. There,
+  once the free list of a size class whose block size is not a power of two runs dry, each
+  allocation of that size over-allocates from a larger class instead of refilling it (about
+  110 extra instructions per allocation), and which sizes are hit depends on what else
+  shares their class. The global allocator now calls `mi_malloc` for the alignments mimalloc
+  guarantees (up to 16 bytes on 64-bit targets, 8 on 32-bit, for sizes that are a multiple
+  of the alignment), which is nearly every Rust allocation, and uses the aligned API for the
+  rest. Callgrind on the A/B benchmark expressions: 0.2% to 3.6% fewer instructions on every
+  one, both engines (Sort 3.6%, Deep Path 2.8%, Parent 1.9%).
 - **An object constructor or `.(expr)` path step is compiled once per evaluation, not each
   time it runs** ([#197](https://github.com/txjmb/jsonata-core/issues/197)). The evaluator
   keeps each step's compiled form, so a step inside a function body, such as `$map(big,
