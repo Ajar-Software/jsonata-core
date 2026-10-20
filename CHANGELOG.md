@@ -93,6 +93,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Recursion through a tail-called partial application no longer crashes the process**
+  ([#255](https://github.com/txjmb/jsonata-core/issues/255)).
+  `($f := function($n){ $n <= 0 ? 1 : $f($n-1, ?)() }; $f(2000))` is 1, as in jsonata-js; it
+  overflowed the native stack at about 2,000 levels on both engines and killed the Python
+  process. A call of a value in tail position that is not a function with tail calls (a
+  partial application, also of a builtin such as `$reduce(?, $g, 0)`, or a builtin called as
+  a value, `($reduce)(xs, $g, 0)`) was applied by the trampoline outside any evaluation
+  step, so a recursion through it bypassed both the native-stack guard and the depth limit.
+  It now runs under both: deep recursion evaluates, and with no base case it raises U1001 at
+  the 30,000-level limit.
 - **A tail-recursive loop no longer stops at 100,000 iterations**
   ([#251](https://github.com/txjmb/jsonata-core/issues/251)). The tail-call trampoline had a
   hardcoded 100,000-iteration cap when no timeout was set, so

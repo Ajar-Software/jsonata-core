@@ -106,6 +106,32 @@ def test_unbounded_recursion_through_tail_called_builtin_callback(engine):
     assert out["error"][:5] in ("U1001", "D1012")
 
 
+TAIL_CALLED_PARTIALS = [
+    # The expression from #255.
+    "($f := function($n){ $n <= 0 ? 1 : $f($n-1, ?)() }; $f(2000))",
+    "($f := function($n){ $n <= 0 ? 1 : $f($n - 1, ?)() }; $f(9000))",
+    "($g := function($n){ $f($n - 1, ?) }; $f := function($n){ $n <= 0 ? 1 : $g($n)() }; $f(5000))",
+    "($f := function($n){ $n <= 0 ? 1 :"
+    " $reduce(?, function($a, $b){ $f($b) }, 0)([$n - 1]) }; $f(5000))",
+    "($f := function($n){ $n <= 0 ? 1 :"
+    " ($reduce)([$n - 1], function($a, $b){ $f($b) }, 0) }; $f(5000))",
+]
+
+
+@pytest.mark.parametrize("expr", TAIL_CALLED_PARTIALS)
+def test_recursion_through_tail_called_partial_application(engine, expr):
+    # A partial application, or a builtin called as a value, in tail position
+    # is applied by the trampoline without an ordinary evaluation step;
+    # recursing through it used to overflow the native stack at about 2,000
+    # levels and crash the process (#255).
+    assert _evaluate_on_small_stack(engine, expr) == {"ok": "1"}
+
+
+def test_unbounded_recursion_through_tail_called_partial_application(engine):
+    out = _evaluate_on_small_stack(engine, "($f := function($n){ $f($n + 1, ?)() }; $f(0))")
+    assert out["error"].startswith("U1001")
+
+
 def test_recursion_without_base_case_raises_u1001(engine):
     out = _evaluate_on_small_stack(engine, NO_BASE_CASE)
     assert out["error"].startswith("U1001")

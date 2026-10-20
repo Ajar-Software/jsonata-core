@@ -9673,21 +9673,30 @@ impl Evaluator {
                 }
                 // Not a thunk - apply the value already evaluated, so the
                 // callee is not evaluated a second time. A builtin runs with
-                // the trampoline's input, as above.
-                let result = if matches!(callable, JValue::Builtin { .. }) {
-                    let input = self.tail_input(data);
-                    if args.iter().any(|a| matches!(a, AstNode::Placeholder)) {
-                        self.apply_call_value(callable, args, data)?
-                    } else {
-                        let mut evaluated_args = Vec::with_capacity(args.len());
-                        for arg in args {
-                            evaluated_args.push(self.evaluate_internal(arg, data)?);
+                // the trampoline's input, as above. This is the one way out of
+                // the trampoline body into a call that does not pass through
+                // `evaluate_internal`: a partial application (`$f($n-1, ?)()`)
+                // or a builtin value (`($map)(xs, $f)`) applied here can call
+                // straight back into a thunk lambda's trampoline. Without the
+                // checkpoint that recursion grew the native stack with no depth
+                // or stack guard and crashed the process at about 2,000 levels
+                // (#255).
+                let result = self.with_checkpoint(|ev| {
+                    if matches!(callable, JValue::Builtin { .. }) {
+                        let input = ev.tail_input(data);
+                        if args.iter().any(|a| matches!(a, AstNode::Placeholder)) {
+                            ev.apply_call_value(callable, args, data)
+                        } else {
+                            let mut evaluated_args = Vec::with_capacity(args.len());
+                            for arg in args {
+                                evaluated_args.push(ev.evaluate_internal(arg, data)?);
+                            }
+                            ev.call_function_value(&callable, &evaluated_args, &input)
                         }
-                        self.call_function_value(&callable, &evaluated_args, &input)?
+                    } else {
+                        ev.apply_call_value(callable, args, data)
                     }
-                } else {
-                    self.apply_call_value(callable, args, data)?
-                };
+                })?;
                 Ok(LambdaResult::JValue(result))
             }
 
