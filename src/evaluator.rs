@@ -266,13 +266,6 @@ pub(crate) enum CompiledExpr {
     ArrayConstruct(Vec<(CompiledExpr, bool)>),
 
     // ── Phase 2 extensions ──────────────────────────────────────────────
-    /// Named variable lookup from context scope (any `$name` not in lambda params).
-    /// Compiled when a named variable is encountered and no allowed_vars list is
-    /// provided (top-level compilation). At runtime, returns the value from the vars
-    /// map (lambda params or captured env), or Undefined if not present.
-    #[allow(dead_code)]
-    ContextVar(String),
-
     /// Multi-step field path with optional per-step filters: `a.b[pred].c`,
     /// evaluated as jsonata-js evaluates a path of field steps (see
     /// `compiled_eval_field_path`). `from_dollar` is set for `$.a...`: the
@@ -369,8 +362,7 @@ fn compiled_builtin_names(expr: &CompiledExpr, out: &mut Vec<&'static str>) {
         CompiledExpr::Literal(_)
         | CompiledExpr::FieldLookup(_)
         | CompiledExpr::NestedFieldLookup(..)
-        | CompiledExpr::VariableLookup(_)
-        | CompiledExpr::ContextVar(_) => {}
+        | CompiledExpr::VariableLookup(_) => {}
         CompiledExpr::Compare { lhs, rhs, .. }
         | CompiledExpr::Arithmetic { lhs, rhs, .. }
         | CompiledExpr::Concat(lhs, rhs)
@@ -564,8 +556,7 @@ fn compiled_expr_node_count_exceeds(expr: &CompiledExpr, limit: usize) -> bool {
             CompiledExpr::Literal(_)
             | CompiledExpr::FieldLookup(_)
             | CompiledExpr::NestedFieldLookup(_, _)
-            | CompiledExpr::VariableLookup(_)
-            | CompiledExpr::ContextVar(_) => false,
+            | CompiledExpr::VariableLookup(_) => false,
 
             // ── Binary ────────────────────────────────────────────────
             CompiledExpr::Compare { lhs, rhs, .. }
@@ -684,8 +675,7 @@ fn try_compile_node(node: &AstNode, allowed_vars: Option<&[&str]>) -> Option<Com
         // $ (empty name) always refers to the current element.
         // Named variables: in HOF mode (allowed_vars=Some), only compile if the
         // variable is in the allowed set (lambda params supplied via vars map).
-        // In top-level mode (allowed_vars=None), compile unknown variables as
-        // ContextVar — they return Undefined at runtime when no bindings are passed.
+        // Otherwise they fall back to the tree-walker (see below).
         AstNode::Variable(var) if var.is_empty() => Some(CompiledExpr::VariableLookup(var.clone())),
         AstNode::Variable(var) => {
             if let Some(allowed) = allowed_vars {
@@ -1366,27 +1356,6 @@ fn eval_compiled_node(
         }
 
         // ── Phase 2 new variants ─────────────────────────────────────────
-
-        // ContextVar: named variable lookup from context scope.
-        // In top-level mode (ctx=None, no bindings), returns Undefined.
-        // In HOF mode, ctx is None too (HOF call sites pass no ctx), so this
-        // is only ever populated for top-level calls — always Undefined there.
-        CompiledExpr::ContextVar(name) => {
-            // Check vars map first (for lambda params that might shadow context)
-            if let Some(vars) = vars {
-                if let Some(val) = vars.get(name.as_str()) {
-                    return Ok((*val).clone());
-                }
-            }
-            // Then check context scope
-            if let Some(ctx) = ctx {
-                if let Some(val) = ctx.lookup(name) {
-                    return Ok(val.clone());
-                }
-            }
-            Ok(JValue::Undefined)
-        }
-
         CompiledExpr::FieldPath { steps, from_dollar } => {
             compiled_eval_field_path(steps, *from_dollar, data, vars, ctx, options, start_time)
         }

@@ -76,12 +76,6 @@ pub(crate) enum Instr {
     CmpGe,
 
     // ── Logical / string ─────────────────────────────────────────────────
-    /// Binary And — kept for potential future use, but the compiler emits
-    /// short-circuit jump sequences for And/Or rather than these instructions.
-    #[allow(dead_code)]
-    And,
-    #[allow(dead_code)]
-    Or,
     Not,
     Negate,
     Concat,
@@ -423,30 +417,6 @@ fn run_inner(
             }
 
             // ── Logical / string ─────────────────────────────────────
-            Instr::And => {
-                // Mirrors eval_compiled_inner: if lhs is falsy → Bool(false),
-                // else Bool(is_truthy(rhs)). Always returns Bool, never Undefined.
-                let rhs = stack.pop().unwrap_or(JValue::Undefined);
-                let lhs = stack.pop().unwrap_or(JValue::Undefined);
-                if !compiled_is_truthy(&lhs) {
-                    stack.push(JValue::Bool(false));
-                } else {
-                    stack.push(JValue::Bool(compiled_is_truthy(&rhs)));
-                }
-                ip += 1;
-            }
-            Instr::Or => {
-                // Mirrors eval_compiled_inner: if lhs is truthy → Bool(true),
-                // else Bool(is_truthy(rhs)). Always returns Bool, never Undefined.
-                let rhs = stack.pop().unwrap_or(JValue::Undefined);
-                let lhs = stack.pop().unwrap_or(JValue::Undefined);
-                if compiled_is_truthy(&lhs) {
-                    stack.push(JValue::Bool(true));
-                } else {
-                    stack.push(JValue::Bool(compiled_is_truthy(&rhs)));
-                }
-                ip += 1;
-            }
             Instr::Not => {
                 let val = stack.pop().unwrap_or(JValue::Undefined);
                 stack.push(JValue::Bool(!compiled_is_truthy(&val)));
