@@ -110,6 +110,19 @@ class TestCompile:
         """`~>` passes its left side as the first argument of any call on its right."""
         assert jsonatapy.compile(expression).evaluate(None) == expected
 
+    @pytest.mark.parametrize(
+        "expression, expected",
+        [
+            ('"s"{k: v}.p', [1, 3]),
+            ('"s"[0].k', "p"),
+            ('"s"#$i.k', ["p", "q", "p"]),
+        ],
+    )
+    def test_string_literal_heading_path_is_name_step(self, expression, expected):
+        """A string heading a path reads that field, under its predicates and group-by."""
+        data = {"s": [{"k": "p", "v": 1}, {"k": "q", "v": 2}, {"k": "p", "v": 3}]}
+        assert jsonatapy.compile(expression).evaluate(data) == expected
+
 
 class TestJsonataExpression:
     """Tests for JsonataExpression class"""

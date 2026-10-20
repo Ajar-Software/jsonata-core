@@ -3585,3 +3585,58 @@ fn test_chain_into_call_of_expression() {
         assert!(default.contains(code), "default: {expr} => {default}");
     }
 }
+
+// ── A string literal heading a path is a name step ───────────────────────────
+//
+// jsonata-js's `.` turns every string literal step of a path into a name,
+// along with the predicates, group-by, sort or bindings it carries. Only a
+// bare string was converted, so `"s"{k: v}.p`, `"s"[0].k` and `"s"#$i.k`
+// read the string itself and gave undefined.
+
+#[test]
+fn test_string_literal_heading_path_is_name_step() {
+    let data = JValue::from_json_str(
+        r##"{"s":[{"k":"p","v":1},{"k":"q","v":2},{"k":"p","v":3}],"a":[{"b":"x","c":1},{"b":"y","c":2}]}"##,
+    )
+    .unwrap();
+    let show = |r: Result<JValue, jsonata_core::evaluator::EvaluatorError>| match r {
+        Ok(v) => format!("Ok({})", v.to_json_string().unwrap()),
+        Err(e) => format!("Err({e})"),
+    };
+    let root = format!("Ok({})", data.to_json_string().unwrap());
+    for (expr, expected) in [
+        (r##""s"{k: v}.p"##, "Ok([1,3])"),
+        (r##""s"{k: v}.$keys()"##, r##"Ok(["p","q"])"##),
+        (r##""a"{b: c}.$keys()"##, r##"Ok(["x","y"])"##),
+        (r##""s"[0]{k: v}.p"##, "Ok(1)"),
+        (r##""s"[k="p"]{k: v}.p"##, "Ok([1,3])"),
+        (r##""s"{k: v}.p[0]"##, "Ok(1)"),
+        (r##""s"[0].k"##, r##"Ok("p")"##),
+        (r##""s"[].k"##, r##"Ok(["p","q","p"])"##),
+        (r##""s"#$i.(k & $i)"##, r##"Ok(["p0","q1","p2"])"##),
+        (r##""s"^(v).k"##, r##"Ok(["p","q","p"])"##),
+        (r##""s"{k: v}.%"##, root.as_str()),
+        (r##""s"[0]{k: v}.%"##, root.as_str()),
+        (r##""s"[0]{k: v}.p.%"##, r##"Ok({"p":1})"##),
+        // Unchanged: a block is not a step to convert, and a string with no
+        // `.` after it is a string.
+        (r##"("s"){k: v}.p"##, "Ok(undefined)"),
+        (r##""s"[0]"##, r##"Ok("s")"##),
+        (r##""s"{k: v}"##, "Ok({})"),
+    ] {
+        let ast = parse(expr).unwrap();
+        let tree_walker = show(Evaluator::new().evaluate(&ast, &data));
+        let default = show(
+            jsonata_core::Expression::compile(expr)
+                .unwrap()
+                .evaluate(&data),
+        );
+        let expected = if expected == "Ok(undefined)" {
+            show(Ok(JValue::Undefined))
+        } else {
+            expected.to_string()
+        };
+        assert_eq!(tree_walker, expected, "tree-walker: {expr}");
+        assert_eq!(default, expected, "default: {expr}");
+    }
+}

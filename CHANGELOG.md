@@ -93,6 +93,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A string literal heading a path reads that field under its predicates, group-by, sort or
+  bindings.** `"s"{k: v}.p`, `"s"[0].k`, `"s"#$i.k` and `"s"^(v).k` read field `s`, as in
+  jsonata-js, whose `.` makes every string step of a path a name; only a bare `"s".k` did, so
+  these read the string itself and gave undefined. `"s"{k: v}.%` is the input (it was S0217).
 - **`~>` into a call of an expression's value passes the left side as the first argument.**
   `"x" ~> $uppercase[0]()` is `"X"` and `1 ~> $o[1]()` calls `$o[1]` with 1, as in
   jsonata-js; only a call of a named function got the left side, so these called the function

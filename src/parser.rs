@@ -113,6 +113,52 @@ fn node_has_group(node: &AstNode) -> bool {
     }
 }
 
+/// The steps a `.` extends: the left side's own when it is a path, or the
+/// left side as the one step. As jsonata-js's `.` turns every string literal
+/// step of the path into a name, a string heading a step does too, under
+/// the predicates, group-by, sort and bindings it carries: `"s".k`,
+/// `"s"[0].k`, `"s"{k: v}.p`, `"s"#$i.k` and `"s"^(v).k` read field `s`.
+fn path_steps_before_dot(lhs: AstNode) -> Vec<PathStep> {
+    match lhs {
+        AstNode::Path { steps } => steps
+            .into_iter()
+            .map(|mut step| {
+                step.node = string_step_to_name(step.node);
+                step
+            })
+            .collect(),
+        other => vec![PathStep::new(string_step_to_name(other))],
+    }
+}
+
+/// `node` as a path step, with a string literal at its head made a name.
+fn string_step_to_name(node: AstNode) -> AstNode {
+    match node {
+        AstNode::String(name) => AstNode::Name(name),
+        AstNode::Path { steps } if steps.len() == 1 => AstNode::Path {
+            steps: path_steps_before_dot(AstNode::Path { steps }),
+        },
+        AstNode::ObjectTransform { input, pattern } => AstNode::ObjectTransform {
+            input: Box::new(string_step_to_name(*input)),
+            pattern,
+        },
+        AstNode::Sort { input, terms } => AstNode::Sort {
+            input: Box::new(string_step_to_name(*input)),
+            terms,
+        },
+        AstNode::Binary {
+            op: op @ (BinaryOp::IndexBind | BinaryOp::FocusBind),
+            lhs,
+            rhs,
+        } => AstNode::Binary {
+            op,
+            lhs: Box::new(string_step_to_name(*lhs)),
+            rhs,
+        },
+        other => other,
+    }
+}
+
 /// Splits a `#`/`@`-bound path into the steps before its last one and the
 /// bound last step on its own, which jsonata-js would have parsed as the
 /// call's procedure: `a.b#$i` gives `[a]` and `b#$i`. Anything that is not
@@ -1538,10 +1584,7 @@ impl Parser {
                         self.expect(Token::RightBracket)?;
 
                         // Create ArrayGroup node as a path step
-                        let mut steps = match lhs {
-                            AstNode::Path { steps } => steps,
-                            _ => vec![PathStep::new(lhs)],
-                        };
+                        let mut steps = path_steps_before_dot(lhs);
 
                         steps.push(PathStep::new(AstNode::ArrayGroup(elements)));
                         self.bump_parse_depth()?;
@@ -1558,10 +1601,7 @@ impl Parser {
                         // which the ancestry pass walks past.
                         if self.current_token == Token::RightParen {
                             self.advance()?;
-                            let mut steps = match lhs {
-                                AstNode::Path { steps } => steps,
-                                _ => vec![PathStep::new(lhs)],
-                            };
+                            let mut steps = path_steps_before_dot(lhs);
                             steps.push(PathStep::new(AstNode::FunctionApplication(Box::new(
                                 AstNode::Block(Vec::new()),
                             ))));
@@ -1589,10 +1629,7 @@ impl Parser {
                             let expr = AstNode::Block(expressions);
 
                             // Create FunctionApplication node as a path step
-                            let mut steps = match lhs {
-                                AstNode::Path { steps } => steps,
-                                _ => vec![PathStep::new(lhs)],
-                            };
+                            let mut steps = path_steps_before_dot(lhs);
 
                             steps.push(PathStep::new(AstNode::FunctionApplication(Box::new(expr))));
                             self.bump_parse_depth()?;
@@ -1603,15 +1640,7 @@ impl Parser {
                         let rhs = self.parse_expression(right_bp)?;
 
                         // Flatten path expressions
-                        let mut steps = match lhs {
-                            AstNode::Path { steps } => steps,
-                            // Convert string literals to field names when used as first step in path
-                            // e.g., "foo".bar should behave like foo.bar
-                            AstNode::String(field_name) => {
-                                vec![PathStep::new(AstNode::Name(field_name))]
-                            }
-                            _ => vec![PathStep::new(lhs)],
-                        };
+                        let mut steps = path_steps_before_dot(lhs);
 
                         // S0213: The literal value cannot be used as a step within a path expression
                         // Numbers, booleans (true/false), and null cannot be path steps
