@@ -53,25 +53,6 @@ class TestCompile:
         )
 
 
-class TestEvaluate:
-    """Tests for evaluate() function"""
-
-    @pytest.mark.skip(reason="Not yet implemented")
-    def test_evaluate_simple_path(self):
-        """Test simple path evaluation"""
-        data = {"name": "Alice"}
-        result = jsonatapy.evaluate("name", data)
-        assert result == "Alice"
-
-    @pytest.mark.skip(reason="Not yet implemented")
-    def test_evaluate_with_bindings(self):
-        """Test evaluation with variable bindings"""
-        data = {"value": 10}
-        bindings = {"multiplier": 2}
-        result = jsonatapy.evaluate("value * $multiplier", data, bindings)
-        assert result == 20
-
-
 class TestJsonataExpression:
     """Tests for JsonataExpression class"""
 
@@ -79,25 +60,6 @@ class TestJsonataExpression:
         """Test that expression can be created"""
         expr = jsonatapy.compile("$.name")
         assert expr is not None
-
-    @pytest.mark.skip(reason="Not yet implemented")
-    def test_expression_evaluate(self):
-        """Test expression evaluation"""
-        expr = jsonatapy.compile("name")
-        data = {"name": "Bob"}
-        result = expr.evaluate(data)
-        assert result == "Bob"
-
-    @pytest.mark.skip(reason="Not yet implemented")
-    def test_expression_reuse(self):
-        """Test that compiled expressions can be reused"""
-        expr = jsonatapy.compile("count(items)")
-
-        result1 = expr.evaluate({"items": [1, 2, 3]})
-        assert result1 == 3
-
-        result2 = expr.evaluate({"items": [1, 2, 3, 4, 5]})
-        assert result2 == 5
 
 
 class TestMetadata:
