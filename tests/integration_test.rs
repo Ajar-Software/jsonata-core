@@ -3446,3 +3446,125 @@ fn test_null_from_non_simple_sort_term_without_comparison() {
         assert_eq!(default, expected, "default: {expr}");
     }
 }
+
+// ── `$eval` with an undefined focus; a function's tail builtin result ────────
+//
+// `$eval(expr, focus)` with an undefined focus used the undefined focus as
+// its input, so it was undefined; jsonata-js keeps the current input (#247).
+// A builtin called in a function's tail position returns its raw result in
+// jsonata-js, never unwrapped, so an empty sequence such as `$keys({})` stays
+// a value for `$map` and its siblings; and `$split` of undefined is
+// undefined, not null (#250).
+
+/// `eval_both_engines` with `input` as the input.
+fn eval_both_engines_on(expr: &str, input: serde_json::Value) -> (String, String) {
+    fn show(r: Result<JValue, jsonata_core::evaluator::EvaluatorError>) -> String {
+        match r {
+            Ok(JValue::Undefined) => "undefined".to_string(),
+            Ok(v) => v.to_json_string().unwrap(),
+            Err(e) => format!("Err({e})"),
+        }
+    }
+    let input = JValue::from(input);
+    let ast = parse(expr).unwrap();
+    let tree_walker = show(Evaluator::new().evaluate(&ast, &input));
+    let default = show(
+        jsonata_core::Expression::compile(expr)
+            .unwrap()
+            .evaluate(&input),
+    );
+    (tree_walker, default)
+}
+
+#[test]
+fn test_eval_with_undefined_focus_uses_the_input() {
+    for (expr, input, expected) in [
+        (r#"$eval("a", $v)"#, json!({"a": 5}), "5"),
+        (r#"$eval("a", nothing)"#, json!({"a": 5}), "5"),
+        (r#"$eval("$", $v)"#, json!([1, 2]), "[1,2]"),
+        (r#"$eval("a", missing.deep)"#, json!({"a": 5}), "5"),
+        (r#"($x := 3; $eval("$x + a", $v))"#, json!({"a": 5}), "8"),
+        (
+            r#"items.$eval("x", $u)"#,
+            json!({"items": [{"x": 1}, {"x": 2}]}),
+            "[1,2]",
+        ),
+        (r#"$eval(nothing, $v)"#, json!({"a": 5}), "undefined"),
+        // A defined focus still replaces the input.
+        (r#"$eval("a", {"a": 7})"#, json!({"a": 5}), "7"),
+    ] {
+        let (tree_walker, default) = eval_both_engines_on(expr, input);
+        assert_eq!(tree_walker, expected, "tree-walker: {expr}");
+        assert_eq!(default, expected, "default: {expr}");
+    }
+}
+
+#[test]
+fn test_tail_builtin_result_is_not_unwrapped() {
+    for (expr, expected) in [
+        (r#"$map([1,2], function($v){ $keys({}) })"#, "[[],[]]"),
+        (r#"$map([1,2], function($v){ ($keys({})) })"#, "[[],[]]"),
+        (
+            r#"$map([1,2], function($v){ $v>1 ? $keys({}) : 0 })"#,
+            "[0,[]]",
+        ),
+        (r#"$map([1,2], function($v){ $keys(nothing) })"#, "[[],[]]"),
+        (
+            r#"$map([1,2], function($v){ $keys({"a":1}) })"#,
+            r#"[["a"],["a"]]"#,
+        ),
+        (
+            r#"$map([1,2], function($v){ $lookup([{}], "x") })"#,
+            "[[],[]]",
+        ),
+        (
+            r#"$map([{}, {"q":1}], function($x){ $lookup([$x], "q") })"#,
+            "[[],[1]]",
+        ),
+        (
+            r#"$map([1,2], function($v){ $match("abc", /z/) })"#,
+            "[[],[]]",
+        ),
+        (
+            r#"$each({"a":1,"b":2}, function($v){ $keys({}) })"#,
+            "[[],[]]",
+        ),
+        (r#"$count($map([1,2], function($v){ $keys({}) }))"#, "2"),
+        (
+            r#"$map([1,2], function($v){ $map([1], function(){ $keys({}) }) })"#,
+            "[[[]],[[]]]",
+        ),
+        // A direct call unwraps the result, as its call node does.
+        (r#"(function(){ $keys({}) })()"#, "undefined"),
+        (r#"[(function(){ $keys({}) })()]"#, "[]"),
+        (r#"($f := function(){ $keys({}) }; [$f(), $f()])"#, "[]"),
+        // An undefined callback result adds nothing.
+        (
+            r#"$map([1,2], function($v){ $split(nothing, " ") })"#,
+            "undefined",
+        ),
+        (r#"[$split(nothing, " ")]"#, "[]"),
+        (
+            r#"$map([1,2], function($v){ $sift(nothing, function(){true}) })"#,
+            "undefined",
+        ),
+        (
+            r#"$map([1,2,3], function($v){ $v>1 ? $string($v) })"#,
+            r#"["2","3"]"#,
+        ),
+        (
+            r#"$map([1,2], function($v){ $v>1 ? $keys({"a":1}) })"#,
+            r#"["a"]"#,
+        ),
+        // `$sort` tests its comparator's result as JavaScript does: an
+        // array or object, even an empty one, is true.
+        (r#"$sort([2,1], function($a,$b){ $keys({}) })"#, "[1,2]"),
+        (r#"$sort([2,1], function($a,$b){ [] })"#, "[1,2]"),
+        (r#"$sort([2,1], function($a,$b){ {} })"#, "[1,2]"),
+        (r#"$sort([3,1,2], function($a,$b){ $a > $b })"#, "[1,2,3]"),
+    ] {
+        let (tree_walker, default) = eval_both_engines_on(expr, json!({"a": 5}));
+        assert_eq!(tree_walker, expected, "tree-walker: {expr}");
+        assert_eq!(default, expected, "default: {expr}");
+    }
+}

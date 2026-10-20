@@ -1587,6 +1587,20 @@ fn eval_compiled_node(
     }
 }
 
+/// JavaScript truthiness, which jsonata-js's `$sort` applies to its
+/// comparator's result (`if (await comp(left[0], right[0]))`) instead of
+/// JSONata's `$boolean`: any array, object or function is true, even an
+/// empty one, so a comparator returning `[]` or `{}` swaps.
+fn js_truthy(value: &JValue) -> bool {
+    match value {
+        JValue::Null | JValue::Undefined => false,
+        JValue::Bool(b) => *b,
+        JValue::Number(n) => *n != 0.0 && !n.is_nan(),
+        JValue::String(s) => !s.is_empty(),
+        _ => true,
+    }
+}
+
 /// Truthiness check (matches JSONata semantics). Standalone function for compiled path.
 #[inline]
 pub(crate) fn compiled_is_truthy(value: &JValue) -> bool {
@@ -4762,7 +4776,16 @@ impl Evaluator {
 
         // For lambda comparators, use a reusable scope to avoid
         // push_scope/pop_scope per comparison (~n log n total comparisons)
-        if let AstNode::Lambda { params, body, .. } = comparator {
+        // Not for a body with tail calls: that runs as a function call, whose
+        // tail builtin's raw result (`$keys({})`, an empty sequence) the
+        // comparator then tests (#250).
+        if let AstNode::Lambda {
+            params,
+            body,
+            thunk: false,
+            ..
+        } = comparator
+        {
             if params.len() >= 2 {
                 // Pre-clone param names once outside the loop
                 let param0 = params[0].clone();
@@ -4776,7 +4799,7 @@ impl Evaluator {
 
                     let cmp_result = self.evaluate_internal(body, data)?;
 
-                    if self.is_truthy(&cmp_result) {
+                    if js_truthy(&cmp_result) {
                         temp.push(right[j].clone());
                         j += 1;
                     } else {
@@ -4793,7 +4816,7 @@ impl Evaluator {
                         &[left[i].clone(), right[j].clone()],
                         data,
                     )?;
-                    if self.is_truthy(&cmp_result) {
+                    if js_truthy(&cmp_result) {
                         temp.push(right[j].clone());
                         j += 1;
                     } else {
@@ -4807,7 +4830,7 @@ impl Evaluator {
             while i < left.len() && j < right.len() {
                 let cmp_result =
                     self.apply_function(comparator, &[left[i].clone(), right[j].clone()], data)?;
-                if self.is_truthy(&cmp_result) {
+                if js_truthy(&cmp_result) {
                     temp.push(right[j].clone());
                     j += 1;
                 } else {
@@ -8080,6 +8103,8 @@ impl Evaluator {
                     // $sift(object, function)
                     match &evaluated_args[0] {
                         JValue::Object(o) => sift_object(self, o, &args[1], data, param_count),
+                        // jsonata-js iterates the keys of nothing: undefined.
+                        JValue::Undefined => Ok(JValue::Undefined),
                         JValue::Null => Ok(JValue::Null),
                         _ => Err(EvaluatorError::TypeError(
                             "sift() first argument must be an object".to_string(),
@@ -9193,14 +9218,16 @@ impl Evaluator {
                 } else if let Some(else_expr) = else_branch {
                     self.evaluate_for_tco(else_expr, data)
                 } else {
-                    Ok(LambdaResult::JValue(JValue::Null))
+                    // No else branch: undefined, as everywhere else, so a
+                    // `$map` callback adds nothing for it (not a null).
+                    Ok(LambdaResult::JValue(JValue::Undefined))
                 }
             }
 
             // Block: evaluate all but last normally, last for TCO
             AstNode::Block(exprs) => {
                 if exprs.is_empty() {
-                    return Ok(LambdaResult::JValue(JValue::Null));
+                    return Ok(LambdaResult::JValue(JValue::Undefined));
                 }
 
                 // Evaluate all expressions except the last
@@ -9340,8 +9367,15 @@ impl Evaluator {
                     let result = self.eval_from_values_at(&evaluated_args, data, Some(at))?;
                     return Ok(LambdaResult::JValue(result));
                 }
-                // Not a thunk lambda - evaluate normally
-                let result = self.evaluate_internal(node, data)?;
+                // Not a thunk lambda: a builtin (or a function without tail
+                // calls). jsonata-js runs it from its trampoline with
+                // `applyInner`, whose result is never passed through
+                // `evaluate`'s generic unwrap, so the function returns the
+                // builtin's raw result: `$keys({})` is an empty sequence, not
+                // undefined, and `$map([1,2], function(){ $keys({}) })` is
+                // `[[], []]` (#250). A direct call `$f()` still unwraps it,
+                // as its own call node does.
+                let result = self.evaluate_unwrapped_later(node, data)?;
                 Ok(LambdaResult::JValue(result))
             }
 
@@ -10219,9 +10253,12 @@ impl Evaluator {
         };
 
         // Determine the context to use for evaluation
-        // A focus array is wrapped the way evaluate wraps its input.
+        // A focus array is wrapped the way evaluate wraps its input. An
+        // undefined focus is no focus at all: jsonata-js's `functionEval`
+        // keeps the current input unless `typeof focus !== 'undefined'`, so
+        // `$eval("a", $unbound)` reads `a` from the input (#247).
         let focus;
-        let eval_context = if args.len() == 2 {
+        let eval_context = if args.len() == 2 && !args[1].is_undefined() {
             focus = args[1].clone().into_outer_wrapper();
             &focus
         } else {

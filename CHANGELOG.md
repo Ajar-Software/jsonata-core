@@ -93,6 +93,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`$eval` with an undefined focus evaluates against the current input**, as in jsonata-js
+  ([#247](https://github.com/txjmb/jsonata-core/issues/247)). `$eval("a", $v)` with `$v`
+  unbound used the undefined focus as its input and was undefined; it now reads `a` from
+  the input, as `$eval("a")` does. A defined focus still replaces the input.
+- **A builtin called in a function's tail position returns its result as jsonata-js does**
+  ([#250](https://github.com/txjmb/jsonata-core/issues/250)). jsonata-js runs such a call
+  from its trampoline, which never unwraps the result, but it was unwrapped here, so an
+  empty sequence became undefined: `$map([1,2], function($v){ $keys({}) })` was undefined
+  instead of `[[], []]`, and `$keys({"a":1})` there gave `"a"` instead of `["a"]`. A direct
+  call such as `$f()` still unwraps it. With this, `$keys` of undefined and `$lookup` over
+  an array that matches nothing give an empty sequence, as in jsonata-js; a conditional
+  without an else in that position is undefined, not null; and `$sort` tests its
+  comparator's result with JavaScript truthiness, so a comparator returning `[]` or `{}`
+  swaps. `$split` of undefined is undefined, not null, so
+  `$map([1,2], function($v){ $split(nothing, " ") })` is undefined instead of
+  `[null, null]` and `[$split(nothing, " ")]` is `[]`; `$sift(nothing, $f)` is undefined
+  instead of an error.
 - **Creating a function with a deeply nested body no longer crashes deep in a recursion.**
   Creating a function clones its body and collects its free variables, two recursive walks
   over the body that ran without the stack guard deep evaluation uses. A body nested a few
