@@ -123,12 +123,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   focus, and a signature's `-` parameter left without an argument. A builtin that is
   itself a function's tail call applies the functions it is given with the input they were
   defined with, as jsonata-js's trampoline passes them unwrapped:
-  `($o := function(){ $map([1], function(){ $eval("a") }) }; $o())` is 5. A function passed
-  as an argument of a direct call is applied with a null input however the callee calls it,
-  as jsonata-js's wrapper closure applies it:
-  `($h := function($f){ $f("x") }; $h(function($e){ $eval("a", $nope) }))` is undefined.
-  The wrapper is recognized by the function's identity while the call runs, so a function
-  argument that escapes the call and is called later is not.
+  `($o := function(){ $map([1], function(){ $eval("a") }) }; $o())` is 5. Known gap
+  ([#254](https://github.com/txjmb/jsonata-core/issues/254)): jsonata-js wraps a function
+  passed as an argument of a direct call in a closure that applies it with a null input,
+  which is not modelled yet, so
+  `($h := function($f){ $f("x") }; $h(function($e){ $eval("a", $nope) }))` gives 5 instead
+  of undefined.
 - **A filtered array constructor inside an array constructor keeps its nesting**
   ([#249](https://github.com/txjmb/jsonata-core/issues/249)), as in jsonata-js, which pushes
   a member that is an array constructor whole, with any predicates or `[]` after it.

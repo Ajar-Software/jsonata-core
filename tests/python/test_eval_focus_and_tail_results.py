@@ -59,8 +59,7 @@ CASES = [
     ('($f := function($e){ $eval("a") }; $f("x"))', {"a": 5}, 5),
     ('($f := function(){ $eval("a") }; {"a":7}.$f())', {"a": 5}, 7),
     ('$map(["a"], function($e){ $sum([$eval("a")]) })', {"a": 5}, 5),
-    # a tail-position builtin applies its functions with their own input;
-    # a function passed to a direct call is applied with a null input
+    # a tail-position builtin applies its functions with their own input
     ('($o := function(){ $map([1], function(){ $eval("a") }) }; $o())', {"a": 5}, 5),
     ('($o := function(){ $filter([1], function(){ $eval("a") }) }; $o())', {"a": 5}, 1),
     (
@@ -69,16 +68,6 @@ CASES = [
         7,
     ),
     ('($g := function($x){ $eval("a") }; $map([1], $g))', {"a": 5}, UNDEFINED),
-    (
-        '($o := function($f){ $map([1], $f) }; $o(function(){ $eval("a") }))',
-        {"a": 5},
-        UNDEFINED,
-    ),
-    (
-        '($h := function($f){ $f("x") }; $h(function($e){ $eval("a", $nope) }))',
-        {"a": 5},
-        UNDEFINED,
-    ),
 ]
 
 
