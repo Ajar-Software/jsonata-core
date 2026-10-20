@@ -52,6 +52,63 @@ fn invalid_call_message(args: &[AstNode]) -> String {
     }
 }
 
+/// Whether a call of `procedure`, a step under `#`/`@` bindings split off
+/// for a call (see `split_bound_last_step`), is rejected while parsing, as
+/// the call of the step on its own would be: a literal, a wildcard,
+/// descendant or parent step, or an array or object constructor. A step
+/// with predicates is evaluated and called, as `"f"[0]()` is.
+fn bound_call_rejected(procedure: &AstNode) -> bool {
+    match procedure {
+        AstNode::Binary {
+            op: BinaryOp::IndexBind | BinaryOp::FocusBind,
+            lhs,
+            ..
+        } => bound_call_rejected(lhs),
+        AstNode::Path { steps } => match steps.as_slice() {
+            [step] if step.stages.is_empty() => bound_call_rejected(&step.node),
+            _ => false,
+        },
+        node => !matches!(
+            node,
+            AstNode::Lambda { .. }
+                | AstNode::Block(_)
+                | AstNode::Call { .. }
+                | AstNode::Function { .. }
+                | AstNode::Regex { .. }
+                | AstNode::Variable(_)
+                | AstNode::Name(_)
+                | AstNode::Path { .. }
+                | AstNode::Binary { .. }
+                | AstNode::FunctionApplication(_)
+                | AstNode::Sort { .. }
+                | AstNode::ObjectTransform { .. }
+        ),
+    }
+}
+
+/// Makes a bound `.(expr)` step of a call's procedure its block again:
+/// `a.(f)@$v()` calls what `(f)` gives, bound, as `a.(f)()` calls `(f)`.
+fn unwrap_bound_application(procedure: &mut AstNode) {
+    match procedure {
+        AstNode::Binary {
+            op: BinaryOp::IndexBind | BinaryOp::FocusBind,
+            lhs,
+            ..
+        } => unwrap_bound_application(lhs),
+        AstNode::Path { steps } if steps.len() == 1 => {
+            let step = &mut steps[0];
+            if let AstNode::FunctionApplication(inner) = &mut step.node {
+                if matches!(**inner, AstNode::Block(_)) {
+                    step.node = std::mem::replace(&mut **inner, AstNode::Undefined);
+                    // A step with a new node is a new step (see `PathStep::id`).
+                    step.id = StepId::default();
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
 /// Whether `node` is a path node in jsonata-js, so that a group-by on it is
 /// the path's `group` rather than a step's. A name or a `.` makes a path, and
 /// so do `^` and `#` on anything; `[` and `@` keep their operand's kind. A
@@ -1015,6 +1072,15 @@ pub struct Parser {
     /// error it meets first (`$[%.id]@$v` is S0217), and is raised only if
     /// ast_transform raises nothing.
     focus_bind_first: bool,
+    /// Set while parsing the right-hand operand of a `.` (not inside any
+    /// bracket, parenthesis, brace or argument list there), where a group-by
+    /// or sort can sit under a unary minus (`a.-b^(x)@$v`). jsonata-js
+    /// binds those looser than `.`, so a `@` misplaced on one comes after
+    /// the `.`'s S0213 there: see `deferred_focus`.
+    in_dot_rhs: bool,
+    /// A misplaced `@` on a sort or group-by met in a `.`'s right-hand
+    /// operand, which goes first only if that `.` finds no S0213.
+    deferred_focus: bool,
     /// When `pending_step_error` is set, the id of the step that the `.`
     /// that noticed it added last. Postfix `[...]`, `#` and `@` after it
     /// extend that step here, but in jsonata-js they bind tighter than `.`
@@ -1064,6 +1130,24 @@ fn focus_bind_misplaced(stages: &[Stage], node: &AstNode) -> bool {
             other => focus_bind_misplaced(&[], other),
         },
         AstNode::Sort { .. } => true,
+        _ => false,
+    }
+}
+
+/// Whether the step a `@` binds in `lhs` has predicates (S0215), as opposed
+/// to being a sort or group-by (see `focus_bind_lhs_misplaced`).
+fn focus_bind_lhs_has_predicates(lhs: &AstNode) -> bool {
+    match lhs {
+        AstNode::Path { steps } => steps.last().is_some_and(|last| {
+            last.stages
+                .iter()
+                .any(|stage| !matches!(stage, Stage::KeepArray))
+        }),
+        AstNode::Binary {
+            op: BinaryOp::IndexBind,
+            lhs,
+            ..
+        } => focus_bind_lhs_has_predicates(lhs),
         _ => false,
     }
 }
@@ -1159,6 +1243,8 @@ impl Parser {
             pending_step_error: None,
             pending_dot_step: None,
             focus_bind_first: false,
+            in_dot_rhs: false,
+            deferred_focus: false,
             quoted_steps: HashSet::new(),
         })
     }
@@ -1656,11 +1742,16 @@ impl Parser {
     fn parse_expression(&mut self, min_bp: u8) -> Result<AstNode, ParserError> {
         let entry_depth = self.depth;
         self.bump_parse_depth()?;
+        // A whole expression (in brackets, an argument list, a block...) is
+        // never the operand of an enclosing `.` itself.
+        let in_dot_rhs = self.in_dot_rhs && min_bp > 0;
+        let outer_in_dot_rhs = std::mem::replace(&mut self.in_dot_rhs, in_dot_rhs);
 
         let result = stacker::maybe_grow(PARSER_RED_ZONE, PARSER_GROW_STACK_SIZE, || {
             self.parse_expression_impl(min_bp)
         });
 
+        self.in_dot_rhs = outer_in_dot_rhs;
         self.depth = entry_depth;
         result
     }
@@ -1806,7 +1897,13 @@ impl Parser {
                         }
                     } else {
                         // Normal dot path
-                        let rhs = self.parse_expression(right_bp)?;
+                        let outer_in_dot_rhs = std::mem::replace(&mut self.in_dot_rhs, true);
+                        let outer_deferred = std::mem::replace(&mut self.deferred_focus, false);
+                        let rhs = self.parse_expression(right_bp);
+                        self.in_dot_rhs = outer_in_dot_rhs;
+                        let deferred_focus =
+                            std::mem::replace(&mut self.deferred_focus, outer_deferred);
+                        let rhs = rhs?;
 
                         // Flatten path expressions
                         let mut steps = path_steps_before_dot(lhs);
@@ -1827,6 +1924,9 @@ impl Parser {
                             _ => steps.push(PathStep::new(rhs)),
                         }
                         self.check_path_literal_steps(&mut steps);
+                        if deferred_focus && self.pending_step_error.is_none() {
+                            self.focus_bind_first = true;
+                        }
 
                         // Check for following predicates and attach as stages to the last step
                         // This implements JSONata semantics where foo.bar[0] has [0] apply during extraction
@@ -2089,6 +2189,19 @@ impl Parser {
                                     let (mut context_steps, mut procedure) =
                                         split_bound_last_step(bound);
                                     self.requote_called_step(&mut procedure);
+                                    // A literal is no more callable bound than
+                                    // it is on its own (`"f"()`, `a.1()`):
+                                    // `"f"@$v()` and `a.1#$i()` are the same
+                                    // T1006 parse error.
+                                    if bound_call_rejected(&procedure) {
+                                        return Err(ParserError::InvalidSyntax(
+                                            invalid_call_message(&args),
+                                        ));
+                                    }
+                                    // A `.(expr)` step is called as its block,
+                                    // as `a.(f)()` is: in jsonata-js `(`
+                                    // takes `(f)@$v` as its procedure.
+                                    unwrap_bound_application(&mut procedure);
                                     let call = AstNode::Call {
                                         procedure: Box::new(procedure),
                                         args,
@@ -2242,10 +2355,18 @@ impl Parser {
                     // lifted off `lhs` binds looser than `.` in jsonata-js,
                     // so there the `.` came first (`1.a[0]{k: v}@$v`).
                     if !self.focus_bind_first && focus_bind_lhs_misplaced(&lhs) {
-                        let on_dot_step = path_group.is_none()
-                            && self.pending_dot_step.is_some()
-                            && self.pending_dot_step == bound_last_step_id(&lhs);
-                        self.focus_bind_first = self.pending_step_error.is_none() || on_dot_step;
+                        // On a sort or group-by inside a `.`'s operand
+                        // (`a.-b^(x)@$v`), it waits for that `.`.
+                        let loose = path_group.is_some() || !focus_bind_lhs_has_predicates(&lhs);
+                        if self.in_dot_rhs && loose {
+                            self.deferred_focus = true;
+                        } else {
+                            let on_dot_step = path_group.is_none()
+                                && self.pending_dot_step.is_some()
+                                && self.pending_dot_step == bound_last_step_id(&lhs);
+                            self.focus_bind_first =
+                                self.pending_step_error.is_none() || on_dot_step;
+                        }
                     }
 
                     self.bump_parse_depth()?;

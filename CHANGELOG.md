@@ -122,6 +122,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `[0,2,4,6,8]` and `[3,4]`), and so for `[[1,2][]]`, `[[[1,2]][0]]`, `[1,[2,3][$>0]]` and
   a constructor in an object value; `$count([[1,2][$>0]])` is 1 (it was 2). A member that is
   a path is still spliced in: `[([1,2])[$>0]]`, `[[1,2]#$i]` and `[[3,1,2]^($)]` are flat.
+- **A filter on a step that gives nothing is still evaluated once**, as in jsonata-js, whose
+  `evaluateFilter` filters `[undefined]` there: `x[$string(1,2,3)]` raises T0410 and
+  `x[[a()]]` T1006 when `x` is missing (they gave undefined). The result is still undefined,
+  and a filter that selects nothing (`x[false]`, `x[0]`) stops the later ones.
+- **Calling a bound literal is the same T1006 as calling the literal.** `"f"@$v()`,
+  `a.1@$v()` and `a.true#$i()` raise T1006 while parsing, as `"f"()` and `a.1()` do, ahead of
+  a literal-step S0213 or another member's error (`[$string(1,2,3), "f"@$v()]`). A bound
+  `.(expr)` step is called as its block: `a.(1)@$v()` is T1006 (it had no error code). A `@`
+  on a sort or group-by under a unary minus after `.` comes after that `.`'s S0213
+  (`true.-a^(x)@$v` is S0213), as both bind looser than `.` in jsonata-js.
 - **A misplaced `@` binding is reported before a literal path step**, as in jsonata-js,
   whose `processAST` checks a `@` step before the `.` around it checks its steps:
   `1[0]@$v.**.q`, `null[0]@$v.$append(a.c.$, n[])` and `1.a[0]@$v` are S0215 and

@@ -2188,6 +2188,18 @@ fn field_values(
     items: &[JValue],
     options: &EvaluatorOptions,
 ) -> Result<Vec<JValue>, EvaluatorError> {
+    field_values_of(field, items, options, false)
+}
+
+/// `field_values`, keeping an undefined value for each item without the
+/// field when `keep_undefined` is set: a step's filter stages still run on
+/// those, as in jsonata-js (see `apply_filter_stages`).
+fn field_values_of(
+    field: &str,
+    items: &[JValue],
+    options: &EvaluatorOptions,
+    keep_undefined: bool,
+) -> Result<Vec<JValue>, EvaluatorError> {
     let mut position: Option<usize> = None;
     let mut values = Vec::with_capacity(items.len());
     for item in items {
@@ -2206,7 +2218,7 @@ fn field_values(
             }
             _ => compiled_field_step(field, item, options)?,
         };
-        if !value.is_undefined() {
+        if keep_undefined || !value.is_undefined() {
             values.push(value);
         }
     }
@@ -6273,7 +6285,14 @@ impl Evaluator {
         let values = match &step.node {
             // A field step looks the field up in each item, reusing its
             // position across a homogeneous array.
-            AstNode::Name(field) => field_values(field, items, &self.options)?,
+            // Filter stages run on an item without the field too.
+            AstNode::Name(field) => {
+                let filtered = step
+                    .stages
+                    .iter()
+                    .any(|stage| matches!(stage, Stage::Filter(_)));
+                field_values_of(field, items, &self.options, filtered)?
+            }
             // `$` is each item itself.
             AstNode::Variable(name) if name.is_empty() => items.to_vec(),
             _ => self.evaluate_step_node_per_item(step, items)?,
@@ -6552,6 +6571,12 @@ impl Evaluator {
 
     /// Apply a step's filter stages, in order, to one item's result. `[]`
     /// changes nothing here; it is handled once the path has a result.
+    ///
+    /// An undefined result is still filtered, as in jsonata-js, whose
+    /// `evaluateFilter` makes it the one-item sequence `[undefined]`: each
+    /// predicate is evaluated once with an undefined context, so its errors
+    /// surface (`x[$string(1,2,3)]` is T0410 where `x` is missing), until
+    /// one selects nothing. The result stays undefined.
     fn apply_filter_stages(
         &mut self,
         mut value: JValue,
@@ -6559,10 +6584,31 @@ impl Evaluator {
     ) -> Result<JValue, EvaluatorError> {
         for stage in stages {
             if let Stage::Filter(predicate) = stage {
+                if value.is_undefined() {
+                    if !self.filter_selects_undefined(predicate)? {
+                        break;
+                    }
+                    continue;
+                }
                 value = self.evaluate_filter(predicate, value)?;
             }
         }
         Ok(value)
+    }
+
+    /// Whether jsonata-js's `evaluateFilter` keeps the item of its input
+    /// `[undefined]`: a numeric literal or a numeric selector picks the
+    /// undefined item, which it drops; any other selector keeps it when
+    /// truthy. The predicate is evaluated (not a literal) for its errors.
+    #[inline(never)]
+    fn filter_selects_undefined(&mut self, predicate: &AstNode) -> Result<bool, EvaluatorError> {
+        if numeric_literal(predicate).is_some() {
+            return Ok(false);
+        }
+        let undefined = JValue::Undefined;
+        let selector =
+            self.with_dollar_bound(&undefined, |ev| ev.evaluate_internal(predicate, &undefined))?;
+        Ok(predicate_index_match(&selector, 0, 1).is_none() && self.is_truthy(&selector))
     }
 
     /// Apply a filter predicate to a value, following jsonata-js

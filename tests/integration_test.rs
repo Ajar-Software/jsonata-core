@@ -555,21 +555,28 @@ fn on_small_stack(f: impl FnOnce() -> String + Send + 'static) -> String {
 /// (`Expression`, which uses the bytecode VM when it can) and return both
 /// outcomes as text.
 fn eval_both_engines(expr: &str, options: EvaluatorOptions) -> (String, String) {
+    eval_both_engines_on(expr, options, &JValue::Null)
+}
+
+/// `eval_both_engines` against `data`. An expression that does not parse
+/// gives its parse error on both.
+fn eval_both_engines_on(expr: &str, options: EvaluatorOptions, data: &JValue) -> (String, String) {
     fn show(r: Result<JValue, jsonata_core::evaluator::EvaluatorError>) -> String {
         match r {
             Ok(v) => format!("Ok({})", v.to_json_string().unwrap()),
             Err(e) => format!("Err({e})"),
         }
     }
-    let ast = parse(expr).unwrap();
-    let tree_walker = show(
-        Evaluator::with_options(Context::new(), options.clone()).evaluate(&ast, &JValue::Null),
-    );
-    let default = show(
-        jsonata_core::Expression::compile_with_options(expr, options)
-            .unwrap()
-            .evaluate(&JValue::Null),
-    );
+    let tree_walker = match parse(expr) {
+        Ok(ast) => {
+            show(Evaluator::with_options(Context::new(), options.clone()).evaluate(&ast, data))
+        }
+        Err(e) => format!("Err({e})"),
+    };
+    let default = match jsonata_core::Expression::compile_with_options(expr, options) {
+        Ok(compiled) => show(compiled.evaluate(data)),
+        Err(e) => format!("Err({e})"),
+    };
     (tree_walker, default)
 }
 
@@ -3671,18 +3678,7 @@ fn test_call_of_quoted_step_after_dot_is_t1006() {
         ("arr.uppercase[0]()", "T1005"),
         ("a.uppercase#$i()", "T1005"),
     ] {
-        let ast = parse(expr).unwrap();
-        let tree_walker = match Evaluator::new().evaluate(&ast, &data) {
-            Ok(v) => format!("Ok({})", v.to_json_string().unwrap()),
-            Err(e) => format!("Err({e})"),
-        };
-        let default = match jsonata_core::Expression::compile(expr)
-            .unwrap()
-            .evaluate(&data)
-        {
-            Ok(v) => format!("Ok({})", v.to_json_string().unwrap()),
-            Err(e) => format!("Err({e})"),
-        };
+        let (tree_walker, default) = eval_both_engines_on(expr, EvaluatorOptions::default(), &data);
         assert!(
             tree_walker.contains(code),
             "tree-walker: {expr} => {tree_walker}"
@@ -3887,5 +3883,87 @@ fn test_focus_binding_error_precedes_literal_step() {
             "tree-walker: {expr} => {tree_walker}"
         );
         assert!(default.contains(code), "default: {expr} => {default}");
+    }
+}
+
+// ── Calls of bound steps: literals, blocks, predicates, error order ──────────
+//
+// A literal, wildcard or constructor is no more callable under `#`/`@` than
+// on its own (`"f"()`, `a.1()`): `"f"@$v()` and `a.1#$i()` are the same T1006
+// parse error, ahead of any S0213 for the step or error elsewhere. A bound
+// `.(expr)` step is called as its block (`a.(1)@$v()` is T1006). A filter on
+// a step that gives nothing is still evaluated once, as jsonata-js's
+// `evaluateFilter` does with `[undefined]`. And a `@` on a sort or group-by
+// under a unary minus in a `.`'s operand comes after that `.`'s S0213, as
+// both bind looser than `.` in jsonata-js.
+
+#[test]
+fn test_call_of_bound_literal_and_filter_on_nothing() {
+    let data = JValue::from_json_str(
+        r##"{"a":{"b":[1,2],"c":"s","f":3},"f":5,"s":"str","arr":[{"x":1,"c":"p"},{"x":2,"c":"q"}]}"##,
+    )
+    .unwrap();
+    for (expr, code) in [
+        // A bound literal step called.
+        ("a.1@$v()", "T1006"),
+        ("a.true#$i()", "T1006"),
+        ("a.b.1#$i()", "T1006"),
+        ("a(1).true@$v()", "T1006"),
+        (r##"a."f"@$v()"##, "T1006"),
+        (r##""f"@$v(?)"##, "T1008"),
+        // A bound `.(expr)` step called.
+        (r##"a.("f")@$v()"##, "T1006"),
+        ("a.(1)@$v()", "T1006"),
+        ("*[].(1)@$v()", "T1006"),
+        ("a.(1)#$i()", "T1006"),
+        // A filter on a missing step.
+        (r##"x["f"@$v()]"##, "T1006"),
+        ("x[[1@$v()]]", "T1006"),
+        (r##"x[["f"#$i()]]"##, "T1006"),
+        ("x[[$@$v()]]", "T1006"),
+        (r##"x[(["f"@$v()])]"##, "T1006"),
+        ("x[[a@$v()]]", "T1006"),
+        ("x[[a()]]", "T1006"),
+        ("x[$string(1,2,3)]", "T0410"),
+        ("a.x[$string(1,2,3)]", "T0410"),
+        ("x[true][$string(1,2,3)]", "T0410"),
+        // In a constructor, before the errors of other members.
+        (r##"[$string(1,2,3), "f"@$v()]"##, "T1006"),
+        ("[$string(1,2,3), *@$v()]", "T1006"),
+        (r##"{"k": $error("x"), "j": "f"@$v()}"##, "T1006"),
+        ("[%^(x), 1@$v()]", "T1006"),
+        // A sort under a unary minus binds looser than `.`.
+        ("true.-a^(x)@$v", "S0213"),
+        ("true.-2^(x)@$v", "S0213"),
+        ("true[0][1].-2^(x)@$v", "S0213"),
+        ("-a^(x)@$v", "S0216"),
+        ("b.-a^(x)@$v + 1.c", "S0216"),
+        ("true.-a[0]@$v", "S0215"),
+        ("true.-$f(b^(x)@$v)", "S0216"),
+    ] {
+        let (tree_walker, default) = eval_both_engines_on(expr, EvaluatorOptions::default(), &data);
+        assert!(
+            tree_walker.contains(code),
+            "tree-walker: {expr} => {tree_walker}"
+        );
+        assert!(default.contains(code), "default: {expr} => {default}");
+    }
+    // A filter that selects nothing stops there; one on a field that is
+    // there is unchanged.
+    for (expr, expected) in [
+        ("x[false][$string(1,2,3)]", "Ok(undefined)"),
+        ("x[0][$string(1,2,3)]", "Ok(undefined)"),
+        ("$count(arr.x[true])", "Ok(2)"),
+        ("arr.x[$ > 1]", "Ok(2)"),
+        (r##"($o := [function($x){$x}]; $o#$i(3))"##, "Ok(3)"),
+    ] {
+        let (tree_walker, default) = eval_both_engines_on(expr, EvaluatorOptions::default(), &data);
+        let expected = if expected == "Ok(undefined)" {
+            format!("Ok({})", JValue::Undefined.to_json_string().unwrap())
+        } else {
+            expected.to_string()
+        };
+        assert_eq!(tree_walker, expected, "tree-walker: {expr}");
+        assert_eq!(default, expected, "default: {expr}");
     }
 }

@@ -101,6 +101,22 @@ class TestCompile:
 
     @pytest.mark.parametrize(
         "expression, code",
+        [
+            ("a.1@$v()", "T1006"),
+            ('a.("f")@$v()', "T1006"),
+            ('x["f"@$v()]', "T1006"),
+            ("x[$string(1,2,3)]", "T0410"),
+            ('[$string(1,2,3), "f"@$v()]', "T1006"),
+            ("true.-a^(x)@$v", "S0213"),
+        ],
+    )
+    def test_call_of_bound_literal_and_filter_on_nothing(self, expression, code):
+        """A bound literal call is T1006 at once, and a filter on nothing still runs."""
+        with pytest.raises(ValueError, match=code):
+            jsonatapy.compile(expression).evaluate({"a": {"b": [1, 2]}})
+
+    @pytest.mark.parametrize(
+        "expression, code",
         [("1[0]@$v.**.q", "S0215"), ("1.a[0]@$v", "S0215"), ("1.a.b[0]@$v", "S0213")],
     )
     def test_focus_binding_error_precedes_literal_step(self, expression, code):
