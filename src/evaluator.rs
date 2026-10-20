@@ -638,6 +638,34 @@ thread_local! {
     static COMPILE_DEPTH: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
+/// True when `node` is an array constructor in jsonata-js's terms: a `[...]`,
+/// with or without predicates or `[]` after it (`[1,2][$>0]`, `[[1,2]][0]`,
+/// `[1,2][]`). An array constructor member of another one is pushed whole,
+/// not spliced in (jsonata-js `evaluateUnary`: `item.value === '['`).
+///
+/// jsonata-js puts the predicates and the `[]` on the constructor node
+/// itself (parser.js `[`), so it stays a constructor; this parser carries
+/// them on a one-step path around it instead. So does a `@$v`, which stays
+/// on the constructor in jsonata-js (`[[1,2]@$v]` is `[[1,2]]`), but a
+/// `#$i` makes a path there, whose value is spliced: `[[1,2]#$i]` is `[1,2]`.
+fn is_array_constructor(node: &AstNode) -> bool {
+    match node {
+        AstNode::Array(_) => true,
+        AstNode::Path { steps } => match steps.as_slice() {
+            [step] => {
+                matches!(step.node, AstNode::Array(_))
+                    && step.index_var.is_none()
+                    && !step
+                        .stages
+                        .iter()
+                        .any(|stage| matches!(stage, Stage::Index(_)))
+            }
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
 /// Compile one AST node, declining (`None`, so the tree-walker evaluates the
 /// whole expression) once nesting passes `MAX_COMPILED_DEPTH`. Every
 /// recursive step of compilation passes through here.
@@ -841,7 +869,7 @@ fn try_compile_node(node: &AstNode, allowed_vars: Option<&[&str]>) -> Option<Com
             for elem in elems {
                 // Tag whether the element itself is an array constructor: if so, its
                 // array value must be kept nested rather than flattened (tree-walker parity).
-                let is_nested = matches!(elem, AstNode::Array(_));
+                let is_nested = is_array_constructor(elem);
                 compiled.push((try_compile_expr_inner(elem, allowed_vars)?, is_nested));
             }
             Some(CompiledExpr::ArrayConstruct(compiled))
@@ -5621,7 +5649,7 @@ impl Evaluator {
             let value = self.evaluate_internal(element, data)?;
             match value {
                 JValue::Undefined => {}
-                JValue::Array(arr) if !matches!(element, AstNode::Array(_)) => {
+                JValue::Array(arr) if !is_array_constructor(element) => {
                     flat &= arr.is_flat();
                     items.extend(arr.iter().cloned())
                 }
