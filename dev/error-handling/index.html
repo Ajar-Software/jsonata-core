@@ -2508,7 +2508,8 @@ so callers can tell which limit was hit.</p>
 the corresponding limit.</p>
 <p><strong>Note:</strong> <code>U1001</code> and <code>U1002</code> are separate, always-on safety nets (not configurable) with no
 jsonata-js equivalent. <code>U1001</code> is raised when evaluation nests deeper than 30,000 levels (about
-10,000 non-tail recursive calls; tail calls do not count), and <code>U1002</code> when an expression is
+10,000 non-tail recursive calls; tail calls do not count, and a tail-recursive loop runs without
+any iteration limit, as in jsonata-js, so set <code>timeout</code> to stop a runaway one), and <code>U1002</code> when an expression is
 nested too deeply to parse. They exist independently of any guardrail you configure and cannot be
 disabled.</p>
 <h3 id="type-errors">Type Errors<a class="headerlink" href="#type-errors" title="Permanent link">&para;</a></h3>
