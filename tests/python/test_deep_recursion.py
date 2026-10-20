@@ -321,8 +321,13 @@ _DROP_RUNNER = textwrap.dedent("""
             node = node[-1] if isinstance(node, list) else node["a"]
             depth += 1
         out["depth"] = depth
+        # The Python value is freed on the main thread below: CPython 3.13
+        # itself recurses freeing a 100,000-deep dict, and overflows a 1MB
+        # thread on macOS arm64 (and a 768KB one on Linux) with no library
+        # involved. The value's conversion and the library's own frees still
+        # run on this thread.
+        out["result"] = result
         del result, node
-        gc.collect()
         # A deep value the evaluation frees before it returns.
         out["count"] = jsonatapy.evaluate("$count([" + expr + "])", None)
 
@@ -330,6 +335,8 @@ _DROP_RUNNER = textwrap.dedent("""
     t = threading.Thread(target=run)
     t.start()
     t.join()
+    del out["result"]
+    gc.collect()
     print(json.dumps(out))
     """)
 
