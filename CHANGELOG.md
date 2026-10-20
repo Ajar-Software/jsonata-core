@@ -151,6 +151,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   which is not modelled yet, so
   `($h := function($f){ $f("x") }; $h(function($e){ $eval("a", $nope) }))` gives 5 instead
   of undefined.
+- **A string literal heading a path reads that field under its predicates, group-by, sort or
+  bindings.** `"s"{k: v}.p`, `"s"[0].k`, `"s"#$i.k` and `"s"^(v).k` read field `s`, as in
+  jsonata-js, whose `.` makes every string step of a path a name; only a bare `"s".k` did, so
+  these read the string itself and gave undefined. `"s"{k: v}.%` is the input (it was S0217).
+- **`~>` into a call of an expression's value passes the left side as the first argument.**
+  `"x" ~> $uppercase[0]()` is `"X"` and `1 ~> $o[1]()` calls `$o[1]` with 1, as in
+  jsonata-js; only a call of a named function got the left side, so these called the function
+  without it (T0410) or applied its result (T2006).
+- **A called path naming a function without its `$` raises T1005**, as in jsonata-js:
+  `uppercase#$i()`, `uppercase[0]()` and `($x := 1; x#$i())` suggest `$uppercase` and `$x`
+  instead of raising T1006. As upstream, the hint is given when the path gives nothing and
+  its first step names a builtin or a binding with a JavaScript-truthy value, and not when
+  that step is a quoted string after `.` (`a."uppercase"[0]()` is T1006).
+- **Calling a quoted string step after `.` calls the string, raising T1006.** In jsonata-js,
+  `(` takes `"f"` (or `"f"[0]`, `"f"#$i`) as its procedure before `.` makes the path's string
+  steps names, so `$o."f"("a")` and `arr."uppercase"()` are T1006; they called the function in
+  field `f`, or raised T1005.
+- **Calling a step with an index or focus binding calls what the step gives.**
+  `($o := [function($x){$x}]; $o#$i(3))` and `$o.g[0]#$i(3)` are 3, as in jsonata-js, where
+  `#` and `@` bind tighter than `.` and `(` takes the bound step as its procedure; they were
+  parse errors (T1006). A bound last step of a longer path is called in each context item.
+  `$o[0]@$v(3)` now raises the S0215 that `$o[0]@$v` does, instead of T1006.
 - **A filtered array constructor inside an array constructor keeps its nesting**
   ([#249](https://github.com/txjmb/jsonata-core/issues/249)), as in jsonata-js, which pushes
   a member that is an array constructor whole, with any predicates or `[]` after it.
@@ -158,6 +180,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `[0,2,4,6,8]` and `[3,4]`), and so for `[[1,2][]]`, `[[[1,2]][0]]`, `[1,[2,3][$>0]]` and
   a constructor in an object value; `$count([[1,2][$>0]])` is 1 (it was 2). A member that is
   a path is still spliced in: `[([1,2])[$>0]]`, `[[1,2]#$i]` and `[[3,1,2]^($)]` are flat.
+- **A filter on a step that gives nothing is still evaluated once**, as in jsonata-js, whose
+  `evaluateFilter` filters `[undefined]` there: `x[$string(1,2,3)]` raises T0410 and
+  `x[[a()]]` T1006 when `x` is missing (they gave undefined). The result is still undefined,
+  and a filter that selects nothing (`x[false]`, `x[0]`) stops the later ones. As there, a
+  sort step's filters do not run when the sort gives nothing (`x^(a)[$error("e")]`), nor do
+  those on the call after `~>`. A filter that calls nothing (`x[$ > 5]`) is not run on an
+  item without the field, as it cannot raise an error there.
+- **Calling a bound literal is the same T1006 as calling the literal.** `"f"@$v()`,
+  `a.1@$v()` and `a.true#$i()` raise T1006 while parsing, as `"f"()` and `a.1()` do, ahead of
+  a literal-step S0213 or another member's error (`[$string(1,2,3), "f"@$v()]`). A bound
+  `.(expr)` step is called as its block: `a.(1)@$v()` is T1006 (it had no error code). A `@`
+  on a sort or group-by under a unary minus after `.` comes after that `.`'s S0213
+  (`true.-a^(x)@$v` is S0213), as both bind looser than `.` in jsonata-js.
+- **A misplaced `@` binding is reported before a literal path step**, as in jsonata-js,
+  whose `processAST` checks a `@` step before the `.` around it checks its steps:
+  `1[0]@$v.**.q`, `null[0]@$v.$append(a.c.$, n[])` and `1.a[0]@$v` are S0215 and
+  `1^(x)@$v.a` is S0216 (they were S0213 since the S0213 check below covered every step).
 - **A literal used as a path step is S0213 wherever it is in the path**
   ([#248](https://github.com/txjmb/jsonata-core/issues/248)), as in jsonata-js, which checks
   every step of a path built by `.`. Only a literal right of a dot was rejected, so `null.$`,

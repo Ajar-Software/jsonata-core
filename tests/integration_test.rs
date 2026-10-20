@@ -555,21 +555,32 @@ fn on_small_stack(f: impl FnOnce() -> String + Send + 'static) -> String {
 /// (`Expression`, which uses the bytecode VM when it can) and return both
 /// outcomes as text.
 fn eval_both_engines(expr: &str, options: EvaluatorOptions) -> (String, String) {
+    eval_both_engines_with(expr, options, &JValue::Null)
+}
+
+/// `eval_both_engines` against `data`. An expression that does not parse
+/// gives its parse error on both.
+fn eval_both_engines_with(
+    expr: &str,
+    options: EvaluatorOptions,
+    data: &JValue,
+) -> (String, String) {
     fn show(r: Result<JValue, jsonata_core::evaluator::EvaluatorError>) -> String {
         match r {
             Ok(v) => format!("Ok({})", v.to_json_string().unwrap()),
             Err(e) => format!("Err({e})"),
         }
     }
-    let ast = parse(expr).unwrap();
-    let tree_walker = show(
-        Evaluator::with_options(Context::new(), options.clone()).evaluate(&ast, &JValue::Null),
-    );
-    let default = show(
-        jsonata_core::Expression::compile_with_options(expr, options)
-            .unwrap()
-            .evaluate(&JValue::Null),
-    );
+    let tree_walker = match parse(expr) {
+        Ok(ast) => {
+            show(Evaluator::with_options(Context::new(), options.clone()).evaluate(&ast, data))
+        }
+        Err(e) => format!("Err({e})"),
+    };
+    let default = match jsonata_core::Expression::compile_with_options(expr, options) {
+        Ok(compiled) => show(compiled.evaluate(data)),
+        Err(e) => format!("Err({e})"),
+    };
     (tree_walker, default)
 }
 
@@ -3712,6 +3723,254 @@ fn test_tail_builtin_runs_with_the_apply_input() {
     }
 }
 
+// ── Calling a step with an index or focus binding ────────────────────────────
+//
+// In jsonata-js `#` and `@` bind tighter than `.`, and `(` takes the bound
+// step as its procedure: `$o#$i(3)` calls what `$o#$i` gives, and
+// `$o.g[0]#$i(3)` calls `g[0]#$i` in each item of `$o`. These were parse
+// errors (T1006), which also hid the S0215 that `$o[0]@$v` raises.
+
+#[test]
+fn test_call_of_bound_step() {
+    for (expr, expected) in [
+        ("($o := [function($x){$x}]; $o#$i(3))", "Ok(3)"),
+        ("($o := function($x){$x}; $o#$i(3))", "Ok(3)"),
+        (
+            r#"($o := {"g": [function($x){$x}]}; $o.g[0]#$i(3))"#,
+            "Ok(3)",
+        ),
+        (r#"($o := {"g": [function($x){$x}]}; $o.g#$i(3))"#, "Ok(3)"),
+        (r#"$uppercase#$i("a")"#, r#"Ok("A")"#),
+        (r#"$uppercase@$i("a")"#, r#"Ok("A")"#),
+        ("($o := [function($x){$x}]; $o#$i(?)(4))", "Ok(4)"),
+        (
+            r#"($f := function($x){$x*10}; $d := [{"f":1},{"f":2}]; $d#$i.$f#$j(f+$i))"#,
+            "Ok([10,30])",
+        ),
+        (
+            r#"($f := function($x){$x*10}; $d := [{"f":1},{"f":2}]; $d@$v.$f@$w($v.f))"#,
+            "Ok([10,20])",
+        ),
+    ] {
+        let (tree_walker, default) = eval_both_engines(expr, EvaluatorOptions::default());
+        assert_eq!(tree_walker, expected, "tree-walker: {expr}");
+        assert_eq!(default, expected, "default: {expr}");
+    }
+}
+
+#[test]
+fn test_call_of_bound_step_errors() {
+    for (expr, code) in [
+        ("($o := [function($x){$x}]; $o[0]@$v(3))", "S0215"),
+        (
+            r#"($o := {"g": [function($x){$x}]}; $o.g[0]@$v(3))"#,
+            "S0215",
+        ),
+        // A focus binding keeps the context, which is not a function.
+        ("($o := [function($x){$x}]; $o@$v(3))", "T1006"),
+        // Two functions are an array, not a function.
+        (
+            "($o := [function($x){$x}, function($x){$x}]; $o#$i(3))",
+            "T1006",
+        ),
+        ("[1,2]#$i(3)", "T1006"),
+    ] {
+        // S0215 is raised by the parser, the others when evaluating.
+        if let Err(e) = parse(expr) {
+            assert!(format!("{e:?}").contains(code), "parse: {expr} => {e:?}");
+            continue;
+        }
+        let (tree_walker, default) = eval_both_engines(expr, EvaluatorOptions::default());
+        assert!(
+            tree_walker.contains(code),
+            "tree-walker: {expr} => {tree_walker}"
+        );
+        assert!(default.contains(code), "default: {expr} => {default}");
+    }
+}
+
+// ── T1005 for a called path that names a function ────────────────────────────
+//
+// jsonata-js raises T1005 ("Did you mean $name?") when a call's procedure
+// path gives nothing and its first step's name is bound in the environment
+// to a (JavaScript-)truthy value: a builtin, or a `$name` binding.
+
+#[test]
+fn test_call_of_path_naming_a_function_is_t1005() {
+    for (expr, code) in [
+        ("uppercase#$i()", "T1005"),
+        ("uppercase@$i()", "T1005"),
+        ("uppercase[0]()", "T1005"),
+        (r#"($a := "x"; $a.uppercase#$i())"#, "T1005"),
+        ("($x := 1; x#$i())", "T1005"),
+        ("($uppercase := 0; uppercase#$i())", "T1006"),
+        (r##""uppercase"#$i()"##, "T1006"),
+        ("foo#$i()", "T1006"),
+    ] {
+        let (tree_walker, default) = eval_both_engines(expr, EvaluatorOptions::default());
+        assert!(
+            tree_walker.contains(code),
+            "tree-walker: {expr} => {tree_walker}"
+        );
+        assert!(default.contains(code), "default: {expr} => {default}");
+    }
+}
+
+// ── `~>` into a call of an expression's value ────────────────────────────────
+//
+// jsonata-js invokes any function call on the right of `~>` with the left
+// side as its first argument, including a call whose procedure is an
+// expression (`$uppercase[0]()`, `$o[1]()`, `$o#$i(4)`). Only a call of a
+// named function did; the others were evaluated as calls first (T0410,
+// T2006).
+
+#[test]
+fn test_chain_into_call_of_expression() {
+    for (expr, expected) in [
+        (r#""x" ~> $uppercase[0]()"#, r#"Ok("X")"#),
+        (
+            "($o := [function(){1}, function($v){$v+10}]; 1 ~> $o[1]())",
+            "Ok(11)",
+        ),
+        ("($o := [function($a,$b){$a-$b}]; 10 ~> $o[0](3))", "Ok(7)"),
+        (
+            "($o := [function($a,$b){$a-$b}]; 10 ~> $o[0](?, 3))",
+            "Ok(7)",
+        ),
+        ("($o := [function($a,$b){$a-$b}]; 10 ~> $o#$i(4))", "Ok(6)"),
+        ("($o := [function($a){[$a]}]; 10 ~> $o[0]()[])", "Ok([10])"),
+        (
+            "($o := [function($x){$count($x)}]; nope ~> $o[0]())",
+            "Ok(0)",
+        ),
+        ("1 ~> $string[0]()", r#"Ok("1")"#),
+    ] {
+        let (tree_walker, default) = eval_both_engines(expr, EvaluatorOptions::default());
+        assert_eq!(tree_walker, expected, "tree-walker: {expr}");
+        assert_eq!(default, expected, "default: {expr}");
+    }
+    for (expr, code) in [
+        ("($o := [1]; 10 ~> $o[0]())", "T1006"),
+        ("10 ~> uppercase[0]()", "T1005"),
+    ] {
+        let (tree_walker, default) = eval_both_engines(expr, EvaluatorOptions::default());
+        assert!(
+            tree_walker.contains(code),
+            "tree-walker: {expr} => {tree_walker}"
+        );
+        assert!(default.contains(code), "default: {expr} => {default}");
+    }
+}
+
+// ── A string literal heading a path is a name step ───────────────────────────
+//
+// jsonata-js's `.` turns every string literal step of a path into a name,
+// along with the predicates, group-by, sort or bindings it carries. Only a
+// bare string was converted, so `"s"{k: v}.p`, `"s"[0].k` and `"s"#$i.k`
+// read the string itself and gave undefined.
+
+#[test]
+fn test_string_literal_heading_path_is_name_step() {
+    let data = JValue::from_json_str(
+        r##"{"s":[{"k":"p","v":1},{"k":"q","v":2},{"k":"p","v":3}],"a":[{"b":"x","c":1},{"b":"y","c":2}]}"##,
+    )
+    .unwrap();
+    let show = |r: Result<JValue, jsonata_core::evaluator::EvaluatorError>| match r {
+        Ok(v) => format!("Ok({})", v.to_json_string().unwrap()),
+        Err(e) => format!("Err({e})"),
+    };
+    let root = format!("Ok({})", data.to_json_string().unwrap());
+    for (expr, expected) in [
+        (r##""s"{k: v}.p"##, "Ok([1,3])"),
+        (r##""s"{k: v}.$keys()"##, r##"Ok(["p","q"])"##),
+        (r##""a"{b: c}.$keys()"##, r##"Ok(["x","y"])"##),
+        (r##""s"[0]{k: v}.p"##, "Ok(1)"),
+        (r##""s"[k="p"]{k: v}.p"##, "Ok([1,3])"),
+        (r##""s"{k: v}.p[0]"##, "Ok(1)"),
+        (r##""s"[0].k"##, r##"Ok("p")"##),
+        (r##""s"[].k"##, r##"Ok(["p","q","p"])"##),
+        (r##""s"#$i.(k & $i)"##, r##"Ok(["p0","q1","p2"])"##),
+        (r##""s"^(v).k"##, r##"Ok(["p","q","p"])"##),
+        (r##""s"{k: v}.%"##, root.as_str()),
+        (r##""s"[0]{k: v}.%"##, root.as_str()),
+        (r##""s"[0]{k: v}.p.%"##, r##"Ok({"p":1})"##),
+        // Unchanged: a block is not a step to convert, and a string with no
+        // `.` after it is a string.
+        (r##"("s"){k: v}.p"##, "Ok(undefined)"),
+        (r##""s"[0]"##, r##"Ok("s")"##),
+        (r##""s"{k: v}"##, "Ok({})"),
+    ] {
+        let ast = parse(expr).unwrap();
+        let tree_walker = show(Evaluator::new().evaluate(&ast, &data));
+        let default = show(
+            jsonata_core::Expression::compile(expr)
+                .unwrap()
+                .evaluate(&data),
+        );
+        let expected = if expected == "Ok(undefined)" {
+            show(Ok(JValue::Undefined))
+        } else {
+            expected.to_string()
+        };
+        assert_eq!(tree_walker, expected, "tree-walker: {expr}");
+        assert_eq!(default, expected, "default: {expr}");
+    }
+}
+
+// ── Calling a quoted string step after `.` ───────────────────────────────────
+//
+// In jsonata-js, `(` takes `"f"[0]`, `"f"#$i` or `"f"` as the procedure
+// before `.` turns the path's string steps into names, so the procedure is
+// the string: calling it is T1006, never the T1005 `$`-hint a called name
+// gets, and never a call of the field it would name.
+
+#[test]
+fn test_call_of_quoted_step_after_dot_is_t1006() {
+    let data = JValue::from_json_str(r#"{"arr":[{"x":1}],"a":{}}"#).unwrap();
+    for (expr, code) in [
+        (r##"arr."uppercase"[0]()"##, "T1006"),
+        (r##"a."uppercase"[0]()"##, "T1006"),
+        (r##"arr."uppercase"#$i()"##, "T1006"),
+        (r##"a."uppercase"#$i()"##, "T1006"),
+        (r##"arr."uppercase"@$v()"##, "T1006"),
+        (r##"arr."string"[0]()"##, "T1006"),
+        (r##""z" ~> a."uppercase"[0]()"##, "T1006"),
+        (r##"($foo := function(){1}; arr."foo"[0]())"##, "T1006"),
+        (r##"($foo := 1; a."foo"@$v())"##, "T1006"),
+        (r##"arr."uppercase"()"##, "T1006"),
+        (r##"arr."uppercase"{"k":1}()"##, "T1006"),
+        (r##"($o := {"f": $uppercase}; $o."f"("a"))"##, "T1006"),
+        (r##"($o := {"f": [$uppercase]}; $o."f"#$i("a"))"##, "T1006"),
+        // A backquoted or bare name is a name: T1005 suggests `$uppercase`.
+        ("`uppercase`[0]()", "T1005"),
+        ("arr.`uppercase`[0]()", "T1005"),
+        ("arr.uppercase[0]()", "T1005"),
+        ("a.uppercase#$i()", "T1005"),
+    ] {
+        let (tree_walker, default) =
+            eval_both_engines_with(expr, EvaluatorOptions::default(), &data);
+        assert!(
+            tree_walker.contains(code),
+            "tree-walker: {expr} => {tree_walker}"
+        );
+        assert!(default.contains(code), "default: {expr} => {default}");
+    }
+    // An unquoted name step calls the function its field holds.
+    for expr in [
+        r##"($o := {"f": $uppercase}; $o.f("a"))"##,
+        r##"($o := {"f": $uppercase}; $o.`f`("a"))"##,
+    ] {
+        let ast = parse(expr).unwrap();
+        let tree_walker = Evaluator::new().evaluate(&ast, &data).unwrap();
+        let default = jsonata_core::Expression::compile(expr)
+            .unwrap()
+            .evaluate(&data)
+            .unwrap();
+        assert_eq!(tree_walker, JValue::from(json!("A")), "tree-walker: {expr}");
+        assert_eq!(default, JValue::from(json!("A")), "default: {expr}");
+    }
+}
+
 // ── Literal path steps (#248) ────────────────────────────────────────────────
 //
 // jsonata-js's `processAST` (parser.js, binary `.`) checks every step of a
@@ -3916,5 +4175,185 @@ fn test_tail_builtin_applies_its_functions_raw() {
         let (tree_walker, default) = eval_both_engines_on(expr, json!({"a": 5, "b": {"a": 7}}));
         assert_eq!(tree_walker, expected, "tree-walker: {expr}");
         assert_eq!(default, expected, "default: {expr}");
+    }
+}
+
+// ── A misplaced `@` beats a literal step ─────────────────────────────────────
+//
+// jsonata-js's `processAST` checks a `@` step (S0215 after a predicate,
+// S0216 after a sort) while processing an operand, before the `.` around it
+// checks for literal steps (S0213). `#`, `@` and `[...]` bind tighter than
+// `.` there, so `1.a[0]@$v` is S0215 too, while a group-by or sort, which
+// bind looser, leave the `.` first.
+
+#[test]
+fn test_focus_binding_error_precedes_literal_step() {
+    for (expr, code) in [
+        ("1[0]@$v.**.q", "S0215"),
+        ("null[0]@$v.$append(a.c.$, n[])", "S0215"),
+        ("1[0]@$v.a", "S0215"),
+        ("true[0]@$v.a", "S0215"),
+        ("a[0]@$v.1", "S0215"),
+        ("$x[0]@$v.true", "S0215"),
+        ("[1][0]@$v.2", "S0215"),
+        ("1[0]#$i@$v.a", "S0215"),
+        ("1^(x)@$v.a", "S0216"),
+        ("a^(x)@$v.null", "S0216"),
+        ("b[0]@$v + 1.a", "S0215"),
+        ("1.a[0]@$v", "S0215"),
+        ("a.1[0]@$v", "S0215"),
+        ("a.null[0]@$v", "S0215"),
+        ("1.a[0]#$i@$v", "S0215"),
+        ("1.a@$u[0]@$v", "S0215"),
+        ("1.(a)[0]@$v", "S0215"),
+        ("1.a[0]@$v.2", "S0215"),
+        // The `.` comes first.
+        ("1.a + b[0]@$v", "S0213"),
+        ("(1.a)[0]@$v", "S0213"),
+        ("1.a.b[0]@$v", "S0213"),
+        ("1.a^(x)@$v", "S0213"),
+        (r#"1.a[0]{"k":1}@$v"#, "S0213"),
+        ("1[]@$v.a", "S0213"),
+    ] {
+        let tree_walker = parse(expr).unwrap_err().to_string();
+        let default = jsonata_core::Expression::compile(expr)
+            .err()
+            .unwrap_or_else(|| panic!("{expr} compiled"))
+            .to_string();
+        assert!(
+            tree_walker.contains(code),
+            "tree-walker: {expr} => {tree_walker}"
+        );
+        assert!(default.contains(code), "default: {expr} => {default}");
+    }
+}
+
+// ── Calls of bound steps: literals, blocks, predicates, error order ──────────
+//
+// A literal, wildcard or constructor is no more callable under `#`/`@` than
+// on its own (`"f"()`, `a.1()`): `"f"@$v()` and `a.1#$i()` are the same T1006
+// parse error, ahead of any S0213 for the step or error elsewhere. A bound
+// `.(expr)` step is called as its block (`a.(1)@$v()` is T1006). A filter on
+// a step that gives nothing is still evaluated once, as jsonata-js's
+// `evaluateFilter` does with `[undefined]`. And a `@` on a sort or group-by
+// under a unary minus in a `.`'s operand comes after that `.`'s S0213, as
+// both bind looser than `.` in jsonata-js.
+
+#[test]
+fn test_call_of_bound_literal_and_filter_on_nothing() {
+    let data = JValue::from_json_str(
+        r##"{"a":{"b":[1,2],"c":"s","f":3},"f":5,"s":"str","arr":[{"x":1,"c":"p"},{"x":2,"c":"q"}]}"##,
+    )
+    .unwrap();
+    for (expr, code) in [
+        // A bound literal step called.
+        ("a.1@$v()", "T1006"),
+        ("a.true#$i()", "T1006"),
+        ("a.b.1#$i()", "T1006"),
+        ("a(1).true@$v()", "T1006"),
+        (r##"a."f"@$v()"##, "T1006"),
+        (r##""f"@$v(?)"##, "T1008"),
+        // A bound `.(expr)` step called.
+        (r##"a.("f")@$v()"##, "T1006"),
+        ("a.(1)@$v()", "T1006"),
+        ("*[].(1)@$v()", "T1006"),
+        ("a.(1)#$i()", "T1006"),
+        // A filter on a missing step.
+        (r##"x["f"@$v()]"##, "T1006"),
+        ("x[[1@$v()]]", "T1006"),
+        (r##"x[["f"#$i()]]"##, "T1006"),
+        ("x[[$@$v()]]", "T1006"),
+        (r##"x[(["f"@$v()])]"##, "T1006"),
+        ("x[[a@$v()]]", "T1006"),
+        ("x[[a()]]", "T1006"),
+        ("x[$string(1,2,3)]", "T0410"),
+        ("a.x[$string(1,2,3)]", "T0410"),
+        ("x[true][$string(1,2,3)]", "T0410"),
+        // In a constructor, before the errors of other members.
+        (r##"[$string(1,2,3), "f"@$v()]"##, "T1006"),
+        ("[$string(1,2,3), *@$v()]", "T1006"),
+        (r##"{"k": $error("x"), "j": "f"@$v()}"##, "T1006"),
+        ("[%^(x), 1@$v()]", "T1006"),
+        // A sort under a unary minus binds looser than `.`.
+        ("true.-a^(x)@$v", "S0213"),
+        ("true.-2^(x)@$v", "S0213"),
+        ("true[0][1].-2^(x)@$v", "S0213"),
+        ("-a^(x)@$v", "S0216"),
+        ("b.-a^(x)@$v + 1.c", "S0216"),
+        ("true.-a[0]@$v", "S0215"),
+        ("true.-$f(b^(x)@$v)", "S0216"),
+    ] {
+        let (tree_walker, default) =
+            eval_both_engines_with(expr, EvaluatorOptions::default(), &data);
+        assert!(
+            tree_walker.contains(code),
+            "tree-walker: {expr} => {tree_walker}"
+        );
+        assert!(default.contains(code), "default: {expr} => {default}");
+    }
+    // A filter that selects nothing stops there; one on a field that is
+    // there is unchanged.
+    for (expr, expected) in [
+        ("x[false][$string(1,2,3)]", "Ok(undefined)"),
+        ("x[0][$string(1,2,3)]", "Ok(undefined)"),
+        ("$count(arr.x[true])", "Ok(2)"),
+        ("arr.x[$ > 1]", "Ok(2)"),
+        (r##"($o := [function($x){$x}]; $o#$i(3))"##, "Ok(3)"),
+    ] {
+        let (tree_walker, default) =
+            eval_both_engines_with(expr, EvaluatorOptions::default(), &data);
+        let expected = if expected == "Ok(undefined)" {
+            format!("Ok({})", JValue::Undefined.to_json_string().unwrap())
+        } else {
+            expected.to_string()
+        };
+        assert_eq!(tree_walker, expected, "tree-walker: {expr}");
+        assert_eq!(default, expected, "default: {expr}");
+    }
+}
+
+// ── No filter on nothing after a sort or a `~>` call ─────────────────────────
+//
+// jsonata-js's evaluatePath stops at a step that gives nothing, so a sort
+// step's filters do not run when the sort's input is undefined; and `~>`
+// never filters its call's result, so an undefined one is not filtered.
+
+#[test]
+fn test_no_filter_on_nothing_after_sort_or_chain() {
+    let data = JValue::from_json_str(r##"{"a":{"b":[1,2]}}"##).unwrap();
+    let undefined = format!("Ok({})", JValue::Undefined.to_json_string().unwrap());
+    for (expr, expected) in [
+        (r##"x^(a)[$error("e")]"##, undefined.as_str()),
+        (r##"(x)^(a)[$error("e")]"##, undefined.as_str()),
+        (r##"x^(a)^(b)[$error("e")]"##, undefined.as_str()),
+        (r##"$exists(x^(c)[$error("e")])"##, "Ok(false)"),
+        (r##"$lookup({},"a")^($)[$error("e")]"##, undefined.as_str()),
+        (r##"a.x^(c)[$error("e")]"##, undefined.as_str()),
+        (
+            r##"($f:=function($x){()}; 1 ~> $f()[$error("e")])"##,
+            undefined.as_str(),
+        ),
+        (r##"x ~> $string()[$error("e")]"##, undefined.as_str()),
+        // The documented divergence: a defined call result is filtered.
+        (r##""z" ~> $append([1])[0]"##, r##"Ok("z")"##),
+    ] {
+        let (tree_walker, default) =
+            eval_both_engines_with(expr, EvaluatorOptions::default(), &data);
+        assert_eq!(tree_walker, expected, "tree-walker: {expr}");
+        assert_eq!(default, expected, "default: {expr}");
+    }
+    // A filter on a value that is not a path step still runs on nothing.
+    for (expr, code) in [
+        (r##"(x)[$error("e")]"##, "D3137"),
+        (r##"$x[$error("e")]"##, "D3137"),
+        ("a.(x)[$string(1,2,3)]", "T0410"),
+    ] {
+        let (tree_walker, default) =
+            eval_both_engines_with(expr, EvaluatorOptions::default(), &data);
+        assert!(
+            tree_walker.contains(code),
+            "tree-walker: {expr} => {tree_walker}"
+        );
+        assert!(default.contains(code), "default: {expr} => {default}");
     }
 }

@@ -1686,8 +1686,14 @@ fn seek_parent_step_impl(
         },
         // A group-by on a bare `*` or `%` as a step (`*{...}.%`): jsonata-js
         // puts the group on that node, so seekParent sees a wildcard, tagged
-        // here as one, or a parent, which adds a level (#209).
-        AstNode::ObjectTransform { input, .. } if matches!(**input, AstNode::Wildcard) => {
+        // here as one, or a parent, which adds a level (#209). A string
+        // literal heading a path is a name step there, group and all
+        // (`"s"{k: v}.%`), so it is tagged as a name is.
+        AstNode::ObjectTransform { input, .. }
+            if matches!(**input, AstNode::Wildcard | AstNode::Name(_))
+                || matches!(&**input, AstNode::Path { steps }
+                    if steps.len() == 1 && matches!(steps[0].node, AstNode::Name(_))) =>
+        {
             Ok(tag_ancestor_step(step, label, level, state))
         }
         AstNode::ObjectTransform { input, .. } if matches!(**input, AstNode::Parent(_)) => {

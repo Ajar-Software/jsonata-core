@@ -74,6 +74,89 @@ class TestCompile:
         with pytest.raises(ValueError, match="T1006"):
             jsonatapy.compile("($o := [1]; $o[0]())").evaluate(None)
 
+    @pytest.mark.parametrize(
+        "expression",
+        [
+            "($o := [function($x){$x}]; $o#$i(3))",
+            '($o := {"g": [function($x){$x}]}; $o.g[0]#$i(3))',
+        ],
+    )
+    def test_call_of_bound_step(self, expression):
+        """Calling a step with an index binding calls what the step gives.
+
+        It was a parse error (T1006); jsonata-js's `(` takes the bound step
+        as its procedure.
+        """
+        assert jsonatapy.compile(expression).evaluate(None) == 3
+
+    def test_call_of_focus_bound_predicated_step_raises_s0215(self):
+        """A focus binding after a predicate is S0215, called or not."""
+        with pytest.raises(ValueError, match="S0215"):
+            jsonatapy.compile("($o := [function($x){$x}]; $o[0]@$v(3))").evaluate(None)
+
+    def test_call_of_bound_builtin_name_raises_t1005(self):
+        """A called path naming a builtin without its `$` is T1005, as in jsonata-js."""
+        with pytest.raises(ValueError, match="T1005"):
+            jsonatapy.compile("uppercase#$i()").evaluate(None)
+
+    @pytest.mark.parametrize(
+        "expression, code",
+        [
+            ("a.1@$v()", "T1006"),
+            ('a.("f")@$v()', "T1006"),
+            ('x["f"@$v()]', "T1006"),
+            ("x[$string(1,2,3)]", "T0410"),
+            ('[$string(1,2,3), "f"@$v()]', "T1006"),
+            ("true.-a^(x)@$v", "S0213"),
+        ],
+    )
+    def test_call_of_bound_literal_and_filter_on_nothing(self, expression, code):
+        """A bound literal call is T1006 at once, and a filter on nothing still runs."""
+        with pytest.raises(ValueError, match=code):
+            jsonatapy.compile(expression).evaluate({"a": {"b": [1, 2]}})
+
+    @pytest.mark.parametrize(
+        "expression, code",
+        [("1[0]@$v.**.q", "S0215"), ("1.a[0]@$v", "S0215"), ("1.a.b[0]@$v", "S0213")],
+    )
+    def test_focus_binding_error_precedes_literal_step(self, expression, code):
+        """A misplaced `@` in an operand of `.` is raised before its literal step."""
+        with pytest.raises(ValueError, match=code):
+            jsonatapy.compile(expression)
+
+    @pytest.mark.parametrize(
+        "expression",
+        ['arr."uppercase"[0]()', 'a."uppercase"#$i()', '($o := {"f": $uppercase}; $o."f"("a"))'],
+    )
+    def test_call_of_quoted_step_after_dot_raises_t1006(self, expression):
+        """A called quoted string step is the string, as in jsonata-js: T1006, not T1005."""
+        with pytest.raises(ValueError, match="T1006"):
+            jsonatapy.compile(expression).evaluate({"arr": [{"x": 1}], "a": {}})
+
+    @pytest.mark.parametrize(
+        "expression, expected",
+        [
+            ('"x" ~> $uppercase[0]()', "X"),
+            ("($o := [function(){1}, function($v){$v+10}]; 1 ~> $o[1]())", 11),
+        ],
+    )
+    def test_chain_into_call_of_indexed_function(self, expression, expected):
+        """`~>` passes its left side as the first argument of any call on its right."""
+        assert jsonatapy.compile(expression).evaluate(None) == expected
+
+    @pytest.mark.parametrize(
+        "expression, expected",
+        [
+            ('"s"{k: v}.p', [1, 3]),
+            ('"s"[0].k', "p"),
+            ('"s"#$i.k', ["p", "q", "p"]),
+        ],
+    )
+    def test_string_literal_heading_path_is_name_step(self, expression, expected):
+        """A string heading a path reads that field, under its predicates and group-by."""
+        data = {"s": [{"k": "p", "v": 1}, {"k": "q", "v": 2}, {"k": "p", "v": 3}]}
+        assert jsonatapy.compile(expression).evaluate(data) == expected
+
 
 class TestJsonataExpression:
     """Tests for JsonataExpression class"""

@@ -2202,6 +2202,17 @@ fn field_values(
     items: &[JValue],
     options: &EvaluatorOptions,
 ) -> Result<Vec<JValue>, EvaluatorError> {
+    field_values_of::<false>(field, items, options)
+}
+
+/// `field_values`, keeping an undefined value for each item without the
+/// field when `KEEP_UNDEFINED` is set: a step's filter stages still run on
+/// those, as in jsonata-js (see `apply_filter_stages`).
+fn field_values_of<const KEEP_UNDEFINED: bool>(
+    field: &str,
+    items: &[JValue],
+    options: &EvaluatorOptions,
+) -> Result<Vec<JValue>, EvaluatorError> {
     let mut position: Option<usize> = None;
     let mut values = Vec::with_capacity(items.len());
     for item in items {
@@ -2220,7 +2231,7 @@ fn field_values(
             }
             _ => compiled_field_step(field, item, options)?,
         };
-        if !value.is_undefined() {
+        if KEEP_UNDEFINED || !value.is_undefined() {
             values.push(value);
         }
     }
@@ -5516,7 +5527,7 @@ impl Evaluator {
                 // a partial application or a composition. A `?` argument makes a
                 // partial application; anything that is not a function is T1006.
                 let callable = self.evaluate_internal(procedure, data)?;
-                self.apply_call_value(callable, args, data)
+                self.apply_call_value(callable, procedure, args, data)
             }
 
             AstNode::Conditional {
@@ -5748,6 +5759,26 @@ impl Evaluator {
                 };
             }
         }
+        // A call of an expression's value, such as `$uppercase[0]()` or
+        // `$o[1]()`: as jsonata-js `evaluateFunction` with the left side as
+        // its context, which goes first among the arguments.
+        if let AstNode::Call { procedure, args } = call {
+            if !args.iter().any(|a| matches!(a, AstNode::Placeholder)) {
+                let lhs_value = self.evaluate_internal(lhs, data)?;
+                let callable = self.evaluate_internal(procedure, data)?;
+                self.check_callable(&callable, procedure)?;
+                let mut values = Vec::with_capacity(args.len() + 1);
+                values.push(lhs_value);
+                for arg in args {
+                    values.push(self.evaluate_internal(arg, data)?);
+                }
+                let result = self.call_function_value(&callable, &values, data)?;
+                return match path_steps {
+                    Some(steps) => self.finish_chained_path(steps, result),
+                    None => Ok(result.unwrap_sequence()),
+                };
+            }
+        }
 
         let lhs_value = self.evaluate_internal(lhs, data)?;
         // An inline lambda applied to a value is invoked directly, without
@@ -5918,7 +5949,8 @@ impl Evaluator {
 
     /// Finish a `~>` whose right side is a call with a filter or `[]`
     /// (`x ~> $f()[0]`), given that call's result: the call step's filter
-    /// stages, then `[]`, as for any path.
+    /// stages, then `[]`, as for any path. jsonata-js does not filter the
+    /// call's result at all, so an undefined one is not filtered either.
     fn finish_chained_path(
         &mut self,
         steps: &[PathStep],
@@ -6015,7 +6047,12 @@ impl Evaluator {
         // sequence.
         if Self::is_non_path(steps) && !Self::step_creates_tuple(first) && !first.is_tuple {
             let value = self.evaluate_unwrapped_later(&first.node, data)?;
-            let mut value = self.apply_filter_stages(value, &first.stages)?;
+            // jsonata-js filters an undefined value too (`$x[$f()]`).
+            let mut value = if value.is_undefined() && Self::filters_run_on_nothing(&first.stages) {
+                self.filter_undefined(&first.stages)?
+            } else {
+                self.apply_filter_stages(value, &first.stages)?
+            };
             if Self::path_keeps_singleton_array(steps) {
                 keep_if_sequence(&mut value);
             }
@@ -6295,6 +6332,8 @@ impl Evaluator {
         });
         self.keep_tuple_stream = saved;
         let (value, cons_single) = sorted?;
+        // jsonata-js's evaluatePath stops at a step that gives nothing, so
+        // the sort step's stages do not run then (`x^(a)[$error("e")]`).
         let value = self.apply_filter_stages(value, &step.stages)?;
         // A sort of a consarray first step's single value gives it
         // back as is, which the next step reads as no items, as for
@@ -6362,17 +6401,51 @@ impl Evaluator {
         items: &[JValue],
         last_step: bool,
     ) -> Result<JValue, EvaluatorError> {
+        let run_on_nothing = Self::filters_run_on_nothing(&step.stages);
         let values = match &step.node {
             // A field step looks the field up in each item, reusing its
             // position across a homogeneous array.
+            // Filter stages run on an item without the field too, where
+            // that can raise an error (see `filters_run_on_nothing`).
+            AstNode::Name(field) if run_on_nothing => {
+                field_values_of::<true>(field, items, &self.options)?
+            }
             AstNode::Name(field) => field_values(field, items, &self.options)?,
             // `$` is each item itself.
             AstNode::Variable(name) if name.is_empty() => items.to_vec(),
             _ => self.evaluate_step_node_per_item(step, items)?,
         };
+        if run_on_nothing {
+            return self.filter_step_values(step, values, last_step);
+        }
         let mut results = Vec::with_capacity(values.len());
         for value in values {
             let value = self.apply_filter_stages(value, &step.stages)?;
+            if !value.is_undefined() {
+                results.push(value);
+            }
+        }
+        check_sequence_length(results.len(), &self.options)?;
+        Ok(collect_step_results(results, last_step))
+    }
+
+    /// The end of `evaluate_step_items` for filter stages that run on an
+    /// undefined value too (`filter_undefined`). Kept out of line, off the
+    /// hot path.
+    #[inline(never)]
+    fn filter_step_values(
+        &mut self,
+        step: &PathStep,
+        values: Vec<JValue>,
+        last_step: bool,
+    ) -> Result<JValue, EvaluatorError> {
+        let mut results = Vec::with_capacity(values.len());
+        for value in values {
+            let value = if value.is_undefined() {
+                self.filter_undefined(&step.stages)?
+            } else {
+                self.apply_filter_stages(value, &step.stages)?
+            };
             if !value.is_undefined() {
                 results.push(value);
             }
@@ -6499,6 +6572,78 @@ impl Evaluator {
             }
         }
         Ok(JValue::object(result))
+    }
+
+    /// Whether a field step's filter `stages` are run on an item without
+    /// the field (see `apply_filter_stages`): not when the first is a
+    /// position, which selects nothing there and stops the rest (`x[0]`),
+    /// or when none calls anything (`x[$ > 5]`). Those keep the faster
+    /// lookup that drops such items, as the compiled path does.
+    #[inline(never)]
+    fn filters_run_on_nothing(stages: &[Stage]) -> bool {
+        let first_selects = stages
+            .iter()
+            .find_map(|stage| match stage {
+                Stage::Filter(predicate) => Some(numeric_literal(predicate).is_none()),
+                _ => None,
+            })
+            .unwrap_or(false);
+        first_selects
+            && stages.iter().any(
+                |stage| matches!(stage, Stage::Filter(predicate) if Self::may_raise_on_nothing(predicate)),
+            )
+    }
+
+    /// False when `node` makes no call (of a function, lambda or `~>`), the
+    /// only way a filter evaluated with nothing as its context raises an
+    /// error that matters here: operators on undefined give undefined.
+    /// Unknown kinds of node count as calling.
+    fn may_raise_on_nothing(node: &AstNode) -> bool {
+        match node {
+            AstNode::String(_)
+            | AstNode::Name(_)
+            | AstNode::Number(_)
+            | AstNode::Boolean(_)
+            | AstNode::Null
+            | AstNode::Undefined
+            | AstNode::Regex { .. }
+            | AstNode::ParentVariable(_)
+            | AstNode::Parent(_)
+            | AstNode::Wildcard
+            | AstNode::Descendant
+            | AstNode::Variable(_) => false,
+            AstNode::Path { steps } => steps.iter().any(|step| {
+                Self::may_raise_on_nothing(&step.node)
+                    || step.stages.iter().any(|stage| match stage {
+                        Stage::Filter(expr) => Self::may_raise_on_nothing(expr),
+                        _ => false,
+                    })
+            }),
+            AstNode::Binary { op, lhs, rhs } => {
+                *op == BinaryOp::ChainPipe
+                    || Self::may_raise_on_nothing(lhs)
+                    || Self::may_raise_on_nothing(rhs)
+            }
+            AstNode::Unary { operand, .. } => Self::may_raise_on_nothing(operand),
+            AstNode::Array(items) | AstNode::ArrayGroup(items) | AstNode::Block(items) => {
+                items.iter().any(Self::may_raise_on_nothing)
+            }
+            AstNode::Object(pairs) => pairs.iter().any(|(key, value)| {
+                Self::may_raise_on_nothing(key) || Self::may_raise_on_nothing(value)
+            }),
+            AstNode::Conditional {
+                condition,
+                then_branch,
+                else_branch,
+            } => {
+                Self::may_raise_on_nothing(condition)
+                    || Self::may_raise_on_nothing(then_branch)
+                    || else_branch
+                        .as_deref()
+                        .is_some_and(Self::may_raise_on_nothing)
+            }
+            _ => true,
+        }
     }
 
     /// False when evaluating `node` cannot read the `$` binding, so an
@@ -6643,7 +6788,9 @@ impl Evaluator {
     }
 
     /// Apply a step's filter stages, in order, to one item's result. `[]`
-    /// changes nothing here; it is handled once the path has a result.
+    /// changes nothing here; it is handled once the path has a result. An
+    /// undefined value stays undefined, its filters not run; see
+    /// `filter_undefined` for where jsonata-js runs them.
     fn apply_filter_stages(
         &mut self,
         mut value: JValue,
@@ -6655,6 +6802,40 @@ impl Evaluator {
             }
         }
         Ok(value)
+    }
+
+    /// A step's filter stages on an undefined value, as jsonata-js's
+    /// `evaluateStep` runs them on an item the step gives nothing for: its
+    /// `evaluateFilter` makes that value the one-item sequence
+    /// `[undefined]`, so each predicate is evaluated once with an undefined
+    /// context and its errors surface (`x[$string(1,2,3)]` is T0410 where
+    /// `x` is missing), until one selects nothing. The value stays
+    /// undefined. Only for stages `filters_run_on_nothing` accepts.
+    #[cold]
+    #[inline(never)]
+    fn filter_undefined(&mut self, stages: &[Stage]) -> Result<JValue, EvaluatorError> {
+        for stage in stages {
+            if let Stage::Filter(predicate) = stage {
+                if !self.filter_selects_undefined(predicate)? {
+                    break;
+                }
+            }
+        }
+        Ok(JValue::Undefined)
+    }
+
+    /// Whether jsonata-js's `evaluateFilter` keeps the item of its input
+    /// `[undefined]`: a numeric literal or a numeric selector picks the
+    /// undefined item, which it drops; any other selector keeps it when
+    /// truthy. The predicate is evaluated (not a literal) for its errors.
+    fn filter_selects_undefined(&mut self, predicate: &AstNode) -> Result<bool, EvaluatorError> {
+        if numeric_literal(predicate).is_some() {
+            return Ok(false);
+        }
+        let undefined = JValue::Undefined;
+        let selector =
+            self.with_dollar_bound(&undefined, |ev| ev.evaluate_internal(predicate, &undefined))?;
+        Ok(predicate_index_match(&selector, 0, 1).is_none() && self.is_truthy(&selector))
     }
 
     /// Apply a filter predicate to a value, following jsonata-js
@@ -9685,7 +9866,7 @@ impl Evaluator {
                     if matches!(callable, JValue::Builtin { .. }) {
                         let input = ev.tail_input(data);
                         if args.iter().any(|a| matches!(a, AstNode::Placeholder)) {
-                            ev.apply_call_value(callable, args, data)
+                            ev.apply_call_value(callable, procedure, args, data)
                         } else {
                             let mut evaluated_args = Vec::with_capacity(args.len());
                             for arg in args {
@@ -9694,7 +9875,7 @@ impl Evaluator {
                             ev.call_function_value(&callable, &evaluated_args, &input)
                         }
                     } else {
-                        ev.apply_call_value(callable, args, data)
+                        ev.apply_call_value(callable, procedure, args, data)
                     }
                 })?;
                 Ok(LambdaResult::JValue(result))
@@ -9720,6 +9901,7 @@ impl Evaluator {
     fn apply_call_value(
         &mut self,
         callable: JValue,
+        procedure: &AstNode,
         args: &[AstNode],
         data: &JValue,
     ) -> Result<JValue, EvaluatorError> {
@@ -9735,16 +9917,70 @@ impl Evaluator {
             };
             return self.build_partial_application(target, args, data);
         }
-        if !callable.is_function() {
-            return Err(EvaluatorError::TypeError(
-                "T1006: Attempted to invoke a non-function".to_string(),
-            ));
-        }
+        self.check_callable(&callable, procedure)?;
         let mut evaluated_args = Vec::with_capacity(args.len());
         for arg in args.iter() {
             evaluated_args.push(self.evaluate_internal(arg, data)?);
         }
         self.call_function_value(&callable, &evaluated_args, data)
+    }
+
+    /// The error for calling `callable`, the value of `procedure`, when it
+    /// is not a function: T1006, or T1005 as jsonata-js `evaluateFunction`
+    /// raises it.
+    fn check_callable(&self, callable: &JValue, procedure: &AstNode) -> Result<(), EvaluatorError> {
+        if callable.is_function() {
+            return Ok(());
+        }
+        // A procedure path that gives nothing, and whose first step names
+        // something bound in the environment, was probably missing its `$`:
+        // T1005 with the suggestion, as for `uppercase#$i()` or
+        // `uppercase[0]()`.
+        if callable.is_undefined() {
+            if let Some(name) = Self::procedure_first_name(procedure) {
+                if self.name_is_bound_js_truthy(name) {
+                    return Err(EvaluatorError::ReferenceError(format!(
+                        "T1005: Attempted to invoke a non-function. Did you mean ${}?",
+                        name
+                    )));
+                }
+            }
+        }
+        Err(EvaluatorError::TypeError(
+            "T1006: Attempted to invoke a non-function".to_string(),
+        ))
+    }
+
+    /// The name of a called path's first step, which jsonata-js looks up
+    /// for its T1005 hint: `uppercase` in `uppercase#$i()` and in
+    /// `a.uppercase[0]()`, whose call is the path step `uppercase[0]()`.
+    fn procedure_first_name(procedure: &AstNode) -> Option<&str> {
+        match procedure {
+            AstNode::Path { steps } => match &steps.first()?.node {
+                AstNode::Name(name) => Some(name),
+                _ => None,
+            },
+            AstNode::Binary {
+                op: BinaryOp::IndexBind | BinaryOp::FocusBind,
+                lhs,
+                ..
+            } => Self::procedure_first_name(lhs),
+            _ => None,
+        }
+    }
+
+    /// Whether jsonata-js's `environment.lookup(name)` gives a JavaScript
+    /// truthy value: a builtin or host function not shadowed by a binding,
+    /// or a binding holding anything but undefined, null, false, 0, NaN or "".
+    fn name_is_bound_js_truthy(&self, name: &str) -> bool {
+        match self.context.lookup(name) {
+            Some(JValue::Undefined | JValue::Null) => false,
+            Some(JValue::Bool(b)) => *b,
+            Some(JValue::Number(n)) => *n != 0.0 && !n.is_nan(),
+            Some(JValue::String(s)) => !s.is_empty(),
+            Some(_) => true,
+            None => self.is_builtin_function(name) || self.host_fns.contains_key(name),
+        }
     }
 
     /// Call a function value, a lambda, a builtin or a regex, with `values`.
