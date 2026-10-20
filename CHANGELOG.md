@@ -93,6 +93,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Creating a function with a deeply nested body no longer crashes deep in a recursion.**
+  Creating a function clones its body and collects its free variables, two recursive walks
+  over the body that ran without the stack guard deep evaluation uses. A body nested a few
+  hundred levels deep, created inside a recursion thousands of calls deep, could overrun
+  the stack headroom left there and crash the process (a native stack overflow, seen on
+  Windows with a 300-level body). Both walks now move to a new stack segment when the
+  stack runs low, as the value walkers do.
 - **A null sort term raises T2008 whatever the term's form**, as in jsonata-js. A term that is
   not a plain field name (`a.b`, `$.a`, a function call) turned a null result into undefined,
   so `[{"a":{"b":2}},{"a":{"b":null}}]^(a.b)` and `[{"a":2},{"a":null}]^($.a)` returned the

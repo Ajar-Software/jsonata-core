@@ -9889,7 +9889,15 @@ impl Evaluator {
         free_vars
     }
 
+    /// Runs on every lambda creation, possibly deep in a recursion with only
+    /// `EVAL_RED_ZONE` of stack left, over a body that can be about 1000
+    /// levels deep: each level moves to a new stack segment when the current
+    /// one runs low, as `AstNode::clone` does.
     fn collect_free_vars_walk(node: &AstNode, bound: &HashSet<&str>, free: &mut HashSet<String>) {
+        crate::value::with_stack(|| Self::collect_free_vars_node(node, bound, free))
+    }
+
+    fn collect_free_vars_node(node: &AstNode, bound: &HashSet<&str>, free: &mut HashSet<String>) {
         match node {
             AstNode::Variable(name) => {
                 if !bound.contains(name.as_str()) {
