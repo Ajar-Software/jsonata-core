@@ -40,7 +40,8 @@ NOTES="$(awk -v ver="$VERSION" '
     END { flush() }
 ' "$CHANGELOG" | sed '/./,$!d')"
 
-if ! printf '%s\n' "$NOTES" | grep -q '^- '; then
+# A here-string, not a pipe into grep -q: see the same check in bump-changelog.sh.
+if ! grep -q '^- ' <<<"$NOTES"; then
     echo "::error::$CHANGELOG has no entries for [$VERSION] (no '## [$VERSION]' section, or no '- ...' bullet lines in it)." >&2
     exit 1
 fi

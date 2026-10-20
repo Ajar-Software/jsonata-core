@@ -29,7 +29,10 @@ UNRELEASED_BODY="$(awk '
     found { print }
 ' "$CHANGELOG")"
 
-if ! echo "$UNRELEASED_BODY" | grep -q '^- '; then
+# A here-string, not `echo ... | grep -q`: grep -q exits at its first match, so with
+# pipefail a body bigger than one write (the 2.2.12 one was 43 KB) made echo fail
+# with EPIPE and the check report "no entries" for a full changelog.
+if ! grep -q '^- ' <<<"$UNRELEASED_BODY"; then
     echo "::error::CHANGELOG.md's [Unreleased] section has no entries (no '- ...' bullet lines)." >&2
     echo "::error::Add changelog entries before releasing, or edit CHANGELOG.md by hand if this release genuinely has nothing user-facing to note." >&2
     exit 1
