@@ -93,6 +93,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A literal used as a path step is S0213 wherever it is in the path**
+  ([#248](https://github.com/txjmb/jsonata-core/issues/248)), as in jsonata-js, which checks
+  every step of a path built by `.`. Only a literal right of a dot was rejected, so `null.$`,
+  `true.$`, `2#$q.a`, `null@$x.a`, `2[0].a`, `null^(x).a` and `null.(1)` were evaluated, and
+  `a.-2` gave `[-2,-2]` (jsonata-js folds `-2` into a number first). A number followed by `.`
+  and no digit is now the number and a path step, as in jsonata-js's tokenizer, so `2.a` and
+  `1.5.a` are S0213 too (`2.a` was "Invalid number"), and an exponent with no digits (`2e`)
+  is S0201. The same check turns a string step into a field name anywhere in the path:
+  `"a"[0].b`, `"a".(b)`, `"a".[b]` and `"a"#$i.b` read the field `a` (they used the string).
 - **Creating a function with a deeply nested body no longer crashes deep in a recursion.**
   Creating a function clones its body and collects its free variables, two recursive walks
   over the body that ran without the stack guard deep evaluation uses. A body nested a few

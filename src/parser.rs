@@ -498,33 +498,27 @@ impl Lexer {
             return Err(ParserError::InvalidNumber("Expected digit".to_string()));
         }
 
-        // Fractional part
-        if self.current() == Some('.') && self.peek(1) != Some('.') {
-            // Only consume '.' if next char is not '.', to avoid consuming '..' range operator
+        // Fractional part and exponent, as jsonata-js's tokenizer regex
+        // `/^-?(0|([1-9][0-9]*))(\.[0-9]+)?([Ee][-+]?[0-9]+)?/` reads them:
+        // each is taken only when digits follow, and is otherwise left for
+        // the next token. So `2.a` is the number `2`, then `.` and `a` (a
+        // path whose literal step is S0213), and `2..5` is `2`, `..`, `5`.
+        if self.current() == Some('.') && self.peek(1).is_some_and(|c| c.is_ascii_digit()) {
             self.advance();
-            if !self.current().is_some_and(|c| c.is_ascii_digit()) {
-                return Err(ParserError::InvalidNumber(
-                    "Expected digit after decimal point".to_string(),
-                ));
-            }
             while self.current().is_some_and(|c| c.is_ascii_digit()) {
                 self.advance();
             }
         }
 
-        // Exponent part
         if matches!(self.current(), Some('e') | Some('E')) {
-            self.advance();
-            if matches!(self.current(), Some('+') | Some('-')) {
-                self.advance();
-            }
-            if !self.current().is_some_and(|c| c.is_ascii_digit()) {
-                return Err(ParserError::InvalidNumber(
-                    "Expected digit in exponent".to_string(),
-                ));
-            }
-            while self.current().is_some_and(|c| c.is_ascii_digit()) {
-                self.advance();
+            let sign = usize::from(matches!(self.peek(1), Some('+') | Some('-')));
+            if self.peek(1 + sign).is_some_and(|c| c.is_ascii_digit()) {
+                for _ in 0..=sign {
+                    self.advance();
+                }
+                while self.current().is_some_and(|c| c.is_ascii_digit()) {
+                    self.advance();
+                }
             }
         }
 
@@ -937,6 +931,60 @@ pub struct Parser {
     /// Raising it inline made us answer S0213 there. Deferring restores the
     /// ordering without moving the check itself into a post-parse pass.
     pending_literal_step: Option<String>,
+}
+
+/// One step of `check_path_literal_steps`: the literal's text when `node`
+/// is a step jsonata-js rejects, after turning a string step into a name.
+///
+/// `#$i`, `@$v`, a sort `^(...)` and a group `{...}` still wrap their
+/// operand here (ast_transform folds them into the path later), but in
+/// jsonata-js the operand is already a step of this path, with the binding,
+/// sort or group attached to it or appended after it. So the check looks
+/// through them: at the literal (`2#$q.a`, `null@$x.a`, `null^(x).a`,
+/// `2{"k":1}.a`) or at the steps of a path operand (`null[0]#$i.a`).
+fn check_literal_step(node: &mut AstNode) -> Option<String> {
+    match node {
+        AstNode::Binary {
+            op: BinaryOp::IndexBind | BinaryOp::FocusBind,
+            lhs,
+            ..
+        } => check_literal_step(lhs),
+        AstNode::Sort { input, .. } | AstNode::ObjectTransform { input, .. } => {
+            check_literal_step(input)
+        }
+        AstNode::Path { steps } => steps
+            .iter_mut()
+            .find_map(|step| check_literal_step(&mut step.node)),
+        AstNode::String(field_name) => {
+            *node = AstNode::Name(std::mem::take(field_name));
+            None
+        }
+        _ => literal_step_value(node),
+    }
+}
+
+/// The value of `node` when it is a literal jsonata-js rejects as a path step
+/// (S0213): a number -- including one under unary minus, which jsonata-js
+/// folds into the number -- or `true`, `false` or `null`. Strings are not
+/// rejected; they become field names.
+fn literal_step_value(node: &AstNode) -> Option<String> {
+    match node {
+        AstNode::Boolean(b) => Some(b.to_string()),
+        AstNode::Null => Some("null".to_string()),
+        _ => literal_number(node).map(|n| n.to_string()),
+    }
+}
+
+/// A number literal, possibly under any number of unary minuses (`--2`).
+fn literal_number(node: &AstNode) -> Option<f64> {
+    match node {
+        AstNode::Number(n) => Some(*n),
+        AstNode::Unary {
+            op: UnaryOp::Negate,
+            operand,
+        } => literal_number(operand).map(|n| -n),
+        _ => None,
+    }
 }
 
 impl Parser {
@@ -1515,6 +1563,7 @@ impl Parser {
                         };
 
                         steps.push(PathStep::new(AstNode::ArrayGroup(elements)));
+                        self.check_path_literal_steps(&mut steps);
                         self.bump_parse_depth()?;
                         lhs = AstNode::Path { steps };
                     } else if self.current_token == Token::LeftParen {
@@ -1536,6 +1585,7 @@ impl Parser {
                             steps.push(PathStep::new(AstNode::FunctionApplication(Box::new(
                                 AstNode::Block(Vec::new()),
                             ))));
+                            self.check_path_literal_steps(&mut steps);
                             self.bump_parse_depth()?;
                             lhs = AstNode::Path { steps };
                         } else {
@@ -1566,6 +1616,7 @@ impl Parser {
                             };
 
                             steps.push(PathStep::new(AstNode::FunctionApplication(Box::new(expr))));
+                            self.check_path_literal_steps(&mut steps);
                             self.bump_parse_depth()?;
                             lhs = AstNode::Path { steps };
                         }
@@ -1576,33 +1627,8 @@ impl Parser {
                         // Flatten path expressions
                         let mut steps = match lhs {
                             AstNode::Path { steps } => steps,
-                            // Convert string literals to field names when used as first step in path
-                            // e.g., "foo".bar should behave like foo.bar
-                            AstNode::String(field_name) => {
-                                vec![PathStep::new(AstNode::Name(field_name))]
-                            }
                             _ => vec![PathStep::new(lhs)],
                         };
-
-                        // S0213: The literal value cannot be used as a step within a path expression
-                        // Numbers, booleans (true/false), and null cannot be path steps
-                        let literal_step = match &rhs {
-                            AstNode::Number(n) => Some(n.to_string()),
-                            AstNode::Boolean(b) => Some(b.to_string()),
-                            AstNode::Null => Some("null".to_string()),
-                            _ => None,
-                        };
-                        if let Some(literal) = literal_step {
-                            // Recorded, not raised: see `pending_literal_step`.
-                            // The first one wins, matching a post-parse pass
-                            // walking the tree in order.
-                            if self.pending_literal_step.is_none() {
-                                self.pending_literal_step = Some(format!(
-                                    "S0213: The literal value {} cannot be used as a step within a path expression",
-                                    literal
-                                ));
-                            }
-                        }
 
                         match rhs {
                             AstNode::Path {
@@ -1610,13 +1636,9 @@ impl Parser {
                             } => {
                                 steps.append(&mut rhs_steps);
                             }
-                            // Convert string literals to field names when they appear after a dot
-                            // e.g., $."Field.Name" should access a property named "Field.Name"
-                            AstNode::String(field_name) => {
-                                steps.push(PathStep::new(AstNode::Name(field_name)));
-                            }
                             _ => steps.push(PathStep::new(rhs)),
                         }
+                        self.check_path_literal_steps(&mut steps);
 
                         // Check for following predicates and attach as stages to the last step
                         // This implements JSONata semantics where foo.bar[0] has [0] apply during extraction
@@ -2092,6 +2114,33 @@ impl Parser {
         }
 
         Ok(lhs)
+    }
+
+    /// The literal-step pass jsonata-js runs over every path built by `.`
+    /// (`processAST`, binary `.` case, in parser.js): it walks *all* the
+    /// steps of the combined path -- the left-hand steps as well as the new
+    /// right-hand ones -- and
+    ///
+    /// - raises S0213 for a step that is a number or one of the values
+    ///   `true`/`false`/`null` (`null.$`, `2#$q.a`, `a.2`), and
+    /// - turns a string step into a field name (`"a"[0].b`, `"a".(b)`).
+    ///
+    /// The S0213 is recorded rather than raised (see `pending_literal_step`).
+    /// A unary minus on a number counts as a number: jsonata-js folds `-2`
+    /// into the number `-2` before this check runs.
+    fn check_path_literal_steps(&mut self, steps: &mut [PathStep]) {
+        for step in steps.iter_mut() {
+            if let Some(literal) = check_literal_step(&mut step.node) {
+                if self.pending_literal_step.is_none() {
+                    self.pending_literal_step = Some(format!(
+                        "S0213: The literal value {} cannot be used as a step within a path expression",
+                        literal
+                    ));
+                }
+                // jsonata-js throws at the first one, so no later step matters.
+                return;
+            }
+        }
     }
 
     pub fn parse(&mut self) -> Result<AstNode, ParserError> {
