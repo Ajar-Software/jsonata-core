@@ -706,6 +706,43 @@ fn test_recursion_through_tail_called_builtin_callbacks() {
     );
 }
 
+/// The same through a tail call of a value that is not a thunk function: a
+/// partial application (`$f($n - 1, ?)()`, also when returned from another
+/// call), a partial application of a builtin, and a builtin called as a value
+/// (`($reduce)(...)`). These run outside the trampoline's ordinary evaluation
+/// step and used to overflow the native stack at about 2,000 levels (#255);
+/// each level is guarded now, so deep recursion evaluates and with no base
+/// case it is U1001, not a crash.
+#[test]
+fn test_recursion_through_tail_called_partial_applications() {
+    let outcome = on_small_stack(|| {
+        let mut out = String::new();
+        for expr in [
+            "($f := function($n){ $n <= 0 ? 1 : $f($n - 1, ?)() }; $f(5000))",
+            "($g := function($n){ $f($n - 1, ?) }; \
+              $f := function($n){ $n <= 0 ? 1 : $g($n)() }; $f(5000))",
+            "($f := function($n){ $n <= 0 ? 1 : $reduce(?, function($a, $b){ $f($b) }, 0)([$n - 1]) }; $f(5000))",
+            "($f := function($n){ $n <= 0 ? 1 : ($reduce)([$n - 1], function($a, $b){ $f($b) }, 0) }; $f(5000))",
+            "($f := function($n){ $n <= 0 ? 1 : $eval(?)('$f(' & ($n - 1) & ')') }; $f(5000))",
+            "($f := function($n){ $f($n + 1, ?)() }; $f(0))",
+            "($f := function($n){ ($reduce)([$n + 1], function($a, $b){ $f($b) }, 0) }; $f(0))",
+        ] {
+            let (tree_walker, default) = eval_both_engines(expr, EvaluatorOptions::default());
+            out.push_str(&format!("{tree_walker} | {default}\n"));
+        }
+        out
+    });
+    let u1001 =
+        "Err(Evaluation error: U1001: Stack overflow - maximum recursion depth (30000) exceeded)";
+    assert_eq!(
+        outcome,
+        format!(
+            "Ok(1) | Ok(1)\nOk(1) | Ok(1)\nOk(1) | Ok(1)\nOk(1) | Ok(1)\nOk(1) | Ok(1)\n\
+             {u1001} | {u1001}\n{u1001} | {u1001}\n"
+        )
+    );
+}
+
 /// The same recursion stops at a timeout (D1012) when one is set.
 #[test]
 fn test_recursion_through_tail_called_builtin_callbacks_times_out() {

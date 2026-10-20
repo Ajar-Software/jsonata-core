@@ -9417,8 +9417,16 @@ impl Evaluator {
                     return Ok(LambdaResult::JValue(result));
                 }
                 // Not a thunk - apply the value already evaluated, so the
-                // callee is not evaluated a second time.
-                let result = self.apply_call_value(callable, args, data)?;
+                // callee is not evaluated a second time. This is the one way
+                // out of the trampoline body into a call that does not pass
+                // through `evaluate_internal`: a partial application
+                // (`$f($n-1, ?)()`) or a builtin value (`($map)(xs, $f)`)
+                // applied here can call straight back into a thunk lambda's
+                // trampoline. Without the checkpoint that recursion grew the
+                // native stack with no depth or stack guard and crashed the
+                // process at about 2,000 levels (#255).
+                let result =
+                    self.with_checkpoint(|ev| ev.apply_call_value(callable, args, data))?;
                 Ok(LambdaResult::JValue(result))
             }
 
