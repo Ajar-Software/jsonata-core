@@ -513,6 +513,7 @@ fn frees_nested_map(map: &Rc<JMap>) -> bool {
 /// `LazyPyDict`'s `Drop`): its converted values are freed as a payload's
 /// items are.
 #[cfg(feature = "python")]
+#[cold]
 #[inline(never)]
 pub(crate) fn drop_lazy_dict(lazy: &mut crate::lazy::LazyPyDict) {
     if must_drop_flat(|| lazy.any_held(frees_nested, frees_nested_map)) {

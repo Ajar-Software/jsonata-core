@@ -102,11 +102,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   dict wrapper holds the next. The payloads behind an array's and an object's `Rc`, and lazy
   dict wrappers, now check the stack before freeing values that hold containers, and once it
   runs low they take the rest of the value apart on a heap work-list instead of recursing. A
-  small payload that frees no container (the common leaf object), and a wrapper that caches
-  only strings, skip the check after a look at their values. Only what this drop frees is
-  taken apart; a shared value is just released. Callgrind shows up to about 1.8% more
-  instructions on the A/B benchmark expressions over Python input (4% on the 5-level path
-  lookup, a few hundred instructions), and 0.2% or less on most others.
+  small payload that frees no container (the common leaf object) skips the check after a
+  look at its values; a lazy Python dict wrapper records whether it holds a container, and
+  a chain of wrappers read down from one another checks once every 32 levels. Only what
+  this drop frees is taken apart; a shared value is just released. Callgrind on the A/B
+  benchmark expressions over Python input, against main with the allocator change above
+  (instructions per evaluation from the difference between 600 and 100 evaluations): at
+  most 0.72% more (the 5-level path lookup on the tree-walker, under 100 instructions),
+  0.5% to 0.65% more on the `%`, `#`, `@` and top-rated expressions, and fewer on about half.
   Rust API: `JValue::Object` holds `Rc<JMap>` instead of `Rc<IndexMap<String, JValue>>`, and
   `JArray`'s items sit in a `JItems`. `JMap` dereferences to the `IndexMap`, and `JItems` to
   `Vec<JValue>`; both iterate by reference, and `JMap` collects from `(String, JValue)` pairs.
