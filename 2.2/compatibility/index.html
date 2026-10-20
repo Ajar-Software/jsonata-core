@@ -2020,20 +2020,24 @@
 
 
 <h1 id="jsonata-compatibility">JSONata Compatibility<a class="headerlink" href="#jsonata-compatibility" title="Permanent link">&para;</a></h1>
-<p>jsonatapy aims for 100% compatibility with the <a href="https://docs.jsonata.org/">JSONata 2.1.0 specification</a>.</p>
+<p>jsonatapy aims for 100% compatibility with the <a href="https://docs.jsonata.org/">JSONata specification</a>.</p>
 <h2 id="test-suite-overview">Test Suite Overview<a class="headerlink" href="#test-suite-overview" title="Permanent link">&para;</a></h2>
 <p>jsonatapy includes a comprehensive test adapter that runs the complete reference JSONata test suite from the official JavaScript implementation.</p>
 <h3 id="reference-test-suite">Reference Test Suite<a class="headerlink" href="#reference-test-suite" title="Permanent link">&para;</a></h3>
 <ul>
-<li><strong>Total Tests</strong>: 1258</li>
-<li><strong>Passing</strong>: 1258 (100%)</li>
-<li><strong>Source</strong>: Official jsonata-js repository (v2.1.0) at <code>tests/jsonata-js/</code></li>
+<li><strong>Total Tests</strong>: 1686</li>
+<li><strong>Passing</strong>: 1686 (100%)</li>
+<li><strong>Known divergences</strong>: none. <code>KNOWN_DIVERGENCES</code> in <code>tests/python/test_reference_suite.py</code> is the registry; entries there are strict <code>xfail</code>, so one that starts passing fails the suite until it is removed</li>
+<li><strong>Source</strong>: Official jsonata-js repository (v2.2.2) at <code>tests/jsonata-js/</code></li>
 </ul>
 <h2 id="current-compatibility-status">Current Compatibility Status<a class="headerlink" href="#current-compatibility-status" title="Permanent link">&para;</a></h2>
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="c1"># Run full test suite</span>
 </span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>uv<span class="w"> </span>run<span class="w"> </span>pytest<span class="w"> </span>tests/python/test_reference_suite.py
 </span></code></pre></div>
-<p>Results show 100% compatibility with the JSONata 2.1.0 specification.</p>
+<p>Results show 1686/1686 (100%) of the suite passing against the reference JSONata implementation.</p>
+<p>Two of those 1686 pass only because <em>something</em> was raised, not because the error code was
+compared — our message for them carries no code for the suite to check. <code>UNVERIFIED_ERROR_CEILING</code>
+in <code>tests/python/test_reference_suite.py</code> pins that count at 2 so it cannot quietly grow.</p>
 <h2 id="test-groups">Test Groups<a class="headerlink" href="#test-groups" title="Permanent link">&para;</a></h2>
 <p>The reference suite is organized into 102 test groups covering all aspects of JSONata:</p>
 <h3 id="core-functionality">Core Functionality<a class="headerlink" href="#core-functionality" title="Permanent link">&para;</a></h3>
