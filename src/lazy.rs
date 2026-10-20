@@ -166,6 +166,52 @@ impl LazyPyDict {
         }
         self.materialized.get().map(|rc| &***rc)
     }
+
+    /// Whether this wrapper holds a converted array, object or wrapper (the
+    /// cache otherwise holds strings only). Looks at types, not reference
+    /// counts.
+    #[inline]
+    pub(crate) fn holds_containers(&self) -> bool {
+        self.materialized.get().is_some()
+            || self.field_cache.try_borrow().map_or(true, |cache| {
+                cache.values().any(|v| !matches!(v, JValue::String(_)))
+            })
+    }
+
+    /// Whether `value` holds for any cached field, or `map` for the
+    /// materialized map.
+    pub(crate) fn any_held(
+        &self,
+        value: impl FnMut(&JValue) -> bool,
+        map: impl FnOnce(&Rc<crate::value::JMap>) -> bool,
+    ) -> bool {
+        self.materialized.get().is_some_and(map) || self.field_cache.borrow().values().any(value)
+    }
+
+    /// Move out every converted value this wrapper holds (the materialized
+    /// map as a `JValue::Object`), leaving it holding none.
+    pub(crate) fn take_held(&mut self) -> impl Iterator<Item = JValue> {
+        let materialized = self.materialized.take().map(JValue::Object);
+        let cache = std::mem::take(self.field_cache.get_mut());
+        materialized.into_iter().chain(cache.into_values())
+    }
+}
+
+/// A wrapper holds the converted values of the dicts nested in it (each a
+/// `LazyPyDict` in turn), so a deep Python input read deep down is a chain
+/// of wrappers: free it without recursing, as for arrays and objects (#233).
+impl Drop for LazyPyDict {
+    #[inline]
+    fn drop(&mut self) {
+        // The cache holds strings and containers only, so a look at the
+        // types stands in for a payload's small-payload scan.
+        let cache = self.field_cache.get_mut();
+        let holds_containers = self.materialized.get().is_some()
+            || (!cache.is_empty() && cache.values().any(|v| !matches!(v, JValue::String(_))));
+        if holds_containers {
+            crate::value::drop_lazy_dict(self);
+        }
+    }
 }
 
 /// Single Python→JValue conversion routine.

@@ -315,3 +315,42 @@ def test_deep_value_returned_to_python_and_dropped(engine, expr):
     out = json.loads(proc.stdout)
     assert out["count"] == 1
     assert out["depth"] >= 100000
+
+
+_LAZY_INPUT_RUNNER = textwrap.dedent("""
+    import json, sys, threading
+    import jsonatapy
+
+    jsonatapy._set_force_tree_walker(sys.argv[1] == "tree-walker")
+    in_list = sys.argv[2] == "list"
+    depth = 100000
+    data = {}
+    for _ in range(depth):
+        data = {"a": [data]} if in_list else {"a": data}
+    out = {}
+
+    def run():
+        # Reading down the input converts each level to a lazy dict wrapper
+        # holding the next: freeing that chain used to recurse (#233).
+        out["count"] = jsonatapy.evaluate(
+            "$count([$reduce([1..%d], function($x, $i){ $x.a }, $)])" % (depth - 1), data
+        )
+
+    threading.stack_size(1024 * 1024)
+    t = threading.Thread(target=run)
+    t.start()
+    t.join()
+    print(json.dumps(out))
+    """)
+
+
+@pytest.mark.parametrize("form", ["dict", "list"])
+def test_deep_python_input_read_down_is_freed(engine, form):
+    proc = subprocess.run(
+        [sys.executable, "-c", _LAZY_INPUT_RUNNER, engine, form],
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+    assert proc.returncode == 0, f"process crashed ({proc.returncode}): {proc.stderr[-2000:]}"
+    assert json.loads(proc.stdout) == {"count": 1}

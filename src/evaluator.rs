@@ -7135,7 +7135,7 @@ impl Evaluator {
                 let stream = JValue::array(
                     incoming
                         .iter()
-                        .map(|t| JValue::object((**t).clone()))
+                        .map(|t| JValue::Object(Rc::new((**t).clone())))
                         .collect(),
                 );
                 // evaluate_sort is tuple-aware (orders by each wrapper's `@`,
@@ -7242,7 +7242,7 @@ impl Evaluator {
                         for (key, binding) in inner.iter() {
                             new_tuple.insert(key.clone(), binding.clone());
                         }
-                        result.push(JValue::object(new_tuple));
+                        result.push(JValue::Object(Rc::new(new_tuple)));
                         continue;
                     }
                 }
@@ -7267,7 +7267,7 @@ impl Evaluator {
                     new_tuple.insert(ancestor_label.clone(), actual_data.clone());
                 }
                 new_tuple.insert("__tuple__".to_string(), JValue::Bool(true));
-                result.push(JValue::object(new_tuple));
+                result.push(JValue::Object(Rc::new(new_tuple)));
             }
         }
 
@@ -7339,7 +7339,7 @@ impl Evaluator {
                         if let JValue::Object(obj) = tup {
                             let mut m = (**obj).clone();
                             m.insert(format!("${}", var), JValue::from(pos as i64));
-                            *tup = JValue::object(m);
+                            *tup = JValue::Object(Rc::new(m));
                         }
                     }
                 }
@@ -8884,7 +8884,7 @@ impl Evaluator {
                             map.shift_remove(&field);
                         }
                     }
-                    return Ok(JValue::object(map));
+                    return Ok(JValue::Object(Rc::new(map)));
                 }
                 return Ok(value.clone());
             }

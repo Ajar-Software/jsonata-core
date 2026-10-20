@@ -302,6 +302,16 @@ impl JItems {
     }
 }
 
+impl<'a> IntoIterator for &'a JItems {
+    type Item = &'a JValue;
+    type IntoIter = std::slice::Iter<'a, JValue>;
+
+    #[inline]
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.iter()
+    }
+}
+
 /// The payload of `JValue::Object`, behind its `Rc`: an
 /// `IndexMap<String, JValue>` whose drop does not recurse (#233).
 /// Dereferences to the map, so it reads and updates like one; build it with
@@ -347,6 +357,33 @@ impl From<JMap> for IndexMap<String, JValue> {
     #[inline]
     fn from(map: JMap) -> Self {
         map.into_inner()
+    }
+}
+
+impl FromIterator<(String, JValue)> for JMap {
+    #[inline]
+    fn from_iter<I: IntoIterator<Item = (String, JValue)>>(iter: I) -> Self {
+        JMap(IndexMap::from_iter(iter))
+    }
+}
+
+impl<'a> IntoIterator for &'a JMap {
+    type Item = (&'a String, &'a JValue);
+    type IntoIter = indexmap::map::Iter<'a, String, JValue>;
+
+    #[inline]
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.iter()
+    }
+}
+
+impl<'a> IntoIterator for &'a mut JMap {
+    type Item = (&'a String, &'a mut JValue);
+    type IntoIter = indexmap::map::IterMut<'a, String, JValue>;
+
+    #[inline]
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.iter_mut()
     }
 }
 
@@ -397,6 +434,10 @@ impl JMap {
 //
 // Only payloads this drop actually frees are taken apart: a container whose
 // `Rc` is shared elsewhere is just released (its count drops by one).
+//
+// A lazy Python dict wrapper (`LazyPyDict`) counts as a container too: it
+// holds the converted values of the fields read from it, so reading down a
+// deep Python input builds a chain of wrappers with no payload between them.
 
 /// Stack headroom below which a payload's drop switches to the work-list.
 /// Covers the frames of a few levels of drop glue and the allocator's `free`.
@@ -426,14 +467,23 @@ fn must_drop_flat(nested: impl FnOnce() -> bool) -> bool {
     }
 }
 
-/// True when dropping `value` frees a non-empty array or object payload.
+/// True when dropping `value` frees a non-empty array or object payload, or
+/// a lazy Python dict wrapper that may hold one (or another wrapper).
 #[inline]
 fn frees_container(value: &JValue) -> bool {
     match value {
         JValue::Array(arr) => Rc::strong_count(&arr.items) == 1 && !arr.items.0.is_empty(),
-        JValue::Object(map) => Rc::strong_count(map) == 1 && !map.0.is_empty(),
+        JValue::Object(map) => frees_map(map),
+        #[cfg(feature = "python")]
+        JValue::LazyPyDict(lazy) => Rc::strong_count(lazy) == 1 && lazy.holds_containers(),
         _ => false,
     }
+}
+
+/// `frees_container` for an object payload.
+#[inline]
+fn frees_map(map: &Rc<JMap>) -> bool {
+    Rc::strong_count(map) == 1 && !map.0.is_empty()
 }
 
 /// True when dropping `value` frees a payload that itself holds a payload to
@@ -444,8 +494,29 @@ fn frees_nested(value: &JValue) -> bool {
         JValue::Array(arr) => {
             Rc::strong_count(&arr.items) == 1 && arr.items.0.iter().any(frees_container)
         }
-        JValue::Object(map) => Rc::strong_count(map) == 1 && map.0.values().any(frees_container),
+        JValue::Object(map) => frees_nested_map(map),
+        #[cfg(feature = "python")]
+        JValue::LazyPyDict(lazy) => {
+            Rc::strong_count(lazy) == 1 && lazy.any_held(frees_container, frees_map)
+        }
         _ => false,
+    }
+}
+
+/// `frees_nested` for an object payload.
+#[inline]
+fn frees_nested_map(map: &Rc<JMap>) -> bool {
+    Rc::strong_count(map) == 1 && map.0.values().any(frees_container)
+}
+
+/// The drop of a lazy Python dict wrapper holding containers (see
+/// `LazyPyDict`'s `Drop`): its converted values are freed as a payload's
+/// items are.
+#[cfg(feature = "python")]
+#[inline(never)]
+pub(crate) fn drop_lazy_dict(lazy: &mut crate::lazy::LazyPyDict) {
+    if must_drop_flat(|| lazy.any_held(frees_nested, frees_nested_map)) {
+        drop_deep(lazy.take_held());
     }
 }
 
@@ -468,6 +539,12 @@ fn drop_deep(values: impl Iterator<Item = JValue>) {
             JValue::Object(map) => {
                 if let Some(map) = Rc::get_mut(map) {
                     pending.extend(map.0.drain(..).map(|(_, value)| value).filter(frees_nested));
+                }
+            }
+            #[cfg(feature = "python")]
+            JValue::LazyPyDict(lazy) => {
+                if let Some(lazy) = Rc::get_mut(lazy) {
+                    pending.extend(lazy.take_held().filter(frees_nested));
                 }
             }
             _ => {}
@@ -789,8 +866,8 @@ impl JValue {
     }
 
     #[inline]
-    pub fn object(m: impl Into<JMap>) -> Self {
-        JValue::Object(Rc::new(m.into()))
+    pub fn object(m: IndexMap<String, JValue>) -> Self {
+        JValue::Object(Rc::new(JMap(m)))
     }
 
     #[inline]
@@ -1687,6 +1764,28 @@ mod tests {
             };
         }
         value
+    }
+
+    #[test]
+    fn test_jmap_collects_and_iterates_like_a_map() {
+        let pairs = || {
+            [("a", 1i64), ("b", 2)]
+                .into_iter()
+                .map(|(k, v)| (k.to_string(), JValue::from(v)))
+        };
+        // `JValue::object` still takes an `IndexMap`, so `collect` infers it.
+        let value = JValue::object(pairs().collect());
+        assert_eq!(value, JValue::Object(Rc::new(pairs().collect::<JMap>())));
+        let JValue::Object(map) = &value else {
+            unreachable!()
+        };
+        let keys: Vec<&String> = (&**map).into_iter().map(|(k, _)| k).collect();
+        assert_eq!(keys, ["a", "b"]);
+        let mut owned = (**map).clone();
+        for (_, v) in &mut owned {
+            *v = JValue::Null;
+        }
+        assert_eq!(owned.into_inner()["a"], JValue::Null);
     }
 
     #[test]

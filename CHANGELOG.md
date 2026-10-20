@@ -87,18 +87,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ([#233](https://github.com/txjmb/jsonata-core/issues/233)). A value was dropped by plain
   recursion, one stack frame per level, so an array or object nested more than about 10,000
   deep (easy to build with `$reduce`, e.g. `$reduce([1..100000], function($a, $i){ {'a': $a}
-  }, {})`) crashed the process when it was freed. The payloads behind an array's and an
-  object's `Rc` now check the stack before freeing items that hold containers, and once it
+  }, {})`) crashed the process when it was freed. So did reading down a deep Python input
+  (`$reduce([1..99999], function($x, $i){ $x.a }, $)` over `{"a": {"a": ...}}`), as each lazy
+  dict wrapper holds the next. The payloads behind an array's and an object's `Rc`, and lazy
+  dict wrappers, now check the stack before freeing values that hold containers, and once it
   runs low they take the rest of the value apart on a heap work-list instead of recursing. A
-  small payload that frees no container (the common leaf object) skips the check after a
-  look at its items; callgrind shows at most 0.9% more instructions on the A/B benchmark
-  expressions, most of them 0.2% or less. Only payloads this drop frees are taken apart; a
-  shared one is just released. Rust API:
-  `JValue::Object` holds `Rc<JMap>` instead of `Rc<IndexMap<String, JValue>>`; `JMap`
-  dereferences to the `IndexMap` (`JMap::from(map)`, `into_inner()`), `JValue::object` takes
-  either, and `JArray`'s items sit in a `JItems` that dereferences to `Vec<JValue>`. Closures
-  are not covered: a chain of tens of thousands of closures each capturing the previous one is
-  still freed by recursion.
+  small payload that frees no container (the common leaf object), and a wrapper that caches
+  only strings, skip the check after a look at their values. Only what this drop frees is
+  taken apart; a shared value is just released. Callgrind shows up to about 1.8% more
+  instructions on the A/B benchmark expressions over Python input (4% on the 5-level path
+  lookup, a few hundred instructions), and 0.2% or less on most others.
+  Rust API: `JValue::Object` holds `Rc<JMap>` instead of `Rc<IndexMap<String, JValue>>`, and
+  `JArray`'s items sit in a `JItems`. `JMap` dereferences to the `IndexMap`, and `JItems` to
+  `Vec<JValue>`; both iterate by reference, and `JMap` collects from `(String, JValue)` pairs.
+  `JValue::object` still takes an `IndexMap`. What breaks: `JValue::Object(Rc::new(map))`
+  needs `Rc::new(map.into())` or `JValue::object(map)`; `Rc::try_unwrap`, `Rc::make_mut` and
+  `Rc::unwrap_or_clone` on an object's payload yield a `JMap` (use `.into_inner()`, or use it
+  through deref); `LazyPyDict::to_object()` returns `Rc<JMap>`. Not covered: closures. A
+  chain of tens of thousands of closures, each capturing the previous one, is still freed by
+  recursion.
 - **A function body resolves names where the function is defined, not where it is called**
   ([#191](https://github.com/txjmb/jsonata-core/issues/191)). A binding in the caller's scope
   leaked into the body: `($f := function($x){ $string($x) }; ($string := function($x){"z"};
