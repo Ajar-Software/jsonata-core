@@ -2879,8 +2879,8 @@ struct Scope {
 enum Owned<'a> {
     Lambda(&'a Rc<StoredLambda>),
     Partial(&'a Rc<PartialApplication>),
-    Items(&'a Rc<Vec<JValue>>),
-    Map(&'a Rc<IndexMap<String, JValue>>),
+    Items(&'a Rc<crate::value::JItems>),
+    Map(&'a Rc<crate::value::JMap>),
     Token(&'a Rc<FrameToken>),
 }
 
@@ -7057,7 +7057,7 @@ impl Evaluator {
             input,
             JValue::Array(arr) if starts_with_tuple(arr)
         );
-        let incoming: Vec<Rc<IndexMap<String, JValue>>> = if is_tuple_input {
+        let incoming: Vec<Rc<crate::value::JMap>> = if is_tuple_input {
             match input {
                 JValue::Array(arr) => arr
                     .iter()
@@ -7112,7 +7112,7 @@ impl Evaluator {
                     let mut wrapper = IndexMap::new();
                     wrapper.insert("@".to_string(), item);
                     wrapper.insert("__tuple__".to_string(), JValue::Bool(true));
-                    Rc::new(wrapper)
+                    Rc::new(crate::value::JMap::from(wrapper))
                 })
                 .collect()
         };
@@ -7135,7 +7135,7 @@ impl Evaluator {
                 let stream = JValue::array(
                     incoming
                         .iter()
-                        .map(|t| JValue::object((**t).clone()))
+                        .map(|t| JValue::Object(Rc::new((**t).clone())))
                         .collect(),
                 );
                 // evaluate_sort is tuple-aware (orders by each wrapper's `@`,
@@ -7174,7 +7174,7 @@ impl Evaluator {
             let mut result = Vec::new();
             for (ss, elem) in sorted_arr.into_iter().enumerate() {
                 let mut new_tuple = match elem {
-                    JValue::Object(o) if keeps_tuples && is_tuple_object(&o) => (*o).clone(),
+                    JValue::Object(o) if keeps_tuples && is_tuple_object(&o) => (**o).clone(),
                     other => {
                         let value = match &other {
                             JValue::Object(o) if is_tuple_object(o) => tuple_focus_value(&other),
@@ -7242,7 +7242,7 @@ impl Evaluator {
                         for (key, binding) in inner.iter() {
                             new_tuple.insert(key.clone(), binding.clone());
                         }
-                        result.push(JValue::object(new_tuple));
+                        result.push(JValue::Object(Rc::new(new_tuple)));
                         continue;
                     }
                 }
@@ -7267,7 +7267,7 @@ impl Evaluator {
                     new_tuple.insert(ancestor_label.clone(), actual_data.clone());
                 }
                 new_tuple.insert("__tuple__".to_string(), JValue::Bool(true));
-                result.push(JValue::object(new_tuple));
+                result.push(JValue::Object(Rc::new(new_tuple)));
             }
         }
 
@@ -7339,7 +7339,7 @@ impl Evaluator {
                         if let JValue::Object(obj) = tup {
                             let mut m = (**obj).clone();
                             m.insert(format!("${}", var), JValue::from(pos as i64));
-                            *tup = JValue::object(m);
+                            *tup = JValue::Object(Rc::new(m));
                         }
                     }
                 }
@@ -8884,7 +8884,7 @@ impl Evaluator {
                             map.shift_remove(&field);
                         }
                     }
-                    return Ok(JValue::object(map));
+                    return Ok(JValue::Object(Rc::new(map)));
                 }
                 return Ok(value.clone());
             }

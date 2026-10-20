@@ -128,8 +128,8 @@ pub enum JValue {
     Bool(bool),
     Number(f64),
     String(Rc<str>),              // Rc-wrapped for O(1) clone
-    Array(Rc<Vec<JValue>>),       // Rc-wrapped for O(1) clone
-    Object(Rc<IndexMap<String, JValue>>),  // Rc-wrapped
+    Array(JArray),                // Rc<JItems> (a Vec<JValue>) plus flags; O(1) clone
+    Object(Rc<JMap>),             // JMap derefs to IndexMap<String, JValue>
     Undefined,                    // JSONata undefined value
     Lambda(Rc<StoredLambda>),     // First-class function carrying its closure
     Builtin {                     // First-class built-in function

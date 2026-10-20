@@ -14,7 +14,7 @@ use crate::value::JValue;
 use indexmap::IndexMap;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyFloat, PyInt, PyString};
-use std::cell::{OnceCell, RefCell};
+use std::cell::{Cell, OnceCell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
 
@@ -30,8 +30,21 @@ pub struct LazyPyDict {
     /// deliberately not cached — see `get_field`.
     field_cache: RefCell<HashMap<String, JValue>>,
     /// Memoized full materialization (for consumers that need a real object).
-    materialized: OnceCell<Rc<IndexMap<String, JValue>>>,
+    materialized: OnceCell<Rc<crate::value::JMap>>,
+    /// Set when `field_cache` or `materialized` takes an array, object or
+    /// wrapper (never cleared until `take_held`), so the drop of a wrapper
+    /// that cached only strings is one load (#233).
+    holds_containers: Cell<bool>,
+    /// How many wrappers sit above this one in a chain read down through
+    /// `get_field` (0 for one made any other way). Drop checks the stack
+    /// only every `LAZY_DROP_CHECK_EVERY` levels (#233).
+    depth: Cell<u32>,
 }
+
+/// Wrapper levels between stack checks when a chain of wrappers is freed.
+/// Each level between checks costs a few hundred bytes of drop glue, well
+/// inside `value::DROP_RED_ZONE`.
+const LAZY_DROP_CHECK_EVERY: u32 = 32;
 
 impl std::fmt::Debug for LazyPyDict {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -45,6 +58,8 @@ impl LazyPyDict {
             obj,
             field_cache: RefCell::new(HashMap::new()),
             materialized: OnceCell::new(),
+            holds_containers: Cell::new(false),
+            depth: Cell::new(0),
         }
     }
 
@@ -94,6 +109,13 @@ impl LazyPyDict {
                 val,
                 JValue::String(_) | JValue::Array(_) | JValue::Object(_) | JValue::LazyPyDict(_)
             ) {
+                if !matches!(val, JValue::String(_)) {
+                    self.holds_containers.set(true);
+                }
+                if let JValue::LazyPyDict(child) = &val {
+                    // A nested dict's new wrapper, one level further down.
+                    child.depth.set(self.depth.get().wrapping_add(1));
+                }
                 self.field_cache
                     .borrow_mut()
                     .insert(field.to_string(), val.clone());
@@ -128,7 +150,7 @@ impl LazyPyDict {
     /// Iteration is over the dict's actual keys, so absent keys never
     /// appear here regardless of caching — `field_cache` only ever holds
     /// present-key values (scalars aren't cached at all; see `get_field`).
-    pub fn to_object(&self) -> Result<Rc<IndexMap<String, JValue>>, LazyConvertError> {
+    pub fn to_object(&self) -> Result<Rc<crate::value::JMap>, LazyConvertError> {
         if let Some(m) = self.materialized.get() {
             return Ok(m.clone());
         }
@@ -148,8 +170,9 @@ impl LazyPyDict {
             }
             Ok(map)
         })?;
-        let rc = Rc::new(map);
+        let rc = Rc::new(crate::value::JMap::from(map));
         let _ = self.materialized.set(rc.clone());
+        self.holds_containers.set(true);
         Ok(rc)
     }
 
@@ -164,7 +187,53 @@ impl LazyPyDict {
         if self.materialized.get().is_none() {
             let _ = self.to_object();
         }
-        self.materialized.get().map(|rc| &**rc)
+        self.materialized.get().map(|rc| &***rc)
+    }
+
+    /// Whether this wrapper may hold a converted array, object or wrapper
+    /// (`false`: it holds strings at most).
+    #[inline]
+    pub(crate) fn holds_containers(&self) -> bool {
+        self.holds_containers.get()
+    }
+
+    /// Whether `value` holds for any cached field, or `map` for the
+    /// materialized map.
+    pub(crate) fn any_held(
+        &self,
+        value: impl FnMut(&JValue) -> bool,
+        map: impl FnOnce(&Rc<crate::value::JMap>) -> bool,
+    ) -> bool {
+        self.materialized.get().is_some_and(map) || self.field_cache.borrow().values().any(value)
+    }
+
+    /// Move out every converted value this wrapper holds (the materialized
+    /// map as a `JValue::Object`), leaving it holding none.
+    pub(crate) fn take_held(&mut self) -> impl Iterator<Item = JValue> {
+        self.holds_containers.set(false);
+        let materialized = self.materialized.take().map(JValue::Object);
+        let cache = self.field_cache.get_mut();
+        // Same hasher: no allocation, and no new random seed.
+        let empty = HashMap::with_hasher(cache.hasher().clone());
+        let cache = std::mem::replace(cache, empty);
+        materialized.into_iter().chain(cache.into_values())
+    }
+}
+
+/// A wrapper holds the converted values of the dicts nested in it (each a
+/// `LazyPyDict` in turn), so a deep Python input read deep down is a chain
+/// of wrappers: free it without recursing, as for arrays and objects (#233).
+impl Drop for LazyPyDict {
+    #[inline]
+    fn drop(&mut self) {
+        // Between checks the glue recursion is bounded: a chain through
+        // lists or materialized maps passes `JItems`/`JMap` drops, which
+        // check the stack themselves.
+        if self.holds_containers.get()
+            && self.depth.get() % LAZY_DROP_CHECK_EVERY == LAZY_DROP_CHECK_EVERY - 1
+        {
+            crate::value::drop_lazy_dict(self);
+        }
     }
 }
 
@@ -245,9 +314,14 @@ unsafe fn convert_ptr(
         let dict = Borrowed::from_ptr(py, ptr).cast_unchecked::<PyDict>();
         if lazy {
             // One incref (`to_owned`), into the owned handle the wrapper keeps.
-            return Ok(JValue::LazyPyDict(Rc::new(LazyPyDict::new(
-                dict.to_owned().unbind(),
-            ))));
+            let dict = dict.to_owned().unbind();
+            // `new_cyclic` allocates before the wrapper exists, so no unwind
+            // path here drops a `LazyPyDict`: its drop glue (with the #233
+            // check) then has a single caller, `Rc::drop_slow`, and is
+            // inlined there. (`Rc::new_uninit` needs Rust 1.82.)
+            return Ok(JValue::LazyPyDict(Rc::new_cyclic(|_| {
+                LazyPyDict::new(dict)
+            })));
         }
         return crate::value::with_stack(|| convert_dict_eager(&dict));
     }
