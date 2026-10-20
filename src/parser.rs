@@ -113,6 +113,35 @@ fn node_has_group(node: &AstNode) -> bool {
     }
 }
 
+/// Splits a `#`/`@`-bound path into the steps before its last one and the
+/// bound last step on its own, which jsonata-js would have parsed as the
+/// call's procedure: `a.b#$i` gives `[a]` and `b#$i`. Anything that is not
+/// a longer path keeps no context steps.
+fn split_bound_last_step(node: AstNode) -> (Vec<PathStep>, AstNode) {
+    match node {
+        AstNode::Binary {
+            op: op @ (BinaryOp::IndexBind | BinaryOp::FocusBind),
+            lhs,
+            rhs,
+        } => {
+            let (context_steps, inner) = split_bound_last_step(*lhs);
+            (
+                context_steps,
+                AstNode::Binary {
+                    op,
+                    lhs: Box::new(inner),
+                    rhs,
+                },
+            )
+        }
+        AstNode::Path { mut steps } if steps.len() > 1 => {
+            let last = steps.pop().expect("a longer path has a last step");
+            (steps, AstNode::Path { steps: vec![last] })
+        }
+        other => (Vec::new(), other),
+    }
+}
+
 /// Running out of input while expecting something is S0203; finding the wrong
 /// thing is S0202. A missing *parameter name* is its own code, S0208.
 fn expected_message(expected: &str, found: &str) -> String {
@@ -1858,6 +1887,38 @@ impl Parser {
                                             invalid_call_message(&args),
                                         ));
                                     }
+                                }
+                                // A step with an index or focus binding, such as
+                                // `$o#$i(3)` or `$o.g[0]#$i(3)`: jsonata-js's `(`
+                                // takes the bound step as its procedure, so it is
+                                // evaluated and its value called. As `#` and `@`
+                                // bind tighter than `.` there, a bound last step
+                                // of a longer path is called once per context
+                                // item, like `$o.g[0]()` above. Errors the step
+                                // raises (S0215 for `$o[0]@$v`) surface as they
+                                // would without the call.
+                                AstNode::Binary {
+                                    op: BinaryOp::IndexBind | BinaryOp::FocusBind,
+                                    ..
+                                } => {
+                                    let bound = std::mem::replace(&mut lhs, AstNode::Undefined);
+                                    let (mut context_steps, procedure) =
+                                        split_bound_last_step(bound);
+                                    let call = AstNode::Call {
+                                        procedure: Box::new(procedure),
+                                        args,
+                                    };
+                                    self.bump_parse_depth()?;
+                                    lhs = if context_steps.is_empty() {
+                                        call
+                                    } else {
+                                        context_steps.push(PathStep::new(
+                                            AstNode::FunctionApplication(Box::new(call)),
+                                        ));
+                                        AstNode::Path {
+                                            steps: context_steps,
+                                        }
+                                    };
                                 }
                                 // Handle $-prefixed function names: $uppercase()
                                 AstNode::Variable(name) => {

@@ -93,6 +93,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Calling a step with an index or focus binding calls what the step gives.**
+  `($o := [function($x){$x}]; $o#$i(3))` and `$o.g[0]#$i(3)` are 3, as in jsonata-js, where
+  `#` and `@` bind tighter than `.` and `(` takes the bound step as its procedure; they were
+  parse errors (T1006). A bound last step of a longer path is called in each context item.
+  `$o[0]@$v(3)` now raises the S0215 that `$o[0]@$v` does, instead of T1006.
 - **Creating a function with a deeply nested body no longer crashes deep in a recursion.**
   Creating a function clones its body and collects its free variables, two recursive walks
   over the body that ran without the stack guard deep evaluation uses. A body nested a few

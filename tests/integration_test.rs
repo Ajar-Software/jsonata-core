@@ -3446,3 +3446,69 @@ fn test_null_from_non_simple_sort_term_without_comparison() {
         assert_eq!(default, expected, "default: {expr}");
     }
 }
+
+// ── Calling a step with an index or focus binding ────────────────────────────
+//
+// In jsonata-js `#` and `@` bind tighter than `.`, and `(` takes the bound
+// step as its procedure: `$o#$i(3)` calls what `$o#$i` gives, and
+// `$o.g[0]#$i(3)` calls `g[0]#$i` in each item of `$o`. These were parse
+// errors (T1006), which also hid the S0215 that `$o[0]@$v` raises.
+
+#[test]
+fn test_call_of_bound_step() {
+    for (expr, expected) in [
+        ("($o := [function($x){$x}]; $o#$i(3))", "Ok(3)"),
+        ("($o := function($x){$x}; $o#$i(3))", "Ok(3)"),
+        (
+            r#"($o := {"g": [function($x){$x}]}; $o.g[0]#$i(3))"#,
+            "Ok(3)",
+        ),
+        (r#"($o := {"g": [function($x){$x}]}; $o.g#$i(3))"#, "Ok(3)"),
+        (r#"$uppercase#$i("a")"#, r#"Ok("A")"#),
+        (r#"$uppercase@$i("a")"#, r#"Ok("A")"#),
+        ("($o := [function($x){$x}]; $o#$i(?)(4))", "Ok(4)"),
+        (
+            r#"($f := function($x){$x*10}; $d := [{"f":1},{"f":2}]; $d#$i.$f#$j(f+$i))"#,
+            "Ok([10,30])",
+        ),
+        (
+            r#"($f := function($x){$x*10}; $d := [{"f":1},{"f":2}]; $d@$v.$f@$w($v.f))"#,
+            "Ok([10,20])",
+        ),
+    ] {
+        let (tree_walker, default) = eval_both_engines(expr, EvaluatorOptions::default());
+        assert_eq!(tree_walker, expected, "tree-walker: {expr}");
+        assert_eq!(default, expected, "default: {expr}");
+    }
+}
+
+#[test]
+fn test_call_of_bound_step_errors() {
+    for (expr, code) in [
+        ("($o := [function($x){$x}]; $o[0]@$v(3))", "S0215"),
+        (
+            r#"($o := {"g": [function($x){$x}]}; $o.g[0]@$v(3))"#,
+            "S0215",
+        ),
+        // A focus binding keeps the context, which is not a function.
+        ("($o := [function($x){$x}]; $o@$v(3))", "T1006"),
+        // Two functions are an array, not a function.
+        (
+            "($o := [function($x){$x}, function($x){$x}]; $o#$i(3))",
+            "T1006",
+        ),
+        ("[1,2]#$i(3)", "T1006"),
+    ] {
+        // S0215 is raised by the parser, the others when evaluating.
+        if let Err(e) = parse(expr) {
+            assert!(format!("{e:?}").contains(code), "parse: {expr} => {e:?}");
+            continue;
+        }
+        let (tree_walker, default) = eval_both_engines(expr, EvaluatorOptions::default());
+        assert!(
+            tree_walker.contains(code),
+            "tree-walker: {expr} => {tree_walker}"
+        );
+        assert!(default.contains(code), "default: {expr} => {default}");
+    }
+}

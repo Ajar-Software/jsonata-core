@@ -74,6 +74,26 @@ class TestCompile:
         with pytest.raises(ValueError, match="T1006"):
             jsonatapy.compile("($o := [1]; $o[0]())").evaluate(None)
 
+    @pytest.mark.parametrize(
+        "expression",
+        [
+            "($o := [function($x){$x}]; $o#$i(3))",
+            '($o := {"g": [function($x){$x}]}; $o.g[0]#$i(3))',
+        ],
+    )
+    def test_call_of_bound_step(self, expression):
+        """Calling a step with an index binding calls what the step gives.
+
+        It was a parse error (T1006); jsonata-js's `(` takes the bound step
+        as its procedure.
+        """
+        assert jsonatapy.compile(expression).evaluate(None) == 3
+
+    def test_call_of_focus_bound_predicated_step_raises_s0215(self):
+        """A focus binding after a predicate is S0215, called or not."""
+        with pytest.raises(ValueError, match="S0215"):
+            jsonatapy.compile("($o := [function($x){$x}]; $o[0]@$v(3))").evaluate(None)
+
 
 class TestJsonataExpression:
     """Tests for JsonataExpression class"""
