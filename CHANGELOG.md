@@ -31,7 +31,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   their callback is a builtin, host or partial function.** Their loops over such a callback
   had no checkpoint, because the call evaluates no node, so `$map(items, $string)` over a
   large array ran to the end past its timeout. A lambda callback was already stopped, since
-  its body is checked like any node.
+  its body is checked like any node. An expression with `timeout_ms` set that used to finish
+  late in one of these loops and return a result now fails with D1012 instead.
 
 ### Security
 
