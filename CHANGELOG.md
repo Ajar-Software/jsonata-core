@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **An evaluation can be cancelled from another thread.** `EvaluatorOptions` has a new
+  `cancel` field that takes a `CancelToken`. Calling `cancel()` on any clone of the token
+  stops the evaluation with `U1003: Evaluation cancelled` wherever `timeout_ms` is checked:
+  each node evaluated, each element a higher-order builtin hands its callback, and each pass
+  of a tail-call loop. A single builtin call over a large input finishes first, as it does
+  under `timeout_ms`, and if it is the last step the evaluation returns its result. jsonata-js
+  has no cancellation, so the code is in the `U` series. This is a Rust API only. Code that
+  builds `EvaluatorOptions` field by field without `..Default::default()` must add
+  `cancel: None`, so strict semver would call this a breaking change.
+
 ### Changed
 
 ### Deprecated
@@ -16,6 +26,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Removed
 
 ### Fixed
+
+- **`timeout_ms` now stops `$map`, `$filter`, `$reduce`, `$single`, `$each` and `$sort` when
+  their callback is a builtin, host or partial function.** Their loops over such a callback
+  had no checkpoint, because the call evaluates no node, so `$map(items, $string)` over a
+  large array ran to the end past its timeout. A lambda callback was already stopped, since
+  its body is checked like any node.
 
 ### Security
 
