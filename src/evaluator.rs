@@ -3696,8 +3696,9 @@ impl TupleKeyBindings {
 /// Clones share one flag. Put a clone in [`EvaluatorOptions::cancel`] and call
 /// [`CancelToken::cancel`] on another, and the evaluation raises U1003 at its
 /// next checkpoint: each node it evaluates, each element a higher-order
-/// builtin (`$map`, `$filter`, `$reduce`, `$single`, `$each`, `$sort`) hands
-/// its callback, and each pass of a tail-call loop. These are the places
+/// builtin (`$map`, `$filter`, `$reduce`, `$single`, `$sift`, `$each`,
+/// `$sort`) hands its callback, each match `$replace` hands its replacement
+/// function, and each pass of a tail-call loop. These are the places
 /// `timeout_ms` is checked.
 ///
 /// A single builtin call over a large input, such as `$string` of a long
@@ -8432,6 +8433,7 @@ impl Evaluator {
                         let call_args =
                             hof_object_call_args(value, key, obj_value.as_ref(), param_count);
 
+                        check_loop_timeout(&evaluator.options, evaluator.start_time)?;
                         let pred_result =
                             evaluator.apply_function(func_node, &call_args, context_data)?;
                         if evaluator.is_truthy(&pred_result) {
@@ -10313,6 +10315,7 @@ impl Evaluator {
                 group,
             );
         }
+        check_loop_timeout(&self.options, self.start_time)?;
         match self.as_callback(|ev| ev.call_function_value(replacement, &[match_object()], data))? {
             JValue::String(replaced) => {
                 out.push_str(&replaced);

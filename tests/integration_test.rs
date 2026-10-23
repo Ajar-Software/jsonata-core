@@ -1032,9 +1032,10 @@ fn cancellable(token: &CancelToken) -> EvaluatorOptions {
     }
 }
 
-/// Evaluates `expr_str` with a host function `$tick` that returns its first
-/// argument and cancels the evaluation on its `cancel_on`th call. Returns the
-/// error and how many times `$tick` ran.
+/// Evaluates `expr_str` with a host function `$tick` that cancels the
+/// evaluation on its `cancel_on`th call. It returns `"x"`, since a string suits
+/// every callback slot and a `$replace` replacement must return one. Returns
+/// the error and how many times `$tick` ran.
 fn evaluate_cancelled_on_call(
     expr_str: &str,
     cancel_on: usize,
@@ -1045,12 +1046,12 @@ fn evaluate_cancelled_on_call(
     let mut evaluator = Evaluator::with_options(Context::new(), cancellable(&token));
     let (tick_token, tick_calls) = (token.clone(), calls.clone());
     evaluator
-        .register_fn("tick", move |args: &[JValue]| {
+        .register_fn("tick", move |_args: &[JValue]| {
             tick_calls.set(tick_calls.get() + 1);
             if tick_calls.get() == cancel_on {
                 tick_token.cancel();
             }
-            Ok(args.first().cloned().unwrap_or(JValue::Null))
+            Ok(JValue::string("x"))
         })
         .unwrap();
     let err = evaluator
@@ -1124,8 +1125,10 @@ fn test_cancel_stops_higher_order_builtins_between_elements() {
         "$filter([1..2000], $tick)",
         "$reduce([1..2000], $tick)",
         "$single([1..2000], $tick)",
+        "$sift($merge([1..2000].{$string($): $}), $tick)",
         "$each($merge([1..2000].{$string($): $}), $tick)",
         "$sort([1..2000], $tick)",
+        "$replace($pad('', 2000, 'a'), /a/, $tick)",
     ];
     for expr_str in cases {
         let (err, calls) = evaluate_cancelled_on_call(expr_str, 100);
